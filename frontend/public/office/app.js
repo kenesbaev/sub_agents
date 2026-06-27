@@ -1,6 +1,11 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
+const officeParams = new URLSearchParams(window.location.search);
+const isDashboardEmbed = officeParams.get("embed") === "dashboard";
+document.body.classList.toggle("embedded-dashboard", isDashboardEmbed);
+
+const workspace = document.querySelector(".workspace");
 const canvas = document.querySelector("#officeCanvas");
 const bubbleLayer = document.querySelector("#bubbleLayer");
 const rosterList = document.querySelector("#rosterList");
@@ -20,11 +25,16 @@ const chatMessages = document.querySelector("#chatMessages");
 const chatComposer = document.querySelector("#chatComposer");
 const chatInput = document.querySelector("#chatInput");
 const chatSend = document.querySelector("#chatSend");
+const chatResizeHandle = document.querySelector("#chatResizeHandle");
 
 const AGENT_CHAT_API = "http://127.0.0.1:4173/api/agents/chat";
 const AUTH_API =
   window.location.hostname === "localhost" ? "http://localhost:8000" : "http://127.0.0.1:8000";
 const CHAT_STORAGE_VERSION = 1;
+const CHAT_WIDTH_STORAGE_KEY = "rebly-office-chat-width";
+const CHAT_WIDTH_MIN = 280;
+const CHAT_WIDTH_MAX = 520;
+const MAIN_WIDTH_MIN = 520;
 
 let accountKey = getGuestAccountKey();
 let chatSessionId = getOrCreateChatSessionId(accountKey);
@@ -54,6 +64,7 @@ const agents = [
     role: "Lead",
     kind: "robot",
     color: "#4f5bd5",
+    avatar: "/images/agents/coordinator.png",
     slot: 2,
     state: "focused",
     bubble: "Routing tasks",
@@ -64,6 +75,7 @@ const agents = [
     role: "Strategist",
     kind: "human",
     color: "#d04f6a",
+    avatar: "/images/agents/mika.png",
     slot: 0,
     state: "idle",
     bubble: "Ready",
@@ -74,6 +86,7 @@ const agents = [
     role: "Research",
     kind: "human",
     color: "#0097a7",
+    avatar: "/images/agents/scout.png",
     slot: 1,
     state: "working",
     bubble: "Scanning market",
@@ -84,6 +97,7 @@ const agents = [
     role: "Engineer",
     kind: "human",
     color: "#13a56f",
+    avatar: "/images/agents/dev.png",
     slot: 3,
     state: "idle",
     bubble: "Standing by",
@@ -94,6 +108,7 @@ const agents = [
     role: "Publisher",
     kind: "human",
     color: "#c98908",
+    avatar: "/images/agents/nova.png",
     slot: 4,
     state: "idle",
     bubble: "Queue clean",
@@ -101,7 +116,7 @@ const agents = [
   },
 ];
 
-let selectedChatId = "all";
+let selectedChatId = isDashboardEmbed ? "mika" : "all";
 let chatBusy = false;
 let chatThreads = createEmptyChatThreads();
 
@@ -148,7 +163,7 @@ const agentStyles = [
   },
 ];
 
-let selectedIndex = 0;
+let selectedIndex = isDashboardEmbed ? 1 : 0;
 let queued = 3;
 const bubbles = new Map();
 
@@ -578,7 +593,9 @@ function renderRoster() {
     row.addEventListener("click", () => selectAgent(index));
 
     row.innerHTML = `
-      <span class="agent-token" style="background:${agent.color}">${agent.name.slice(0, 1)}</span>
+      <span class="agent-token" style="--agent-color:${agent.color}">
+        <img src="${agent.avatar}" alt="" />
+      </span>
       <span class="agent-meta">
         <span class="agent-name">${agent.name}</span>
         <span class="agent-role">${agent.role}</span>
@@ -610,6 +627,12 @@ function chatInitial(author) {
   return author === "You" ? "You" : author.slice(0, 1);
 }
 
+function chatAvatar(chatId, author) {
+  if (chatId === "user") return "";
+  const agent = agentByChatId(chatId) || agents.find((item) => item.name === author);
+  return agent?.avatar || "";
+}
+
 function currentChatTime() {
   return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
@@ -636,6 +659,73 @@ function safeStorageSet(key, value) {
   } catch {
     // Storage can be unavailable in strict/private browser modes.
   }
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), Math.max(min, max));
+}
+
+function maxChatPanelWidth() {
+  if (!workspace) return CHAT_WIDTH_MAX;
+  const available = workspace.getBoundingClientRect().width - MAIN_WIDTH_MIN - 8;
+  return Math.max(CHAT_WIDTH_MIN, Math.min(CHAT_WIDTH_MAX, available));
+}
+
+function setChatPanelWidth(value, { persist = false } = {}) {
+  if (!workspace) return;
+  const width = Math.round(clamp(value, CHAT_WIDTH_MIN, maxChatPanelWidth()));
+  workspace.style.setProperty("--chat-panel-width", `${width}px`);
+  if (persist) {
+    safeStorageSet(CHAT_WIDTH_STORAGE_KEY, String(width));
+  }
+  resize();
+}
+
+function loadChatPanelWidth() {
+  const saved = Number.parseInt(safeStorageGet(CHAT_WIDTH_STORAGE_KEY) || "", 10);
+  if (Number.isFinite(saved)) {
+    setChatPanelWidth(saved);
+  }
+}
+
+function setupChatResize() {
+  if (!workspace || !chatResizeHandle) return;
+  loadChatPanelWidth();
+
+  chatResizeHandle.addEventListener("pointerdown", (event) => {
+    if (window.matchMedia("(max-width: 1040px)").matches) return;
+    event.preventDefault();
+    chatResizeHandle.setPointerCapture?.(event.pointerId);
+    chatResizeHandle.classList.add("dragging");
+    document.body.classList.add("resizing-chat");
+
+    const move = (moveEvent) => {
+      const rect = workspace.getBoundingClientRect();
+      setChatPanelWidth(rect.right - moveEvent.clientX, { persist: true });
+    };
+    const stop = () => {
+      chatResizeHandle.classList.remove("dragging");
+      document.body.classList.remove("resizing-chat");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop, { once: true });
+  });
+
+  chatResizeHandle.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const current = Number.parseInt(
+      getComputedStyle(workspace).getPropertyValue("--chat-panel-width"),
+      10,
+    );
+    const delta = event.key === "ArrowLeft" ? 24 : -24;
+    setChatPanelWidth((Number.isFinite(current) ? current : CHAT_WIDTH_MIN) + delta, {
+      persist: true,
+    });
+  });
 }
 
 function randomStorageId() {
@@ -801,8 +891,17 @@ function renderChatMessages() {
 
     const avatar = document.createElement("span");
     avatar.className = "chat-avatar";
-    avatar.style.background = chatColor(message.type === "user" ? "user" : message.from, message.author);
-    avatar.textContent = chatInitial(message.author);
+    const avatarImage = chatAvatar(message.type === "user" ? "user" : message.from, message.author);
+    if (avatarImage) {
+      avatar.style.setProperty("--agent-color", chatColor(message.from, message.author));
+      const image = document.createElement("img");
+      image.src = avatarImage;
+      image.alt = "";
+      avatar.appendChild(image);
+    } else {
+      avatar.style.background = chatColor(message.type === "user" ? "user" : message.from, message.author);
+      avatar.textContent = chatInitial(message.author);
+    }
 
     const body = document.createElement("div");
     body.className = "chat-message-body";
@@ -1062,6 +1161,34 @@ function selectAgent(index) {
   renderRoster();
   renderChatTargets();
   renderChatMessages();
+  notifyOfficeSelection(agentChatId(agent));
+}
+
+function selectAgentById(agentId) {
+  const index = agents.findIndex((agent) => agentChatId(agent) === agentId);
+  if (index < 0) return false;
+  setPanelTab("chat");
+  selectAgent(index);
+  return true;
+}
+
+function notifyOfficeSelection(agentId) {
+  if (!isDashboardEmbed || window.parent === window) return;
+  window.parent.postMessage(
+    {
+      type: "rebly-office-agent-selected",
+      agentId,
+    },
+    window.location.origin,
+  );
+}
+
+function handleParentMessage(event) {
+  if (event.origin !== window.location.origin) return;
+  const data = event.data || {};
+  if (data.type !== "rebly-office-select-agent") return;
+  const agentId = String(data.agentId || "").toLowerCase();
+  selectAgentById(agentId);
 }
 
 function assignTask(index = selectedIndex) {
@@ -1374,6 +1501,11 @@ if (renderer) {
   agents.forEach(createAgentModel);
 }
 loadChatState(accountKey);
+if (isDashboardEmbed && agents[selectedIndex]) {
+  focusName.textContent = agents[selectedIndex].name;
+  agents[selectedIndex].state = "focused";
+  agents[selectedIndex].bubble = "Focused";
+}
 
 document.querySelector("#assignBtn").addEventListener("click", () => assignTask());
 document.querySelector("#shuffleBtn").addEventListener("click", shuffleTeam);
@@ -1385,12 +1517,19 @@ window.addEventListener("resize", resize);
 chatTab.addEventListener("click", () => setPanelTab("chat"));
 activityTab.addEventListener("click", () => setPanelTab("activity"));
 chatTarget.addEventListener("change", () => {
-  selectedChatId = chatTarget.value;
+  const nextChatId = chatTarget.value;
+  if (nextChatId !== "all" && selectAgentById(nextChatId)) {
+    return;
+  }
+  selectedChatId = nextChatId;
   saveChatState();
   renderChatMessages();
+  notifyOfficeSelection(selectedChatId);
 });
 chatComposer.addEventListener("submit", sendChatMessage);
 
+window.addEventListener("message", handleParentMessage);
+setupChatResize();
 renderRoster();
 renderChatTargets();
 renderChatMessages();

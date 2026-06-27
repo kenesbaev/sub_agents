@@ -35,7 +35,7 @@ import {
   UsersRound
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -99,10 +99,12 @@ interface TeamCardData {
   modalWorkflow: WorkflowData[];
 }
 
-const people = [
-  { name: "Sofia", role: "Client ops", image: "/images/member-woman.png" },
-  { name: "Leo", role: "Research", image: "/images/member-man.png" },
-  { name: "Mira", role: "Automation", image: "/images/coordinator.png" }
+const officeAgents = [
+  { id: "coordinator", name: "Coordinator", role: "Lead", image: "/images/agents/coordinator.png", color: "#4F5BD5", state: "online" },
+  { id: "mika", name: "Mika", role: "Strategist", image: "/images/agents/mika.png", color: "#D04F6A", state: "online" },
+  { id: "scout", name: "Scout", role: "Research", image: "/images/agents/scout.png", color: "#0097A7", state: "online" },
+  { id: "dev", name: "Dev", role: "Engineer", image: "/images/agents/dev.png", color: "#13A56F", state: "idle" },
+  { id: "nova", name: "Nova", role: "Operator", image: "/images/agents/nova.png", color: "#C98908", state: "idle" }
 ];
 
 const businessAgents: AgentData[] = [
@@ -363,6 +365,8 @@ export default function DashboardPage() {
   const [telegramConnected, setTelegramConnected] = useState(false);
   const [telegramBotConnected, setTelegramBotConnected] = useState(false);
   const [telegramBotStatus, setTelegramBotStatus] = useState("");
+  const [selectedOfficeAgent, setSelectedOfficeAgent] = useState("mika");
+  const officeFrameRef = useRef<HTMLIFrameElement | null>(null);
 
   useEffect(() => {
     const storedTheme = localStorage.getItem("rebly-theme");
@@ -394,6 +398,32 @@ export default function DashboardPage() {
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
   }, [themeMode]);
+
+  useEffect(() => {
+    function handleOfficeMessage(event: MessageEvent) {
+      if (event.origin !== window.location.origin) return;
+      const data = event.data as { type?: string; agentId?: string };
+      if (data?.type !== "rebly-office-agent-selected") return;
+      const agentId = String(data.agentId || "");
+      if (officeAgents.some((agent) => agent.id === agentId)) {
+        setSelectedOfficeAgent(agentId);
+      }
+    }
+
+    window.addEventListener("message", handleOfficeMessage);
+    return () => window.removeEventListener("message", handleOfficeMessage);
+  }, []);
+
+  useEffect(() => {
+    if (activeView !== "office") return;
+    officeFrameRef.current?.contentWindow?.postMessage(
+      {
+        type: "rebly-office-select-agent",
+        agentId: selectedOfficeAgent,
+      },
+      window.location.origin,
+    );
+  }, [activeView, selectedOfficeAgent]);
 
   const filteredTeams = useMemo(() => {
     const query = teamSearch.trim().toLowerCase();
@@ -433,6 +463,24 @@ export default function DashboardPage() {
     setTeamTab(tab);
     setExpandedTeam("");
     setActiveView("my-teams");
+  }
+
+  function hireTeam() {
+    setDetailTeam(null);
+    setExpandedTeam("");
+    setActiveView("office");
+  }
+
+  function selectOfficeAgent(agentId: string) {
+    setActiveView("office");
+    setSelectedOfficeAgent(agentId);
+    officeFrameRef.current?.contentWindow?.postMessage(
+      {
+        type: "rebly-office-select-agent",
+        agentId,
+      },
+      window.location.origin,
+    );
   }
 
   function changeTheme(mode: ThemeMode) {
@@ -562,17 +610,34 @@ export default function DashboardPage() {
           })}
         </nav>
 
-        <div className="people-strip" aria-label="Office people">
-          {people.map((person) => (
-            <button className="person-chip" key={person.name} type="button" onClick={() => setActiveView("office")}>
-              <Image src={person.image} width={608} height={608} alt={person.name} />
-              <span>
-                <strong>{person.name}</strong>
-                <small>{person.role}</small>
-              </span>
-            </button>
-          ))}
-        </div>
+        {activeView === "office" && (
+          <div className="office-team-strip" aria-label="Agent Office team">
+            <div className="office-team-head">
+              <strong>Team</strong>
+              <span>5 / 5</span>
+            </div>
+            <div className="office-team-list">
+              {officeAgents.map((agent) => (
+                <button
+                  className={`office-agent-chip ${selectedOfficeAgent === agent.id ? "active" : ""}`}
+                  key={agent.name}
+                  type="button"
+                  aria-pressed={selectedOfficeAgent === agent.id}
+                  onClick={() => selectOfficeAgent(agent.id)}
+                >
+                  <span className="office-agent-token" style={{ "--agent-color": agent.color } as CSSProperties}>
+                    <Image src={agent.image} width={256} height={256} alt="" />
+                  </span>
+                  <span>
+                    <strong>{agent.name}</strong>
+                    <small>{agent.role}</small>
+                  </span>
+                  <i className={agent.state === "online" ? "online" : ""} aria-hidden="true" />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="sidebar-bottom">
           {bottomItems.map((item) => {
@@ -608,7 +673,13 @@ export default function DashboardPage() {
 
         {activeView === "office" && (
           <section className="office-view" aria-label="Agent Office">
-            <iframe className="office-full-frame" src="/office/index.html" title="Business AI office" />
+            <iframe
+              ref={officeFrameRef}
+              className="office-full-frame"
+              src="/office/index.html?embed=dashboard"
+              title="Business AI office"
+              onLoad={() => selectOfficeAgent(selectedOfficeAgent)}
+            />
           </section>
         )}
 
@@ -625,7 +696,7 @@ export default function DashboardPage() {
                 onClick={() =>
                   setTasks((current) => {
                     const nextIndex = current.length;
-                    const owner = people[nextIndex % people.length].name;
+                    const owner = officeAgents[nextIndex % officeAgents.length].name;
                     const title = taskTemplates[nextIndex % taskTemplates.length];
                     return [
                       ...current,
@@ -743,6 +814,7 @@ export default function DashboardPage() {
                     expanded={expanded}
                     onToggle={() => setExpandedTeam(expanded ? "" : team.id)}
                     onDetails={() => setDetailTeam(team)}
+                    onHire={hireTeam}
                   />
                 );
               })}
@@ -767,7 +839,7 @@ export default function DashboardPage() {
           </section>
         )}
 
-        {detailTeam && <TeamDetailsModal team={detailTeam} onClose={() => setDetailTeam(null)} />}
+        {detailTeam && <TeamDetailsModal team={detailTeam} onClose={() => setDetailTeam(null)} onHire={hireTeam} />}
 
         {activeView === "shared" && (
           <section className="dashboard-view">
@@ -963,12 +1035,14 @@ function TeamCard({
   team,
   expanded,
   onToggle,
-  onDetails
+  onDetails,
+  onHire
 }: {
   team: TeamCardData;
   expanded: boolean;
   onToggle: () => void;
   onDetails: () => void;
+  onHire: () => void;
 }) {
   const TeamIcon = team.icon;
 
@@ -1032,9 +1106,16 @@ function TeamCard({
             <button className="button detail-button" type="button" onClick={onDetails}>
               <Eye size={16} /> Подробнее
             </button>
-            <Link className="button solid team-hire" href="/office/index.html">
+            <button
+              className="button solid team-hire"
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onHire();
+              }}
+            >
               <Rocket size={16} /> Нанять
-            </Link>
+            </button>
           </div>
         </div>
       )}
@@ -1066,7 +1147,7 @@ function WorkflowStep({ index, text }: { index: number; text: string }) {
   );
 }
 
-function TeamDetailsModal({ team, onClose }: { team: TeamCardData; onClose: () => void }) {
+function TeamDetailsModal({ team, onClose, onHire }: { team: TeamCardData; onClose: () => void; onHire: () => void }) {
   const TeamIcon = team.icon;
 
   return (
@@ -1128,9 +1209,9 @@ function TeamDetailsModal({ team, onClose }: { team: TeamCardData; onClose: () =
         </div>
 
         <footer className="detail-footer">
-          <Link className="button solid detail-hire" href="/office/index.html">
+          <button className="button solid detail-hire" type="button" onClick={onHire}>
             <Rocket size={16} /> Нанять эту команду
-          </Link>
+          </button>
         </footer>
       </section>
     </div>

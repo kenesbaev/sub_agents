@@ -11,6 +11,7 @@
   --amber: #c98908;
   --rose: #d04f6a;
   --shadow: 0 12px 32px rgba(19, 28, 48, 0.12);
+  --chat-panel-width: 320px;
 }
 
 * {
@@ -284,7 +285,7 @@ button {
 .workspace {
   flex: 1;
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr) 320px;
+  grid-template-columns: 260px minmax(0, 1fr) 8px var(--chat-panel-width);
   height: calc(100vh - 68px);
   min-height: calc(100vh - 68px);
   min-width: 0;
@@ -346,7 +347,7 @@ button {
 .agent-row {
   width: 100%;
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 12px;
+  grid-template-columns: 46px minmax(0, 1fr) 12px;
   align-items: center;
   gap: 10px;
   border: 1px solid transparent;
@@ -376,14 +377,22 @@ button {
 }
 
 .agent-token {
-  width: 34px;
-  height: 34px;
   display: grid;
   place-items: center;
+  width: 46px;
+  height: 46px;
+  border: 1px solid color-mix(in srgb, var(--agent-color, #4f5bd5) 26%, transparent);
   border-radius: 8px;
-  color: white;
-  font-size: 12px;
-  font-weight: 800;
+  background: color-mix(in srgb, var(--agent-color, #4f5bd5) 8%, #ffffff);
+  overflow: hidden;
+}
+
+.agent-token img {
+  width: 58px;
+  height: 58px;
+  object-fit: contain;
+  object-position: center bottom;
+  image-rendering: pixelated;
 }
 
 .agent-meta {
@@ -438,6 +447,45 @@ button {
   overflow: hidden;
   background:
     linear-gradient(180deg, #f7f8fb 0%, #eef2f7 100%);
+}
+
+.chat-resize-handle {
+  position: relative;
+  z-index: 3;
+  width: 8px;
+  min-width: 8px;
+  border-left: 1px solid var(--line);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7));
+  cursor: col-resize;
+  transition: background 160ms ease;
+}
+
+.chat-resize-handle::before {
+  position: absolute;
+  inset: 0 auto 0 2px;
+  width: 3px;
+  border-radius: 999px;
+  background: #4f5bd5;
+  opacity: 0;
+  transform: scaleY(0.72);
+  transition: opacity 160ms ease, transform 160ms ease;
+  content: "";
+}
+
+.chat-resize-handle:hover,
+.chat-resize-handle.dragging {
+  background: rgba(79, 91, 213, 0.08);
+}
+
+.chat-resize-handle:hover::before,
+.chat-resize-handle.dragging::before {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
+body.resizing-chat {
+  cursor: col-resize;
+  user-select: none;
 }
 
 #officeCanvas {
@@ -669,7 +717,7 @@ button {
 
 .chat-message {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: 38px minmax(0, 1fr);
   gap: 10px;
   align-items: start;
   margin-top: 12px;
@@ -682,12 +730,23 @@ button {
 .chat-avatar {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
+  border: 1px solid color-mix(in srgb, var(--agent-color, #4f5bd5) 24%, transparent);
   border-radius: 8px;
+  background: color-mix(in srgb, var(--agent-color, #4f5bd5) 8%, #ffffff);
   color: #fff;
   font-size: 11px;
   font-weight: 800;
+  overflow: hidden;
+}
+
+.chat-avatar img {
+  width: 50px;
+  height: 50px;
+  object-fit: contain;
+  object-position: center bottom;
+  image-rendering: pixelated;
 }
 
 .chat-message-body {
@@ -727,7 +786,7 @@ button {
 }
 
 .chat-message.user {
-  grid-template-columns: minmax(0, 1fr) 34px;
+  grid-template-columns: minmax(0, 1fr) 38px;
 }
 
 .chat-message.user .chat-avatar {
@@ -841,24 +900,21 @@ button {
 
 .send-icon::before {
   position: absolute;
-  left: 8px;
-  top: 6px;
-  width: 9px;
-  height: 9px;
-  border-top: 2px solid currentColor;
-  border-right: 2px solid currentColor;
-  transform: rotate(45deg);
+  inset: 2px;
+  background: currentColor;
+  clip-path: polygon(2% 48%, 94% 7%, 65% 92%, 49% 58%);
   content: "";
 }
 
 .send-icon::after {
   position: absolute;
-  left: 8px;
-  top: 11px;
-  width: 14px;
+  left: 7px;
+  top: 8px;
+  width: 7px;
   height: 2px;
-  border-radius: 999px;
-  background: currentColor;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--brand) 70%, #ffffff);
+  transform: rotate(-24deg);
   content: "";
 }
 
@@ -918,6 +974,119 @@ button {
   font-size: 11px;
 }
 
+body.embedded-dashboard {
+  background: #f5f6f8;
+}
+
+.embedded-dashboard .app-shell {
+  min-height: 100vh;
+}
+
+.embedded-dashboard .topbar {
+  min-height: 58px;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.embedded-dashboard .brand-mark {
+  display: none;
+}
+
+.embedded-dashboard .brand h1 {
+  font-size: 18px;
+}
+
+.embedded-dashboard .brand p {
+  font-size: 11px;
+}
+
+.embedded-dashboard .tool-button {
+  height: 36px;
+  border-radius: 9px;
+  padding: 0 13px;
+  font-size: 13px;
+}
+
+.embedded-dashboard .workspace {
+  --chat-panel-width: 330px;
+  grid-template-columns: minmax(0, 1fr) 8px var(--chat-panel-width);
+  height: calc(100vh - 58px);
+  min-height: calc(100vh - 58px);
+}
+
+.embedded-dashboard .roster-panel {
+  display: none;
+}
+
+.embedded-dashboard .stage {
+  min-height: 0;
+}
+
+.embedded-dashboard .agent-chat-panel {
+  min-height: 0;
+  padding: 12px 18px 18px;
+}
+
+.embedded-dashboard .chat-tabs {
+  min-height: 38px;
+}
+
+.embedded-dashboard .chat-tab {
+  font-size: 13px;
+}
+
+.embedded-dashboard .chat-target {
+  grid-template-columns: 70px minmax(0, 1fr);
+  font-size: 12px;
+}
+
+.embedded-dashboard .chat-target select {
+  height: 40px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.embedded-dashboard .chat-composer {
+  grid-template-columns: minmax(0, 1fr) 38px;
+  padding: 5px;
+}
+
+.embedded-dashboard .chat-composer input {
+  height: 34px;
+  font-size: 12px;
+}
+
+.embedded-dashboard .chat-composer button {
+  width: 34px;
+  height: 34px;
+}
+
+.embedded-dashboard .send-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.embedded-dashboard .chat-view {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 9px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.embedded-dashboard .chat-messages {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 7px;
+}
+
+.embedded-dashboard .scene-hud {
+  display: none;
+}
+
+.embedded-dashboard .speech-bubble {
+  font-size: 12px;
+}
+
 @media (max-width: 1040px) {
   .workspace {
     grid-template-columns: 220px minmax(0, 1fr);
@@ -928,6 +1097,10 @@ button {
     grid-column: 1 / -1;
     border-left: 0;
     border-top: 1px solid var(--line);
+  }
+
+  .chat-resize-handle {
+    display: none;
   }
 
   .activity-feed {
