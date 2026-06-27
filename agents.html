@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Agents</title>
+    <link rel="stylesheet" href="./agents.css" />
+  </head>
+  <body>
+    <div class="agent-shell">
+      <header class="agent-topbar">
+        <div class="brand-block">
+          <span class="brand-mark" aria-hidden="true">A</span>
+          <div>
+            <h1>AI Agents</h1>
+            <p>Coordinator, Mika, Scout, Dev и Nova</p>
+          </div>
+        </div>
+        <div class="system-strip" aria-label="Состояние системы">
+          <span class="system-pill online">5 online</span>
+        </div>
+      </header>
+
+      <main class="agent-workspace">
+        <aside class="agent-roster" aria-label="Список агентов">
+          <div class="panel-heading">
+            <h2>Команда</h2>
+            <span id="agentCount">5</span>
+          </div>
+          <div id="agentList" class="agent-list"></div>
+        </aside>
+
+        <section class="command-center" aria-label="Командный центр">
+          <div class="conversation-panel">
+            <div class="conversation-head">
+              <div>
+                <span class="eyebrow">Диалог</span>
+                <strong id="activeAgentName">Team</strong>
+              </div>
+              <button id="clearBtn" class="ghost-button" type="button">Очистить чат</button>
+            </div>
+            <div id="conversation" class="conversation" aria-live="polite"></div>
+          </div>
+
+          <form id="composer" class="composer">
+            <label for="userMessage">Сообщение</label>
+            <div id="attachmentList" class="attachment-list" aria-live="polite"></div>
+            <div class="composer-row">
+              <textarea
+                id="userMessage"
+                rows="3"
+                placeholder="Напиши задачу или сообщение..."
+              ></textarea>
+              <div class="composer-actions">
+                <label class="file-button" for="fileInput">Файлы</label>
+                <input id="fileInput" type="file" multiple />
+                <button class="send-button" type="submit">Отправить</button>
+              </div>
+            </div>
+          </form>
+        </section>
+
+        <aside class="agent-inspector" aria-label="Профиль агента">
+          <div class="panel-heading">
+            <h2>Профиль</h2>
+            <span id="agentState">Ready</span>
+          </div>
+
+          <div class="profile-block">
+            <span id="profileToken" class="profile-token">A</span>
+            <div>
+              <h3 id="profileName">Team</h3>
+              <p id="profileRole">Team</p>
+            </div>
+          </div>
+
+          <div class="detail-section">
+            <span class="eyebrow">Задача</span>
+            <p id="profileMission"></p>
+          </div>
+
+          <div class="detail-section">
+            <span class="eyebrow">Система</span>
+            <p id="profileSystem"></p>
+          </div>
+
+          <div class="detail-section">
+            <span class="eyebrow">Журнал</span>
+            <div id="activityFeed" class="activity-feed"></div>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <script type="module" src="./agents.js"></script>
+  </body>
+</html>
