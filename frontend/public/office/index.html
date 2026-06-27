@@ -76,12 +76,39 @@
           </div>
         </section>
 
-        <aside class="activity-panel" aria-label="Live activity">
-          <div class="panel-title-row">
-            <h2>Activity</h2>
-            <span id="clock">00:00</span>
+        <aside class="agent-chat-panel" aria-label="Agent chat and activity">
+          <div class="chat-tabs" role="tablist" aria-label="Agent panel">
+            <button id="chatTab" class="chat-tab active" type="button" role="tab" aria-selected="true">
+              <span class="tab-icon tab-icon-chat" aria-hidden="true"></span>
+              Chat
+            </button>
+            <button id="activityTab" class="chat-tab" type="button" role="tab" aria-selected="false">
+              <span class="tab-icon tab-icon-activity" aria-hidden="true"></span>
+              Activity
+            </button>
           </div>
-          <div id="activityFeed" class="activity-feed"></div>
+
+          <section id="chatView" class="chat-view" aria-label="Agent chat">
+            <label class="chat-target">
+              <span>Chat with</span>
+              <select id="chatTarget" aria-label="Choose chat target"></select>
+            </label>
+            <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
+            <form id="chatComposer" class="chat-composer">
+              <input id="chatInput" type="text" autocomplete="off" placeholder="Ask to follow up..." />
+              <button id="chatSend" type="submit" aria-label="Send message">
+                <span class="send-icon" aria-hidden="true"></span>
+              </button>
+            </form>
+          </section>
+
+          <section id="activityView" class="activity-view" aria-label="Live activity" hidden>
+            <div class="panel-title-row compact">
+              <h2>Activity</h2>
+              <span id="clock">00:00</span>
+            </div>
+            <div id="activityFeed" class="activity-feed"></div>
+          </section>
         </aside>
       </main>
     </div>

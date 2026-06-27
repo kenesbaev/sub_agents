@@ -1,30 +1,56 @@
-# Agent Office Prototype
+# Rebly AI
 
-Teamly-style agent workspace prototype with a real Three.js room, orbit camera, animated agents, task states, roster controls, and live activity.
+Full-stack Rebly AI prototype with a Teamly-style landing page, real auth, a FastAPI backend, PostgreSQL, and the original 3D Agent Office embedded behind the dashboard `HIRE` button.
 
-## Run
+## Stack
+
+- Frontend: Next.js App Router in `frontend/`
+- Backend: FastAPI in `backend/`
+- Database: PostgreSQL via Docker Compose
+- Legacy office: preserved in `frontend/public/office/`
+
+## Local Run
+
+Start PostgreSQL:
 
 ```bash
-npx http-server . -p 4173
+docker compose up -d postgres
 ```
 
-Then open:
+Run the backend:
+
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+Run the frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open:
 
 ```txt
-http://127.0.0.1:4173
+http://localhost:3000
 ```
 
-## Assets
+This workspace was verified with Node 22 for Next.js build/start.
 
-The downloaded 3D character reference pack is Kenney Blocky Characters.
+## Google OAuth
 
-- Source: https://kenney.nl/assets/blocky-characters
-- License: Creative Commons Zero, CC0
-- Local license copy: `assets/kenney/License.txt`
+Set these in `backend/.env`:
 
-## Implementation Notes
+```txt
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_REDIRECT_URI=http://localhost:8000/api/auth/google/callback
+```
 
-- `app.js` uses `OrbitControls`, so the room can be rotated, panned, and zoomed.
-- Agents are procedural blocky rigs with separate head, face, arms, and legs.
-- Agent states drive walking gait, hand motion, blinking, mouth movement, bobbing, bubbles, and activity.
-- This is a live 3D version of the same product idea Teamly uses visually. Teamly's production site uses pre-rendered PNG/WEBM sprites, while this prototype uses code-driven Three.js rigs for controllable animation.
+The Google Cloud OAuth client must allow this redirect URI.

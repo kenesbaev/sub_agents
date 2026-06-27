@@ -353,6 +353,16 @@ class AgentHandler(SimpleHTTPRequestHandler):
         relative = Path(original).relative_to(Path.cwd())
         return str(ROOT / relative)
 
+    def end_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        super().end_headers()
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.end_headers()
+
     def do_POST(self) -> None:
         if self.path != "/api/agents/chat":
             self.send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
@@ -1618,8 +1628,10 @@ def _run_codex_once(
 
 def codex_environment() -> dict[str, str]:
     env = os.environ.copy()
-    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus")
+    if hasattr(os, "getuid"):
+        uid = os.getuid()
+        env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+        env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
     return env
 
 

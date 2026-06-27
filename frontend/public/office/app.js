@@ -11,6 +11,18 @@ const queueCount = document.querySelector("#queueCount");
 const clock = document.querySelector("#clock");
 const teamStatus = document.querySelector("#teamStatus");
 const viewBtn = document.querySelector("#viewBtn");
+const chatTab = document.querySelector("#chatTab");
+const activityTab = document.querySelector("#activityTab");
+const chatView = document.querySelector("#chatView");
+const activityView = document.querySelector("#activityView");
+const chatTarget = document.querySelector("#chatTarget");
+const chatMessages = document.querySelector("#chatMessages");
+const chatComposer = document.querySelector("#chatComposer");
+const chatInput = document.querySelector("#chatInput");
+const chatSend = document.querySelector("#chatSend");
+
+const AGENT_CHAT_API = "http://127.0.0.1:4173/api/agents/chat";
+const chatSessionId = `office-${Date.now().toString(36)}`;
 
 const tasks = [
   "Competitor scan",
@@ -82,6 +94,44 @@ const agents = [
     active: true,
   },
 ];
+
+let selectedChatId = "all";
+let chatBusy = false;
+const chatThreads = new Map([
+  [
+    "all",
+    [
+      {
+        author: "Scout",
+        type: "agent",
+        from: "scout",
+        text: "I've completed the competitor research and added key takeaways.",
+        time: "17:33",
+      },
+      {
+        author: "Mika",
+        type: "agent",
+        from: "mika",
+        text: "Messaging framework is done. Sharing it in the doc now.",
+        time: "17:34",
+      },
+      {
+        author: "Dev",
+        type: "agent",
+        from: "dev",
+        text: "The first version of the page is built. Working on responsive tweaks.",
+        time: "17:34",
+      },
+      {
+        author: "Nova",
+        type: "agent",
+        from: "nova",
+        text: "Assets are uploaded and organized. Let me know if anything's missing.",
+        time: "17:35",
+      },
+    ],
+  ],
+]);
 
 const agentStyles = [
   {
@@ -561,6 +611,223 @@ function renderRoster() {
   });
 }
 
+function agentChatId(agent) {
+  return agent.name.toLowerCase();
+}
+
+function agentByChatId(chatId) {
+  if (chatId === "all") return null;
+  return agents.find((agent) => agentChatId(agent) === chatId) || null;
+}
+
+function chatColor(chatId, author) {
+  if (chatId === "user") return "#4f5bd5";
+  const agent = agentByChatId(chatId) || agents.find((item) => item.name === author);
+  return agent?.color || "#4f5bd5";
+}
+
+function chatInitial(author) {
+  return author === "You" ? "You" : author.slice(0, 1);
+}
+
+function currentChatTime() {
+  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function selectedThread() {
+  if (!chatThreads.has(selectedChatId)) {
+    chatThreads.set(selectedChatId, []);
+  }
+  return chatThreads.get(selectedChatId);
+}
+
+function renderChatTargets() {
+  chatTarget.innerHTML = "";
+  const targets = [
+    { id: "all", label: "Team" },
+    ...agents.map((agent) => ({ id: agentChatId(agent), label: agent.name })),
+  ];
+  targets.forEach((target) => {
+    const option = document.createElement("option");
+    option.value = target.id;
+    option.textContent = target.label;
+    chatTarget.appendChild(option);
+  });
+  chatTarget.value = selectedChatId;
+}
+
+function renderChatMessages() {
+  const thread = selectedThread();
+  chatMessages.innerHTML = "";
+
+  if (thread.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "chat-bubble";
+    empty.textContent =
+      selectedChatId === "all"
+        ? "Team chat is ready. Ask the agents to coordinate."
+        : `Chat with ${agentByChatId(selectedChatId)?.name || "agent"} is ready.`;
+    chatMessages.appendChild(empty);
+    return;
+  }
+
+  thread.forEach((message) => {
+    const row = document.createElement("article");
+    row.className = `chat-message ${message.type === "user" ? "user" : "agent"}`;
+
+    const avatar = document.createElement("span");
+    avatar.className = "chat-avatar";
+    avatar.style.background = chatColor(message.type === "user" ? "user" : message.from, message.author);
+    avatar.textContent = chatInitial(message.author);
+
+    const body = document.createElement("div");
+    body.className = "chat-message-body";
+
+    const head = document.createElement("div");
+    head.className = "chat-message-head";
+    const author = document.createElement("strong");
+    author.textContent = message.author;
+    const time = document.createElement("time");
+    time.textContent = message.time || currentChatTime();
+    head.append(author, time);
+
+    const bubble = document.createElement("p");
+    bubble.className = "chat-bubble";
+    bubble.textContent = message.text;
+
+    body.append(head, bubble);
+    row.append(avatar, body);
+    chatMessages.appendChild(row);
+  });
+
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function appendChatMessage(chatId, message) {
+  if (!chatThreads.has(chatId)) {
+    chatThreads.set(chatId, []);
+  }
+  const entry = {
+    time: currentChatTime(),
+    ...message,
+  };
+  chatThreads.get(chatId).push(entry);
+  if (chatId === selectedChatId) renderChatMessages();
+  return entry;
+}
+
+function replaceChatMessage(chatId, current, next) {
+  const thread = chatThreads.get(chatId) || [];
+  const index = thread.indexOf(current);
+  if (index >= 0) {
+    thread.splice(index, 1, { time: currentChatTime(), ...next });
+  }
+  if (chatId === selectedChatId) renderChatMessages();
+}
+
+function normalizeAgentMessages(result, fallbackChatId) {
+  const source = Array.isArray(result.messages) && result.messages.length
+    ? result.messages
+    : [{ author: agentByChatId(fallbackChatId)?.name || "Coordinator", text: result.reply || "" }];
+
+  return source
+    .filter((message) => message?.text)
+    .map((message) => ({
+      author: message.author || agentByChatId(message.from)?.name || "Coordinator",
+      type: "agent",
+      from: message.from || fallbackChatId,
+      text: message.text,
+    }));
+}
+
+function fallbackAgentReply(chatId, userText) {
+  const agent = agentByChatId(chatId);
+  if (chatId === "all") {
+    return {
+      author: "Coordinator",
+      from: "coordinator",
+      text: `I queued this for the team: "${userText}". Mika, Scout, Dev and Nova will coordinate the next steps.`,
+    };
+  }
+  return {
+    author: agent?.name || "Agent",
+    from: chatId,
+    text: `Got it. I'll use this context and prepare the next step: "${userText}".`,
+  };
+}
+
+function setPanelTab(tab) {
+  const showChat = tab === "chat";
+  chatTab.classList.toggle("active", showChat);
+  activityTab.classList.toggle("active", !showChat);
+  chatTab.setAttribute("aria-selected", String(showChat));
+  activityTab.setAttribute("aria-selected", String(!showChat));
+  chatView.hidden = !showChat;
+  activityView.hidden = showChat;
+}
+
+async function requestAgentChat(chatId, text) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 90000);
+  try {
+    const history = selectedThread().slice(-12).map((message) => ({
+      role: message.type === "user" ? "user" : "assistant",
+      author: message.author,
+      text: message.text,
+    }));
+    const response = await fetch(AGENT_CHAT_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agentId: chatId,
+        message: text,
+        history,
+        sessionId: chatSessionId,
+      }),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `HTTP ${response.status}`);
+    }
+    return payload;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function sendChatMessage(event) {
+  event.preventDefault();
+  const text = chatInput.value.trim();
+  if (!text || chatBusy) return;
+
+  const chatId = selectedChatId;
+  chatInput.value = "";
+  appendChatMessage(chatId, { author: "You", type: "user", from: "user", text });
+  const loading = appendChatMessage(chatId, {
+    author: chatId === "all" ? "Coordinator" : agentByChatId(chatId)?.name || "Agent",
+    type: "agent",
+    from: chatId === "all" ? "coordinator" : chatId,
+    text: "Thinking...",
+  });
+
+  chatBusy = true;
+  chatSend.disabled = true;
+  addActivity(agents[selectedIndex], "chat", chatId === "all" ? "Team chat received a new request." : `${agentByChatId(chatId)?.name || "Agent"} received a direct message.`);
+
+  try {
+    const result = await requestAgentChat(chatId, text);
+    const replies = normalizeAgentMessages(result, chatId);
+    replaceChatMessage(chatId, loading, replies[0] || fallbackAgentReply(chatId, text));
+    replies.slice(1).forEach((reply) => appendChatMessage(chatId, reply));
+  } catch {
+    replaceChatMessage(chatId, loading, fallbackAgentReply(chatId, text));
+  } finally {
+    chatBusy = false;
+    chatSend.disabled = false;
+  }
+}
+
 function addActivity(agent, action, detail) {
   const item = document.createElement("article");
   item.className = "activity-item";
@@ -582,10 +849,13 @@ function selectAgent(index) {
   selectedIndex = index;
   const agent = agents[index];
   focusName.textContent = agent.name;
+  selectedChatId = agentChatId(agent);
   agent.state = agent.state === "working" ? "working" : "focused";
   agent.bubble = agent.state === "working" ? agent.bubble : "Focused";
   addActivity(agent, "selected", `${agent.role} is now in focus.`);
   renderRoster();
+  renderChatTargets();
+  renderChatMessages();
 }
 
 function assignTask(index = selectedIndex) {
@@ -897,8 +1167,17 @@ document.querySelector("#hireBtn").addEventListener("click", hireAgent);
 viewBtn.addEventListener("click", resetView);
 canvas.addEventListener("click", onCanvasClick);
 window.addEventListener("resize", resize);
+chatTab.addEventListener("click", () => setPanelTab("chat"));
+activityTab.addEventListener("click", () => setPanelTab("activity"));
+chatTarget.addEventListener("change", () => {
+  selectedChatId = chatTarget.value;
+  renderChatMessages();
+});
+chatComposer.addEventListener("submit", sendChatMessage);
 
 renderRoster();
+renderChatTargets();
+renderChatMessages();
 addActivity(agents[0], "online", "Workspace cell is ready.");
 addActivity(agents[2], "working", "Scanning market signals.");
 updateClock();
