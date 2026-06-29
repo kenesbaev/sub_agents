@@ -17,6 +17,7 @@ import requests
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data" / "telegram-agent-bridge"
 OFFSETS_FILE = DATA_DIR / "offsets.json"
+PENDING_POSTS_FILE = DATA_DIR / "pending_posts.json"
 DEFAULT_AGENT_API_URL = "http://127.0.0.1:4173/api/agents/chat"
 
 
@@ -36,6 +37,12 @@ AGENT_BOTS = (
     AgentBot("dex", "Dex", "Dex_REBLY_bot", "dev", "TELEGRAM_DEX_BOT_TOKEN"),
     AgentBot("echo", "Echo", "reblyai_bot", "nova", "TELEGRAM_ECHO_BOT_TOKEN"),
 )
+
+PUBLISH_REQUEST_WORDS = {"опубликуй", "отправь", "запости", "выложи", "publish", "send"}
+PUBLISH_CONFIRM_WORDS = {"да", "ок", "подтверждаю", "yes"}
+PUBLISH_CANCEL_WORDS = {"нет", "отмена", "no"}
+PUBLISH_FILLER_WORDS = {"пожалуйста", "плиз", "please", "pls", "можно", "давай", "ну"}
+PENDING_POSTS_LOCK = threading.Lock()
 
 
 def load_local_env(path: Path) -> None:
@@ -105,28 +112,6 @@ def team_message_delay_seconds() -> float:
         return 10.0
 
 
-def estimated_team_assignments(message: str) -> list[tuple[str, str]]:
-    lowered = message.lower()
-    assignments: list[tuple[str, str]] = []
-
-    def add(key: str, text: str) -> None:
-        if not any(existing_key == key for existing_key, _ in assignments):
-            assignments.append((key, text))
-
-    if any(word in lowered for word in ("пост", "контент", "сценар", "telegram", "телеграм", "канал", "reels", "shorts", "хук", "иде", "анонс")):
-        add("scout", "Atlas, беру контент: хук, структуру, аудиторию и готовый текст.")
-    if any(word in lowered for word in ("куп", "прод", "клиент", "цена", "сто", "оффер", "заяв", "лид", "заказ", "direct", "директ", "оплат")):
-        add("ava", "Atlas, проверю продажный угол, ценность, цену и следующий шаг.")
-    if any(word in lowered for word in ("аналит", "бизнес", "ворон", "метрик", "процесс", "код", "сайт", "разработ", "система", "ошиб", "баг")):
-        add("dex", "Atlas, проверю систему, процесс, риски и что можно улучшить.")
-    if any(word in lowered for word in ("ответ", "коммент", "сообщ", "поддерж", "faq", "негатив", "жалоб", "вопрос", "публикац", "опубли", "вылож", "канал", "телеграм", "telegram")):
-        add("echo", "Atlas, подготовлю тон, формат ответа и Telegram-ready вариант.")
-    if not assignments:
-        add("scout", "Atlas, быстро разложу задачу и подготовлю рабочий вариант.")
-        add("echo", "Atlas, проверю формулировку для общения с пользователем.")
-    return assignments[:4]
-
-
 def load_offsets() -> dict[str, int]:
     if not OFFSETS_FILE.exists():
         return {}
@@ -140,6 +125,152 @@ def load_offsets() -> dict[str, int]:
 def save_offsets(offsets: dict[str, int]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     OFFSETS_FILE.write_text(json.dumps(offsets, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def load_pending_posts() -> dict[str, Any]:
+    if not PENDING_POSTS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(PENDING_POSTS_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_pending_posts(data: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PENDING_POSTS_FILE.write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+
+
+def chat_store_key(chat_id: int | str) -> str:
+    return str(chat_id)
+
+
+def target_chat_id() -> str:
+    return (
+        os.environ.get("TELEGRAM_TARGET_CHAT_ID", "").strip()
+        or os.environ.get("TELEGRAM_GROUP_CHAT_ID", "").strip()
+    )
+
+
+def command_words(text: str) -> list[str]:
+    cleaned = re.sub(r"@[A-Za-z0-9_]+", "", text).strip().lower()
+    return re.findall(r"[a-zа-яё]+", cleaned, flags=re.IGNORECASE)
+
+
+def publish_command_kind(text: str) -> str:
+    words = command_words(text)
+    if not words or len(words) > 5:
+        return ""
+    meaningful = [word for word in words if word not in PUBLISH_FILLER_WORDS]
+    if not meaningful:
+        return ""
+    if len(meaningful) <= 2 and meaningful[0] in PUBLISH_CONFIRM_WORDS:
+        return "confirm"
+    if len(meaningful) <= 2 and meaningful[0] in PUBLISH_CANCEL_WORDS:
+        return "cancel"
+    if len(meaningful) <= 3 and meaningful[0] in PUBLISH_REQUEST_WORDS:
+        return "request"
+    return ""
+
+
+def is_publish_control_text(text: str) -> bool:
+    return bool(publish_command_kind(text))
+
+
+def remember_pending_post(chat_id: int | str, *, text: str, run_id: str = "", source: str = "team") -> None:
+    clean_text = text.strip()
+    if not clean_text:
+        return
+    key = chat_store_key(chat_id)
+    with PENDING_POSTS_LOCK:
+        data = load_pending_posts()
+        entry = data.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry["latest"] = {
+            "text": clean_text,
+            "runId": run_id,
+            "source": source,
+            "savedAt": int(time.time()),
+        }
+        data[key] = entry
+        save_pending_posts(data)
+
+
+def latest_pending_post(chat_id: int | str) -> dict[str, Any] | None:
+    key = chat_store_key(chat_id)
+    with PENDING_POSTS_LOCK:
+        entry = load_pending_posts().get(key)
+    if not isinstance(entry, dict):
+        return None
+    latest = entry.get("latest")
+    if not isinstance(latest, dict):
+        return None
+    text = str(latest.get("text") or "").strip()
+    return latest if text else None
+
+
+def set_publish_confirmation(chat_id: int | str, post: dict[str, Any], target: str) -> None:
+    key = chat_store_key(chat_id)
+    with PENDING_POSTS_LOCK:
+        data = load_pending_posts()
+        entry = data.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry["confirmation"] = {
+            "text": str(post.get("text") or "").strip(),
+            "targetChatId": target,
+            "runId": str(post.get("runId") or ""),
+            "requestedAt": int(time.time()),
+        }
+        data[key] = entry
+        save_pending_posts(data)
+
+
+def pending_publish_confirmation(chat_id: int | str) -> dict[str, Any] | None:
+    key = chat_store_key(chat_id)
+    with PENDING_POSTS_LOCK:
+        entry = load_pending_posts().get(key)
+    if not isinstance(entry, dict):
+        return None
+    confirmation = entry.get("confirmation")
+    if not isinstance(confirmation, dict):
+        return None
+    text = str(confirmation.get("text") or "").strip()
+    return confirmation if text else None
+
+
+def clear_publish_confirmation(chat_id: int | str) -> None:
+    key = chat_store_key(chat_id)
+    with PENDING_POSTS_LOCK:
+        data = load_pending_posts()
+        entry = data.get(key)
+        if isinstance(entry, dict) and "confirmation" in entry:
+            entry.pop("confirmation", None)
+            data[key] = entry
+            save_pending_posts(data)
+
+
+def extract_pending_publish(payload: dict[str, Any]) -> dict[str, str] | None:
+    pending = payload.get("pendingPublish")
+    if not isinstance(pending, dict):
+        return None
+    text = str(pending.get("text") or "").strip()
+    if not text:
+        return None
+    return {
+        "text": text,
+        "runId": str(pending.get("runId") or ""),
+        "source": str(pending.get("source") or "team"),
+    }
+
+
+def publish_preview(text: str, limit: int = 900) -> str:
+    clean = text.strip()
+    if len(clean) <= limit:
+        return clean
+    return clean[:limit].rstrip() + "\n..."
 
 
 def update_text(update: dict[str, Any]) -> str:
@@ -325,6 +456,98 @@ def send_agent_reply(
         telegram_call(session, token, "sendMessage", payload)
 
 
+def handle_publish_command(
+    session: requests.Session,
+    *,
+    token_by_key: dict[str, str],
+    chat_id: int | str,
+    text: str,
+    reply_to_message_id: int | None,
+) -> None:
+    echo_token = token_by_key.get("echo") or token_by_key.get("atlas")
+    if not echo_token:
+        return
+    kind = publish_command_kind(text)
+    if kind == "request":
+        post = latest_pending_post(chat_id)
+        if not post:
+            send_agent_reply(
+                session,
+                echo_token,
+                chat_id,
+                "Готового поста пока нет. Сначала попроси команду подготовить пост.",
+                reply_to_message_id=reply_to_message_id,
+            )
+            return
+        target = target_chat_id() or str(chat_id)
+        set_publish_confirmation(chat_id, post, target)
+        post_text = str(post.get("text") or "").strip()
+        send_agent_reply(
+            session,
+            echo_token,
+            chat_id,
+            (
+                f"Опубликовать последний готовый пост в {target}?\n"
+                "Ответь: да / нет.\n\n"
+                f"Пост:\n{publish_preview(post_text)}"
+            ),
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    if kind == "cancel":
+        if pending_publish_confirmation(chat_id):
+            clear_publish_confirmation(chat_id)
+            message = "Ок, публикацию отменил."
+        else:
+            message = "Активной публикации на подтверждении нет."
+        send_agent_reply(session, echo_token, chat_id, message, reply_to_message_id=reply_to_message_id)
+        return
+
+    if kind == "confirm":
+        confirmation = pending_publish_confirmation(chat_id)
+        if not confirmation:
+            send_agent_reply(
+                session,
+                echo_token,
+                chat_id,
+                "Нет публикации на подтверждении. Напиши «опубликуй» после готового поста.",
+                reply_to_message_id=reply_to_message_id,
+            )
+            return
+        target = str(confirmation.get("targetChatId") or target_chat_id() or chat_id)
+        post_text = str(confirmation.get("text") or "").strip()
+        try:
+            for part in split_telegram_text(post_text):
+                telegram_call(
+                    session,
+                    echo_token,
+                    "sendMessage",
+                    {
+                        "chat_id": target,
+                        "text": part,
+                        "disable_web_page_preview": False,
+                    },
+                )
+        except Exception as exc:
+            send_agent_reply(
+                session,
+                echo_token,
+                chat_id,
+                f"Не получилось опубликовать: {str(exc)[:700]}",
+                reply_to_message_id=reply_to_message_id,
+            )
+            return
+        clear_publish_confirmation(chat_id)
+        send_agent_reply(
+            session,
+            echo_token,
+            chat_id,
+            f"Опубликовал в {target}.",
+            reply_to_message_id=reply_to_message_id,
+        )
+
+
 def send_team_conversation(
     *,
     api_url: str,
@@ -336,32 +559,13 @@ def send_team_conversation(
 ) -> None:
     delay = team_message_delay_seconds()
     with requests.Session() as session:
-        assignments = estimated_team_assignments(message_text)
-        assignment_lines = "\n".join(
-            f"{bot_by_key[key].display_name}: {text}" for key, text in assignments
-        )
-        send_agent_reply(
-            session,
-            token_by_key["atlas"],
-            chat_id,
-            f"Принял задачу. Запускаю команду.\n\n{assignment_lines}",
-            reply_to_message_id=reply_to_message_id,
-        )
-        print("Team kickoff sent via Atlas", flush=True)
-        for key, text in assignments:
-            if delay:
-                time.sleep(delay)
-            bot = bot_by_key[key]
-            send_agent_reply(
-                session,
-                token_by_key[key],
-                chat_id,
-                text,
-                reply_to_message_id=None,
-            )
-            print(f"Team progress sent via {bot.display_name}", flush=True)
-
         try:
+            telegram_call(
+                session,
+                token_by_key["atlas"],
+                "sendChatAction",
+                {"chat_id": chat_id, "action": "typing"},
+            )
             payload = call_agent_payload(
                 session,
                 api_url=api_url,
@@ -371,35 +575,40 @@ def send_team_conversation(
                 message=message_text,
             )
             messages = normalized_team_messages(payload)
+            pending_publish = extract_pending_publish(payload)
+            if pending_publish:
+                remember_pending_post(
+                    chat_id,
+                    text=pending_publish["text"],
+                    run_id=pending_publish.get("runId", ""),
+                    source=pending_publish.get("source", "team"),
+                )
+                print(f"Stored pending Telegram post for chat={chat_id}", flush=True)
         except Exception as exc:
             send_agent_reply(
                 session,
                 token_by_key["atlas"],
                 chat_id,
-                f"Команда начала работу, но AI backend пока не вернул финальный отчёт: {str(exc)[:700]}",
-                reply_to_message_id=None,
+                f"AI backend error: {str(exc)[:700]}",
+                reply_to_message_id=reply_to_message_id,
             )
             print(f"Team AI run failed: {exc}", flush=True)
             return
 
         for index, item in enumerate(messages):
-            if delay:
+            if index and delay:
                 time.sleep(delay)
             key = bot_key_for_agent_id(item["from"])
             bot = bot_by_key.get(key) or bot_by_key["atlas"]
             token = token_by_key.get(key) or token_by_key["atlas"]
             text = item["text"]
             phase = item["phase"]
-            if phase == "internal":
-                text = f"Atlas, отчёт:\n{text}"
-            elif phase == "final":
-                text = f"Финальный отчёт:\n{text}"
             send_agent_reply(
                 session,
                 token,
                 chat_id,
                 text,
-                reply_to_message_id=None,
+                reply_to_message_id=reply_to_message_id if index == 0 else None,
             )
             print(f"Team message sent via {bot.display_name}: phase={phase or '-'}", flush=True)
 
@@ -482,10 +691,25 @@ def poll_bot(
                         f"from={sender_label} text={text[:80]!r}",
                         flush=True,
                     )
-                if not should_respond(update, bot, bot_id):
-                    continue
                 message = update.get("message") or {}
                 chat_id = chat.get("id")
+                publish_kind = publish_command_kind(text) if text and not sender.get("is_bot") else ""
+                should_handle_publish = publish_kind == "request" or (
+                    publish_kind in {"confirm", "cancel"} and chat_id is not None and pending_publish_confirmation(chat_id)
+                )
+                if should_handle_publish:
+                    if bot.key == "echo" and chat_id is not None:
+                        telegram_call(session, token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
+                        handle_publish_command(
+                            session,
+                            token_by_key=token_by_key,
+                            chat_id=chat_id,
+                            text=text,
+                            reply_to_message_id=message.get("message_id"),
+                        )
+                    continue
+                if not should_respond(update, bot, bot_id):
+                    continue
                 if chat_id is None:
                     continue
                 user_text = clean_message_for_agent(update_text(update), bot)

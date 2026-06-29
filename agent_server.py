@@ -121,10 +121,13 @@ PUBLISH_TRIGGERS = (
     "вылож",
     "запости",
     "публикац",
+    "пост",
     "telegram",
     "телеграм",
+    "тг",
     "канал",
     "tg",
+    "post",
 )
 PENDING_TEAM_RUNS: dict[str, dict[str, Any]] = {}
 
@@ -919,6 +922,9 @@ def run_team_chat(
         search_enabled=False,
     )
     final_reply, publish_text = split_publish_text(final_reply)
+    publish_text = resolve_publish_text(effective_message, final_reply, publish_text, reports)
+    if wants_telegram_publish(effective_message) and publish_text:
+        final_reply = append_copyable_post_block(final_reply, publish_text)
     pending_publish = build_pending_publish(
         effective_message,
         final_reply,
@@ -1155,6 +1161,9 @@ def build_coordinator_final_prompt(
             "Если задача просит Telegram-публикацию или постинг, не утверждай что пост уже опубликован.",
             "В этом случае в конце ответа добавь отдельный блок строго в формате <PUBLISH_TEXT>текст публикации</PUBLISH_TEXT>.",
             "Внутри <PUBLISH_TEXT> должен быть только текст, который можно отправить в Telegram, без служебных комментариев.",
+            "Текст внутри <PUBLISH_TEXT> должен быть готовым постом: сильный хук, живой Telegram-тон, короткие абзацы, конкретика, при необходимости bullets, CTA в конце.",
+            "Не пиши внутри готового поста служебные слова вроде: Atlas, Echo, вводные, допущение, отчет, универсальный пост, подготовил.",
+            "Если нет цены, модели, контакта или города, используй аккуратные плейсхолдеры: [цена], [модель], [контакт], [город].",
         ]
     )
     append_history(lines, history)
@@ -1872,6 +1881,106 @@ def split_publish_text(reply: str) -> tuple[str, str]:
     publish_text = match.group(1).strip()
     display_text = (reply[: match.start()] + reply[match.end() :]).strip()
     return display_text or "Готово. Текст подготовлен к публикации после подтверждения.", publish_text
+
+
+def resolve_publish_text(
+    user_message: str,
+    final_reply: str,
+    tagged_publish_text: str,
+    reports: list[dict[str, str]],
+) -> str:
+    if tagged_publish_text.strip():
+        return sanitize_publish_text(tagged_publish_text)
+    if not wants_telegram_publish(user_message):
+        return ""
+    final_candidate = extract_publish_text_from_text(final_reply)
+    if final_candidate:
+        return final_candidate
+    candidates: list[tuple[int, str]] = []
+    for report in reports:
+        candidate = extract_publish_text_from_text(str(report.get("text") or ""))
+        if not candidate:
+            continue
+        lowered = candidate.lower()
+        penalty = 0
+        if any(word in lowered for word in ("atlas,", "вопрос к atlas", "цель контента", "аудитория и боль")):
+            penalty += 300
+        candidates.append((len(candidate) - penalty, candidate))
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def extract_publish_text_from_text(text: str) -> str:
+    if not text.strip():
+        return ""
+    markers = (
+        "Готовый пост для копирования:",
+        "Publish-ready пост для Telegram",
+        "Готовый publish-ready текст:",
+        "Готовый publish-ready пост:",
+        "Publish-ready текст:",
+        "Черновик поста:",
+        "Готовый пост:",
+        "Готовый текст:",
+    )
+    for marker in markers:
+        match = re.search(re.escape(marker), text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        candidate = text[match.end() :].strip(" \n:-*")
+        return sanitize_publish_text(candidate)
+    return ""
+
+
+def sanitize_publish_text(text: str) -> str:
+    candidate = text.strip()
+    if not candidate:
+        return ""
+    candidate = re.sub(
+        r"^\s*\*?\s*\(?визуал[:：].*?(?:\)?\s*)?$",
+        "",
+        candidate,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    stop_patterns = (
+        r"^\s*(?:\*\*)?\s*Вопрос к Atlas\b.*$",
+        r"^\s*(?:\*\*)?\s*Мягкий оффер\s*:\s*$",
+        r"^\s*(?:\*\*)?\s*Следующий шаг\s*:\s*$",
+        r"^\s*(?:\*\*)?\s*Что прода[её]м\s*:\s*$",
+        r"^\s*(?:\*\*)?\s*Кто клиент\s*:\s*$",
+        r"^\s*(?:\*\*)?\s*Главный барьер\s*:\s*$",
+        r"^\s*(?:\*\*)?\s*Какую ценность показать\s*:\s*$",
+        r"^\s*\*{3,}\s*$",
+        r"^\s*---+\s*$",
+    )
+    cut_at = len(candidate)
+    for pattern in stop_patterns:
+        match = re.search(pattern, candidate, flags=re.IGNORECASE | re.MULTILINE)
+        if match:
+            cut_at = min(cut_at, match.start())
+    candidate = candidate[:cut_at].strip()
+    candidate = re.sub(r"^\s*Atlas,\s*", "", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"\n{3,}", "\n\n", candidate).strip()
+    if len(candidate) < 80:
+        return ""
+    return candidate[:4000]
+
+
+def append_copyable_post_block(display_text: str, publish_text: str) -> str:
+    post = publish_text.strip()
+    if not post:
+        return display_text.strip()
+    heading = "Готовый пост для копирования:"
+    display = display_text.strip()
+    if heading.lower() in display.lower():
+        return display
+    if post in display:
+        return display
+    if not display:
+        return f"{heading}\n{post}"
+    return f"{display}\n\n{heading}\n{post}"
 
 
 def build_pending_publish(
