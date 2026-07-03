@@ -26,6 +26,9 @@ const chatMessages = document.querySelector("#chatMessages");
 const chatComposer = document.querySelector("#chatComposer");
 const chatInput = document.querySelector("#chatInput");
 const chatSend = document.querySelector("#chatSend");
+const chatStop = document.querySelector("#chatStop");
+const chatFileInput = document.querySelector("#chatFileInput");
+const chatAttachmentPreview = document.querySelector("#chatAttachmentPreview");
 const chatResizeHandle = document.querySelector("#chatResizeHandle");
 
 const AGENT_CHAT_API_PATH = "/api/agents/chat";
@@ -42,6 +45,8 @@ const MAIN_WIDTH_MIN = 520;
 let accountKey = getGuestAccountKey();
 let chatSessionId = getOrCreateChatSessionId(accountKey);
 let storageReady = false;
+let selectedChatImages = [];
+let activeChatRun = null;
 
 function buildAgentChatApiCandidates() {
   const protocol = window.location.protocol || "http:";
@@ -1589,7 +1594,8 @@ function serializeChatThreads() {
       chatId,
       thread
         .filter((message) => message?.text && message.text !== "Thinking...")
-        .slice(-120),
+        .slice(-120)
+        .map(({ images, animate, ...message }) => message),
     ]),
   );
 }
@@ -1704,6 +1710,30 @@ function renderChatTargets() {
   chatTarget.value = selectedChatId;
 }
 
+function createMessageImageGrid(images = []) {
+  const validImages = images.filter((image) => image?.url);
+  if (!validImages.length) return null;
+
+  const media = document.createElement("div");
+  media.className = `chat-message-media ${validImages.length === 1 ? "single" : "many"}`;
+  media.dataset.count = String(Math.min(validImages.length, 6));
+
+  validImages.forEach((image) => {
+    const frame = document.createElement("span");
+    frame.className = "chat-message-image-frame";
+
+    const img = document.createElement("img");
+    img.src = image.url;
+    img.alt = image.name || "Attached image";
+    img.loading = "lazy";
+
+    frame.appendChild(img);
+    media.appendChild(frame);
+  });
+
+  return media;
+}
+
 function renderChatMessages() {
   const thread = selectedThread();
   chatMessages.innerHTML = "";
@@ -1755,7 +1785,14 @@ function renderChatMessages() {
     bubble.className = "chat-bubble";
     bubble.textContent = message.text;
 
-    body.append(head, bubble);
+    body.append(head);
+    const media = createMessageImageGrid(message.images);
+    if (media) {
+      body.append(media);
+    }
+    if (message.text) {
+      body.append(bubble);
+    }
     if (message.pendingPublish) {
       body.append(createPublishCard(selectedChatId, message));
     }
@@ -1780,6 +1817,122 @@ function scrollChatToBottom() {
     scroll();
     requestAnimationFrame(scroll);
   });
+}
+
+function isImageFile(file) {
+  return Boolean(file?.type?.startsWith("image/") || /\.(avif|gif|jpe?g|png|webp)$/i.test(file?.name || ""));
+}
+
+function addSelectedChatImages(fileList) {
+  const files = Array.from(fileList || []).filter(isImageFile);
+  files.forEach((file) => {
+    selectedChatImages.push({
+      id: randomStorageId(),
+      file,
+      url: URL.createObjectURL(file),
+      name: file.name,
+      size: file.size,
+      type: file.type,
+    });
+  });
+  renderSelectedChatImages();
+}
+
+function removeSelectedChatImage(id) {
+  const index = selectedChatImages.findIndex((image) => image.id === id);
+  if (index < 0) return;
+  URL.revokeObjectURL(selectedChatImages[index].url);
+  selectedChatImages.splice(index, 1);
+  renderSelectedChatImages();
+}
+
+function clearSelectedChatImages({ revoke = true } = {}) {
+  if (revoke) {
+    selectedChatImages.forEach((image) => URL.revokeObjectURL(image.url));
+  }
+  selectedChatImages = [];
+  if (chatFileInput) {
+    chatFileInput.value = "";
+  }
+  renderSelectedChatImages();
+}
+
+function renderSelectedChatImages() {
+  if (!chatAttachmentPreview) return;
+  chatAttachmentPreview.innerHTML = "";
+  chatComposer.classList.toggle("has-attachments", selectedChatImages.length > 0);
+  chatAttachmentPreview.hidden = selectedChatImages.length === 0;
+
+  selectedChatImages.forEach((image) => {
+    const item = document.createElement("span");
+    item.className = "chat-preview-item";
+
+    const thumb = document.createElement("img");
+    thumb.src = image.url;
+    thumb.alt = image.name || "Selected image";
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "chat-preview-remove";
+    remove.setAttribute("aria-label", `Remove ${image.name || "image"}`);
+    remove.textContent = "x";
+    remove.addEventListener("click", () => removeSelectedChatImage(image.id));
+
+    item.append(thumb, remove);
+    chatAttachmentPreview.appendChild(item);
+  });
+
+  updateChatSendState();
+}
+
+function updateChatSendState() {
+  if (!chatSend) return;
+  const hasText = Boolean(chatInput?.value.trim());
+  chatSend.disabled = chatBusy || (!hasText && selectedChatImages.length === 0);
+  chatComposer.classList.toggle("has-active-run", Boolean(activeChatRun));
+  if (chatStop) {
+    chatStop.hidden = !activeChatRun;
+    chatStop.disabled = Boolean(activeChatRun?.cancelRequested);
+    chatStop.setAttribute(
+      "aria-label",
+      activeChatRun?.cancelRequested ? "Stopping current task" : "Stop current task",
+    );
+  }
+}
+
+function createClientRunId() {
+  return `run-${randomStorageId()}`.replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 80);
+}
+
+function cancelUrlsForRun(runId) {
+  return AGENT_CHAT_API_CANDIDATES.map((apiUrl) =>
+    apiUrl.replace(AGENT_CHAT_API_PATH, `/api/agents/runs/${encodeURIComponent(runId)}/cancel`),
+  );
+}
+
+async function stopActiveChatRun() {
+  const run = activeChatRun;
+  if (!run || run.cancelRequested) return;
+  run.cancelRequested = true;
+  updateChatSendState();
+
+  const cancelRequests = cancelUrlsForRun(run.runId).map((url) =>
+    fetch(url, { method: "POST" }).catch(() => null),
+  );
+  await Promise.race([Promise.allSettled(cancelRequests), sleep(900)]);
+  run.controller?.abort();
+}
+
+function stoppedAgentReply(runId = "") {
+  return {
+    author: "System",
+    from: "system",
+    text: "Task stopped by user.",
+    phase: "final",
+    audience: "user",
+    isFinal: true,
+    runId,
+  };
 }
 
 function createPublishCard(chatId, message) {
@@ -1890,7 +2043,7 @@ function setPanelTab(tab) {
   if (showChat) scrollChatToBottom();
 }
 
-async function requestAgentChat(chatId, text) {
+async function requestAgentChat(chatId, text, files = [], runId = createClientRunId()) {
   const history = selectedThread()
     .filter((message) => message.text !== "Thinking...")
     .slice(-12)
@@ -1899,33 +2052,46 @@ async function requestAgentChat(chatId, text) {
       author: message.author,
       text: message.text,
     }));
-  const body = JSON.stringify({
+  const payload = {
     agentId: chatId,
     message: text,
     history,
     sessionId: chatSessionId,
     accountId: accountKey,
-  });
+    runId,
+  };
   let lastError = null;
   for (const [index, apiUrl] of AGENT_CHAT_API_CANDIDATES.entries()) {
     const controller = new AbortController();
+    if (activeChatRun?.runId === runId) {
+      activeChatRun.controller = controller;
+    }
     const timeout = window.setTimeout(() => controller.abort(), AGENT_CHAT_TIMEOUT_MS);
+    const request = files.length
+      ? {
+          method: "POST",
+          body: multipartAgentChatPayload(payload, files),
+          signal: controller.signal,
+        }
+      : {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        };
     try {
-      const response = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-        signal: controller.signal,
-      });
-      const payload = await response.json().catch(() => ({}));
+      const response = await fetch(apiUrl, request);
+      const responsePayload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.error || `HTTP ${response.status}`);
+        throw new Error(responsePayload.error || `HTTP ${response.status}`);
       }
-      return payload;
+      return responsePayload;
     } catch (error) {
       const timedOut = error instanceof DOMException && error.name === "AbortError";
       lastError = timedOut
-        ? new Error("Team request timed out. The AI backend is still too slow.")
+        ? new Error(activeChatRun?.runId === runId && activeChatRun.cancelRequested
+          ? "Task stopped by user."
+          : "Team request timed out. The AI backend is still too slow.")
         : error;
       const canRetryLoopback = error instanceof TypeError && index < AGENT_CHAT_API_CANDIDATES.length - 1;
       if (!canRetryLoopback) {
@@ -1933,9 +2099,19 @@ async function requestAgentChat(chatId, text) {
       }
     } finally {
       window.clearTimeout(timeout);
+      if (activeChatRun?.runId === runId && activeChatRun.controller === controller) {
+        activeChatRun.controller = null;
+      }
     }
   }
   throw lastError || new Error("AI backend request failed");
+}
+
+function multipartAgentChatPayload(payload, files) {
+  const body = new FormData();
+  body.append("payload", JSON.stringify(payload));
+  files.forEach((file) => body.append("files", file, file.name));
+  return body;
 }
 
 function sleep(ms) {
@@ -2069,7 +2245,8 @@ function markTeamAccepted(chatId, text) {
   });
 }
 
-async function playAgentMessages(chatId, loadingEntry, replies) {
+async function playAgentMessages(chatId, loadingEntry, replies, run = null) {
+  if (run?.cancelRequested) throw new Error("Task stopped by user.");
   const first = replies[0] || agentErrorReply(new Error(uiText("empty", "ru")));
   const firstActivity = phaseActivity(first, chatId);
   setAgentLiveState(firstActivity.agent, firstActivity.state, firstActivity.bubble);
@@ -2082,6 +2259,7 @@ async function playAgentMessages(chatId, loadingEntry, replies) {
   await sleep(520);
 
   for (const reply of replies.slice(1)) {
+    if (run?.cancelRequested) throw new Error("Task stopped by user.");
     const activity = phaseActivity(reply, chatId);
     setAgentLiveState(activity.agent, activity.state, activity.bubble);
     addActivity(activity.agent, activity.action, activity.detail);
@@ -2093,28 +2271,52 @@ async function playAgentMessages(chatId, loadingEntry, replies) {
 async function sendChatMessage(event) {
   event.preventDefault();
   const text = chatInput.value.trim();
-  if (!text || chatBusy) return;
+  const selectedImages = selectedChatImages.slice();
+  if ((!text && selectedImages.length === 0) || chatBusy) return;
 
   const chatId = selectedChatId;
+  const runId = createClientRunId();
+  const messageText = text || "Проанализируй фото.";
+  const filesForRequest = selectedImages.map((image) => image.file);
+  const messageImages = selectedImages.map((image) => ({
+    id: image.id,
+    url: image.url,
+    name: image.name,
+    size: image.size,
+    type: image.type,
+  }));
+
   chatInput.value = "";
-  appendChatMessage(chatId, { author: "You", type: "user", from: "user", text });
+  clearSelectedChatImages({ revoke: false });
+  appendChatMessage(chatId, {
+    author: "You",
+    type: "user",
+    from: "user",
+    text: messageText,
+    images: messageImages,
+    runId,
+  });
   let loading = null;
   if (chatId === "all") {
-    loading = markTeamAccepted(chatId, text);
+    loading = markTeamAccepted(chatId, messageText);
   } else {
-    const lang = detectUserLanguage(text);
+    const lang = detectUserLanguage(messageText);
     const agent = agentByChatId(chatId);
     setAgentLiveState(agent, "working", "Reading");
     addActivity(agent || agents[0], "direct", uiText("directActivity", lang));
   }
 
   chatBusy = true;
-  chatSend.disabled = true;
+  activeChatRun = { runId, chatId, controller: null, cancelRequested: false };
+  updateChatSendState();
 
   try {
-    const result = await requestAgentChat(chatId, text);
+    const result = await requestAgentChat(chatId, messageText, filesForRequest, runId);
+    if (activeChatRun?.runId === runId && activeChatRun.cancelRequested) {
+      throw new Error("Task stopped by user.");
+    }
     const replies = normalizeAgentMessages(result, chatId);
-    await playAgentMessages(chatId, loading, replies);
+    await playAgentMessages(chatId, loading, replies, activeChatRun);
     if (result.pendingPublish?.text) {
       const publishMessage = {
         author: "Echo",
@@ -2142,7 +2344,8 @@ async function sendChatMessage(event) {
       }
     }
   } catch (error) {
-    const errorReply = agentErrorReply(error);
+    const wasCancelled = activeChatRun?.runId === runId && activeChatRun.cancelRequested;
+    const errorReply = wasCancelled ? stoppedAgentReply(runId) : agentErrorReply(error);
     const activity = phaseActivity(errorReply, chatId);
     setAgentLiveState(activity.agent, activity.state, activity.bubble);
     addActivity(activity.agent, activity.action, activity.detail);
@@ -2152,8 +2355,11 @@ async function sendChatMessage(event) {
       appendChatMessage(chatId, errorReply);
     }
   } finally {
+    if (activeChatRun?.runId === runId) {
+      activeChatRun = null;
+    }
     chatBusy = false;
-    chatSend.disabled = false;
+    updateChatSendState();
   }
 }
 
@@ -2776,11 +2982,11 @@ if (renderer) {
   initializeAgentDestinations();
 }
 
-document.querySelector("#assignBtn").addEventListener("click", () => assignTask());
-document.querySelector("#shuffleBtn").addEventListener("click", shuffleTeam);
-document.querySelector("#celebrateBtn").addEventListener("click", celebrateTeam);
-document.querySelector("#hireBtn").addEventListener("click", hireAgent);
-viewBtn.addEventListener("click", resetView);
+document.querySelector("#assignBtn")?.addEventListener("click", () => assignTask());
+document.querySelector("#shuffleBtn")?.addEventListener("click", shuffleTeam);
+document.querySelector("#celebrateBtn")?.addEventListener("click", celebrateTeam);
+document.querySelector("#hireBtn")?.addEventListener("click", hireAgent);
+viewBtn?.addEventListener("click", resetView);
 canvas.addEventListener("click", onCanvasClick);
 window.addEventListener("resize", resize);
 chatTab.addEventListener("click", () => setPanelTab("chat"));
@@ -2793,12 +2999,21 @@ chatTarget?.addEventListener("change", () => {
   selectTeam();
 });
 chatComposer.addEventListener("submit", sendChatMessage);
+chatInput?.addEventListener("input", updateChatSendState);
+chatStop?.addEventListener("click", () => {
+  stopActiveChatRun();
+});
+chatFileInput?.addEventListener("change", () => {
+  addSelectedChatImages(chatFileInput.files);
+  chatFileInput.value = "";
+});
 
 window.addEventListener("message", handleParentMessage);
 setupChatResize();
 renderRoster();
 renderChatTargets();
 renderChatMessages();
+updateChatSendState();
 resolveAccountContext();
 addActivity(agents[0], "online", "Team workspace is ready.");
 updateClock();

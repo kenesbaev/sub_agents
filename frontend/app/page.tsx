@@ -64,9 +64,7 @@ function Header() {
   return (
     <header className="site-header">
       <Link className="brand" href="/">
-        <span className="brand-mark">
-          <Bot size={20} />
-        </span>
+        <img className="brand-logo-mark" src="/images/rebly-logo-mark.svg" alt="" />
         <span>Rebly AI</span>
       </Link>
       <nav className="top-nav" aria-label="Main navigation">

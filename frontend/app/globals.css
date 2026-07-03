@@ -112,6 +112,16 @@ a {
   box-shadow: inset 0 -6px 0 rgba(255, 255, 255, 0.18);
 }
 
+.brand-logo-mark {
+  display: block;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  border-radius: 9px;
+  object-fit: contain;
+  box-shadow: 0 10px 22px rgba(79, 67, 233, 0.18);
+}
+
 .top-nav {
   display: flex;
   align-items: center;
@@ -905,6 +915,11 @@ a {
   padding: 0 48px 38px;
 }
 
+.auth-google-only {
+  gap: 14px;
+  padding-top: 2px;
+}
+
 .name-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -966,6 +981,21 @@ a {
   font-weight: 800;
 }
 
+.google-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.google-button-shell {
+  display: grid;
+  min-height: 44px;
+  place-items: center;
+}
+
+.google-button-shell > div {
+  max-width: 100%;
+}
+
 .google-icon {
   width: 18px;
   height: 18px;
@@ -977,6 +1007,22 @@ a {
   background: color-mix(in srgb, var(--red) 10%, var(--panel));
   color: var(--red);
   padding: 10px 12px;
+}
+
+.auth-status {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.spin {
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .auth-switch,
@@ -1471,14 +1517,10 @@ a {
 }
 
 .dash-logo {
-  display: grid;
-  place-items: center;
   width: 34px;
   height: 34px;
-  border: 1px solid #c8d1ff;
-  border-radius: 10px;
-  background: #eef0ff;
-  color: #4f5bd5;
+  border-radius: 8px;
+  box-shadow: 0 8px 18px rgba(79, 67, 233, 0.14);
 }
 
 .new-team {

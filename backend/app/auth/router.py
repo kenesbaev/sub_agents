@@ -12,7 +12,14 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db.session import get_db
 from app.models import User
-from app.schemas import AuthResponse, LoginRequest, RegisterRequest, UserResponse
+from app.schemas import (
+    AuthResponse,
+    GoogleConfigResponse,
+    GoogleCredentialRequest,
+    LoginRequest,
+    RegisterRequest,
+    UserResponse,
+)
 from app.security import (
     OAUTH_STATE_COOKIE,
     clear_session_cookie,
@@ -35,6 +42,59 @@ def serialize_user(user: User) -> UserResponse:
         google_connected=bool(user.google_sub),
         created_at=user.created_at,
     )
+
+
+def verify_google_identity(raw_id_token: str) -> dict:
+    settings = get_settings()
+    if not settings.google_client_id:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Google sign-in is not configured")
+
+    try:
+        id_info = id_token.verify_oauth2_token(
+            raw_id_token,
+            google_requests.Request(),
+            settings.google_client_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google identity") from exc
+
+    if id_info.get("iss") not in {"accounts.google.com", "https://accounts.google.com"}:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google issuer")
+
+    if id_info.get("email_verified") not in {True, "true", "True", "1", 1}:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google email is not verified")
+
+    return id_info
+
+
+def upsert_google_user(id_info: dict, db: Session) -> User:
+    google_sub = id_info.get("sub")
+    email = (id_info.get("email") or "").lower()
+    if not google_sub or not email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google profile is missing email")
+
+    user = db.scalar(select(User).where(User.google_sub == google_sub))
+    if not user:
+        user = db.scalar(select(User).where(User.email == email))
+
+    if user:
+        user.google_sub = user.google_sub or google_sub
+        user.avatar_url = user.avatar_url or id_info.get("picture")
+        user.first_name = user.first_name or id_info.get("given_name")
+        user.last_name = user.last_name or id_info.get("family_name")
+    else:
+        user = User(
+            email=email,
+            google_sub=google_sub,
+            first_name=id_info.get("given_name"),
+            last_name=id_info.get("family_name"),
+            avatar_url=id_info.get("picture"),
+        )
+        db.add(user)
+
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 @router.post("/register", response_model=AuthResponse)
@@ -75,6 +135,25 @@ def me(user: User = Depends(get_current_user)) -> AuthResponse:
 def logout(response: Response) -> dict[str, bool]:
     clear_session_cookie(response)
     return {"ok": True}
+
+
+@router.get("/google/config", response_model=GoogleConfigResponse)
+def google_config() -> GoogleConfigResponse:
+    settings = get_settings()
+    if not settings.google_client_id:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Google sign-in is not configured")
+    return GoogleConfigResponse(client_id=settings.google_client_id)
+
+
+@router.post("/google", response_model=AuthResponse)
+def google_token_login(
+    payload: GoogleCredentialRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> AuthResponse:
+    user = upsert_google_user(verify_google_identity(payload.credential), db)
+    set_session_cookie(response, user.id)
+    return AuthResponse(user=serialize_user(user))
 
 
 @router.get("/google/start")
@@ -146,32 +225,7 @@ async def google_callback(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google identity") from exc
 
-    google_sub = id_info.get("sub")
-    email = (id_info.get("email") or "").lower()
-    if not google_sub or not email:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google profile is missing email")
-
-    user = db.scalar(select(User).where(User.google_sub == google_sub))
-    if not user:
-        user = db.scalar(select(User).where(User.email == email))
-
-    if user:
-        user.google_sub = user.google_sub or google_sub
-        user.avatar_url = user.avatar_url or id_info.get("picture")
-        user.first_name = user.first_name or id_info.get("given_name")
-        user.last_name = user.last_name or id_info.get("family_name")
-    else:
-        user = User(
-            email=email,
-            google_sub=google_sub,
-            first_name=id_info.get("given_name"),
-            last_name=id_info.get("family_name"),
-            avatar_url=id_info.get("picture"),
-        )
-        db.add(user)
-
-    db.commit()
-    db.refresh(user)
+    user = upsert_google_user(id_info, db)
 
     response = RedirectResponse(f"{str(settings.frontend_url).rstrip('/')}/dashboard")
     set_session_cookie(response, user.id)

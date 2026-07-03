@@ -19,34 +19,12 @@
     <div class="app-shell">
       <header class="topbar">
         <div class="brand">
-          <span class="brand-mark" aria-hidden="true">A</span>
+          <img class="brand-mark" src="/images/rebly-logo-mark.svg" alt="" aria-hidden="true" />
           <div>
             <h1>Agent Office</h1>
             <p id="teamStatus">5 agents online</p>
           </div>
         </div>
-        <nav class="toolbar" aria-label="Agent actions">
-          <button id="assignBtn" class="tool-button primary" title="Assign task" aria-label="Assign task">
-            <span aria-hidden="true">▶</span>
-            <span>Task</span>
-          </button>
-          <button id="shuffleBtn" class="tool-button" title="Rotate seats" aria-label="Rotate seats">
-            <span aria-hidden="true">⇄</span>
-            <span>Move</span>
-          </button>
-          <button id="celebrateBtn" class="tool-button" title="Celebrate" aria-label="Celebrate">
-            <span aria-hidden="true">★</span>
-            <span>Win</span>
-          </button>
-          <button id="viewBtn" class="tool-button" title="Reset camera" aria-label="Reset camera">
-            <span aria-hidden="true">↺</span>
-            <span>View</span>
-          </button>
-          <button id="hireBtn" class="tool-button" title="Hire agent" aria-label="Hire agent">
-            <span aria-hidden="true">＋</span>
-            <span>Hire</span>
-          </button>
-        </nav>
       </header>
 
       <main class="workspace">
@@ -102,8 +80,16 @@
             <select id="chatTarget" class="visually-hidden" aria-label="Choose chat target"></select>
             <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
             <form id="chatComposer" class="chat-composer">
+              <div id="chatAttachmentPreview" class="chat-attachment-preview" aria-live="polite" hidden></div>
+              <label class="chat-attach-button" for="chatFileInput" aria-label="Attach images">
+                <span aria-hidden="true">+</span>
+              </label>
+              <input id="chatFileInput" class="chat-file-input" type="file" accept="image/*" multiple />
               <input id="chatInput" type="text" autocomplete="off" placeholder="Ask to follow up..." />
-              <button id="chatSend" type="submit" aria-label="Send message">
+              <button id="chatStop" class="chat-stop-button" type="button" aria-label="Stop current task" hidden>
+                <span aria-hidden="true"></span>
+              </button>
+              <button id="chatSend" class="chat-send-button" type="submit" aria-label="Send message">
                 <span class="send-icon" aria-hidden="true"></span>
               </button>
             </form>

@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.error
 import urllib.request
 import uuid
@@ -130,6 +131,98 @@ PUBLISH_TRIGGERS = (
     "post",
 )
 PENDING_TEAM_RUNS: dict[str, dict[str, Any]] = {}
+ACTIVE_AGENT_RUNS: dict[str, dict[str, Any]] = {}
+ACTIVE_AGENT_RUNS_LOCK = threading.Lock()
+
+
+class AgentRunCancelled(RuntimeError):
+    def __init__(self, run_id: str) -> None:
+        super().__init__("Task stopped by user.")
+        self.run_id = run_id
+
+
+def normalize_run_id(value: object | None = None) -> str:
+    raw = str(value or "").strip()
+    clean = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw)[:80].strip(".-")
+    return clean or f"run-{uuid.uuid4().hex[:12]}"
+
+
+def start_agent_run(
+    run_id: str,
+    *,
+    agent_id: str,
+    session_id: str,
+    account_id: str,
+    message: str,
+) -> None:
+    with ACTIVE_AGENT_RUNS_LOCK:
+        ACTIVE_AGENT_RUNS[run_id] = {
+            "runId": run_id,
+            "agentId": agent_id,
+            "sessionId": session_id,
+            "accountId": account_id,
+            "message": message[:500],
+            "cancel": threading.Event(),
+            "processes": set(),
+        }
+
+
+def finish_agent_run(run_id: str) -> None:
+    with ACTIVE_AGENT_RUNS_LOCK:
+        ACTIVE_AGENT_RUNS.pop(run_id, None)
+
+
+def request_agent_run_cancel(run_id: str) -> bool:
+    with ACTIVE_AGENT_RUNS_LOCK:
+        run = ACTIVE_AGENT_RUNS.get(run_id)
+        if not run:
+            return False
+        run["cancel"].set()
+        processes = list(run.get("processes") or [])
+
+    for process in processes:
+        kill_process(process)
+    return True
+
+
+def is_agent_run_cancelled(run_id: str) -> bool:
+    if not run_id:
+        return False
+    with ACTIVE_AGENT_RUNS_LOCK:
+        run = ACTIVE_AGENT_RUNS.get(run_id)
+        return bool(run and run["cancel"].is_set())
+
+
+def check_agent_run_cancelled(run_id: str) -> None:
+    if is_agent_run_cancelled(run_id):
+        raise AgentRunCancelled(run_id)
+
+
+def register_agent_process(run_id: str, process: subprocess.Popen[str]) -> None:
+    if not run_id:
+        return
+    with ACTIVE_AGENT_RUNS_LOCK:
+        run = ACTIVE_AGENT_RUNS.get(run_id)
+        if run:
+            run["processes"].add(process)
+
+
+def unregister_agent_process(run_id: str, process: subprocess.Popen[str]) -> None:
+    if not run_id:
+        return
+    with ACTIVE_AGENT_RUNS_LOCK:
+        run = ACTIVE_AGENT_RUNS.get(run_id)
+        if run:
+            run["processes"].discard(process)
+
+
+def kill_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        process.kill()
+    except OSError:
+        pass
 
 AGENTS: dict[str, dict[str, str]] = {
     "all": {
@@ -448,17 +541,34 @@ class AgentHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:
-        if self.path != "/api/agents/chat":
+        path = self.path.split("?", 1)[0]
+        cancel_match = re.fullmatch(r"/api/agents/runs/([^/]+)/cancel", path)
+        if cancel_match:
+            run_id = normalize_run_id(cancel_match.group(1))
+            found = request_agent_run_cancel(run_id)
+            self._send_json(
+                {
+                    "ok": True,
+                    "runId": run_id,
+                    "status": "cancel_requested" if found else "not_found",
+                }
+            )
+            return
+
+        if path != "/api/agents/chat":
             self.send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
             return
 
         turn_context: TurnContext | None = None
+        run_id = ""
+        run_started = False
         try:
             payload, upload_parts = self._read_payload()
             agent_id = str(payload.get("agentId", "all"))
             message = str(payload.get("message", "")).strip()
             session_id = str(payload.get("sessionId", "")).strip() or "local-browser"
             account_id = normalize_account_id(str(payload.get("accountId", "")).strip() or ACCOUNT_ID)
+            run_id = normalize_run_id(payload.get("runId"))
             history = clean_client_history(payload.get("history", []), current_message=message)
             raw_attachments = payload.get("attachments", [])
             if not isinstance(raw_attachments, list):
@@ -470,19 +580,51 @@ class AgentHandler(SimpleHTTPRequestHandler):
                 self._send_json({"error": "Неизвестный агент."}, status=HTTPStatus.BAD_REQUEST)
                 return
 
+            start_agent_run(
+                run_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                account_id=account_id,
+                message=message,
+            )
+            run_started = True
             turn_context = build_turn_context(
                 message=message,
                 raw_attachments=raw_attachments,
                 upload_parts=upload_parts,
                 data_dir=DATA_DIR,
             )
+            check_agent_run_cancelled(run_id)
 
             if agent_id == "all":
-                result = run_team_chat(session_id, account_id, turn_context, history)
+                result = run_team_chat(session_id, account_id, turn_context, history, run_id=run_id)
+                result["runId"] = run_id
                 self._send_json(result)
                 return
 
-            self._send_json(run_direct_agent_chat(session_id, account_id, agent_id, turn_context, history))
+            result = run_direct_agent_chat(session_id, account_id, agent_id, turn_context, history, run_id=run_id)
+            result["runId"] = run_id
+            self._send_json(result)
+        except AgentRunCancelled as exc:
+            self._send_json(
+                {
+                    "ok": False,
+                    "cancelled": True,
+                    "runId": exc.run_id,
+                    "reply": "Task stopped by user.",
+                    "messages": [
+                        agent_message(
+                            "System",
+                            "Task stopped by user.",
+                            phase="final",
+                            audience="user",
+                            from_id="system",
+                            is_final=True,
+                            run_id=exc.run_id,
+                        )
+                    ],
+                }
+            )
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:
@@ -490,6 +632,8 @@ class AgentHandler(SimpleHTTPRequestHandler):
         finally:
             if turn_context is not None:
                 turn_context.cleanup()
+            if run_started:
+                finish_agent_run(run_id)
 
     def _read_payload(self) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         size = int(self.headers.get("Content-Length", "0"))
@@ -507,7 +651,10 @@ class AgentHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
 
 def build_prompt(
@@ -656,7 +803,10 @@ def run_direct_agent_chat(
     agent_id: str,
     turn_context: TurnContext,
     history: object | None = None,
+    *,
+    run_id: str,
 ) -> dict[str, Any]:
+    check_agent_run_cancelled(run_id)
     store = get_memory(agent_id, account_id=account_id)
     crm = get_crm(account_id=account_id)
     message_id = store.add_message(
@@ -685,7 +835,9 @@ def run_direct_agent_chat(
         agent_id=agent_id,
         image_paths=turn_context.image_paths,
         search_enabled=wants_web_search(agent_id, turn_context.message, turn_context.tool_context),
+        run_id=run_id,
     )
+    check_agent_run_cancelled(run_id)
     reply_id = store.add_message(
         role="assistant",
         author=AGENTS[agent_id]["name"],
@@ -718,6 +870,7 @@ def run_direct_agent_chat(
                 audience="user",
                 from_id=agent_id,
                 is_final=True,
+                run_id=run_id,
             )
         ],
         "agent": agent_payload(agent_id),
@@ -729,8 +882,10 @@ def run_team_chat(
     account_id: str,
     turn_context: TurnContext,
     history: object | None = None,
+    *,
+    run_id: str,
 ) -> dict[str, Any]:
-    run_id = uuid.uuid4().hex[:12]
+    check_agent_run_cancelled(run_id)
     pending_key = f"{account_id}:{session_id}"
     pending = PENDING_TEAM_RUNS.pop(pending_key, None)
     effective_message = turn_context.message
@@ -765,6 +920,7 @@ def run_team_chat(
         effective_message=effective_message,
         history=team_history,
     )
+    check_agent_run_cancelled(run_id)
     assignments = normalize_assignments(decision.get("assignments"))
     coordinator_note = str(decision.get("coordinatorMessage") or decision.get("summary") or "").strip()
     action = str(decision.get("action") or "").strip().lower()
@@ -817,7 +973,9 @@ def run_team_chat(
             agent_id="coordinator",
             image_paths=turn_context.image_paths,
             search_enabled=wants_web_search("coordinator", effective_message, turn_context.tool_context),
+            run_id=run_id,
         )
+        check_agent_run_cancelled(run_id)
         coordinator.add_message(
             role="assistant",
             author=AGENTS["coordinator"]["name"],
@@ -883,6 +1041,7 @@ def run_team_chat(
     )
 
     reports: list[dict[str, str]] = []
+    check_agent_run_cancelled(run_id)
     for item in run_assignment_reports(
         assignments,
         effective_message,
@@ -902,6 +1061,7 @@ def run_team_chat(
         account_id=account_id,
         effective_message=effective_message,
     )
+    check_agent_run_cancelled(run_id)
     for item in followups:
         messages.append(item["message"])
         reports.append(item["report"])
@@ -920,7 +1080,9 @@ def run_team_chat(
         agent_id="coordinator",
         image_paths=turn_context.image_paths,
         search_enabled=False,
+        run_id=run_id,
     )
+    check_agent_run_cancelled(run_id)
     final_reply, publish_text = split_publish_text(final_reply)
     publish_text = resolve_publish_text(effective_message, final_reply, publish_text, reports)
     if wants_telegram_publish(effective_message) and publish_text:
@@ -989,7 +1151,9 @@ def coordinator_decision(
         agent_id="coordinator",
         image_paths=turn_context.image_paths,
         search_enabled=False,
+        run_id=run_id,
     )
+    check_agent_run_cancelled(run_id)
     parsed = parse_json_object(raw)
     if isinstance(parsed, dict):
         return parsed
@@ -1353,6 +1517,7 @@ def run_assignment_reports(
     account_id: str,
     history: object | None = None,
 ) -> list[dict[str, Any]]:
+    check_agent_run_cancelled(run_id)
     if len(assignments) <= 1:
         return [
             run_single_assignment_report(
@@ -1384,7 +1549,9 @@ def run_assignment_reports(
             for assignment in assignments
         ]
         for index, future in enumerate(futures):
+            check_agent_run_cancelled(run_id)
             results[index] = future.result()
+            check_agent_run_cancelled(run_id)
     return [item for item in results if item is not None]
 
 
@@ -1397,6 +1564,7 @@ def run_single_assignment_report(
     account_id: str,
     history: object | None = None,
 ) -> dict[str, Any]:
+    check_agent_run_cancelled(run_id)
     agent_id = assignment["agentId"]
     agent_store = get_memory(agent_id, account_id=account_id)
     agent_store.add_message(
@@ -1434,7 +1602,9 @@ def run_single_assignment_report(
             assignment["task"],
             turn_context.tool_context,
         ),
+        run_id=run_id,
     )
+    check_agent_run_cancelled(run_id)
     report_message_id = agent_store.add_message(
         role="assistant",
         author=AGENTS[agent_id]["name"],
@@ -1485,6 +1655,7 @@ def run_internal_followups(
     followups: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for report in reports[:4]:
+        check_agent_run_cancelled(run_id)
         question = extract_agent_question(report["text"])
         if question is None:
             continue
@@ -1510,7 +1681,9 @@ def run_internal_followups(
             agent_id=target_id,
             image_paths=turn_context.image_paths,
             search_enabled=wants_web_search(target_id, message, question_text, turn_context.tool_context),
+            run_id=run_id,
         )
+        check_agent_run_cancelled(run_id)
         target_store.add_message(
             role="assistant",
             author=AGENTS[target_id]["name"],
@@ -2017,15 +2190,20 @@ def run_ai(
     agent_id: str = "coordinator",
     image_paths: list[Path] | None = None,
     search_enabled: bool | None = None,
+    run_id: str = "",
 ) -> str:
+    check_agent_run_cancelled(run_id)
     try:
-        return run_openrouter(
+        reply = run_openrouter(
             prompt,
             agent_id=agent_id,
             image_paths=image_paths or [],
             search_enabled=search_enabled,
         )
+        check_agent_run_cancelled(run_id)
+        return reply
     except RuntimeError as openrouter_error:
+        check_agent_run_cancelled(run_id)
         print(
             f"OpenRouter failed for {agent_id}, falling back to Codex: {str(openrouter_error)[-300:]}",
             flush=True,
@@ -2036,6 +2214,7 @@ def run_ai(
                 agent_id=agent_id,
                 image_paths=image_paths,
                 search_enabled=search_enabled,
+                run_id=run_id,
             )
         except RuntimeError as codex_error:
             openrouter_detail = str(openrouter_error)[-500:]
@@ -2132,7 +2311,9 @@ def run_codex(
     agent_id: str = "coordinator",
     image_paths: list[Path] | None = None,
     search_enabled: bool | None = None,
+    run_id: str = "",
 ) -> str:
+    check_agent_run_cancelled(run_id)
     if not shutil.which("codex"):
         raise RuntimeError("Codex CLI не найден. Запусти сервер на машине, где доступен codex.")
 
@@ -2156,13 +2337,18 @@ def run_codex(
             continue
         tried.add(key)
         try:
+            kwargs: dict[str, Any] = {}
+            if run_id:
+                kwargs["run_id"] = run_id
             return _run_codex_once(
                 prompt,
                 model=attempt_model,
                 image_paths=image_paths or [],
                 search_enabled=attempt_search,
+                **kwargs,
             )
         except RuntimeError as exc:
+            check_agent_run_cancelled(run_id)
             detail = str(exc).lower()
             can_fallback_search = attempt_search and any(
                 marker in detail for marker in SEARCH_FALLBACK_MARKERS
@@ -2185,7 +2371,9 @@ def _run_codex_once(
     model: str | None,
     image_paths: list[Path],
     search_enabled: bool,
+    run_id: str = "",
 ) -> str:
+    check_agent_run_cancelled(run_id)
     with tempfile.TemporaryDirectory(prefix="n1n-agent-") as temp_dir:
         output_file = Path(temp_dir) / "reply.txt"
         command = ["codex", "-a", "never"]
@@ -2209,22 +2397,37 @@ def _run_codex_once(
         if model:
             command.extend(["--model", model])
         command.append("-")
-        process = subprocess.run(
+        process = subprocess.Popen(
             command,
-            input=prompt,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            capture_output=True,
             env=codex_environment(),
-            check=False,
         )
+        register_agent_process(run_id, process)
+        pending_input: str | None = prompt
+        stdout = ""
+        stderr = ""
+        try:
+            while True:
+                try:
+                    stdout, stderr = process.communicate(input=pending_input, timeout=0.25)
+                    break
+                except subprocess.TimeoutExpired:
+                    pending_input = None
+                    check_agent_run_cancelled(run_id)
+        finally:
+            unregister_agent_process(run_id, process)
+        check_agent_run_cancelled(run_id)
         if process.returncode != 0:
-            detail = (process.stderr or process.stdout or "Codex CLI failed").strip()
+            detail = (stderr or stdout or "Codex CLI failed").strip()
             raise RuntimeError(detail[-1200:])
         if output_file.exists():
             reply = output_file.read_text(encoding="utf-8").strip()
             if reply:
                 return reply
-        reply = process.stdout.strip()
+        reply = stdout.strip()
         if reply:
             return reply
     raise RuntimeError("Codex вернул пустой ответ.")

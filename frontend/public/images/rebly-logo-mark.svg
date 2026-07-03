@@ -1,0 +1,35 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="256" height="256" rx="54" fill="url(#reblyGradient)"/>
+  <path
+    d="M83 63H159C180.5 63 196 78.3 196 98.2C196 113.8 187.6 127.8 170 138.2L103.2 177.6C95.5 182.1 98.7 194 107.7 194H150.8"
+    stroke="#FFFFFF"
+    stroke-width="28"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M72 126C103 124 124 111 143 92"
+    stroke="#FFFFFF"
+    stroke-width="24"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path d="M139 76L171 86L148 111L139 76Z" fill="#FFFFFF"/>
+  <circle cx="67" cy="127" r="22" fill="url(#reblyGradient)" stroke="#FFFFFF" stroke-width="14"/>
+  <path
+    d="M149 194C171 194 184 181 195 165"
+    stroke="#FFFFFF"
+    stroke-width="24"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path d="M185 145L217 151L197 178L185 145Z" fill="#FFFFFF"/>
+  <circle cx="181" cy="194" r="22" fill="url(#reblyGradient)" stroke="#FFFFFF" stroke-width="14"/>
+  <defs>
+    <linearGradient id="reblyGradient" x1="21" y1="39" x2="237" y2="224" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0648FF"/>
+      <stop offset="0.52" stop-color="#5A38F7"/>
+      <stop offset="1" stop-color="#C42AF3"/>
+    </linearGradient>
+  </defs>
+</svg>

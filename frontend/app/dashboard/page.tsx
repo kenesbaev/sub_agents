@@ -565,9 +565,7 @@ export default function DashboardPage() {
     <main className="dashboard">
       <aside className="sidebar">
         <Link className="dash-brand" href="/">
-          <span className="dash-logo">
-            <Bot size={18} />
-          </span>
+          <img className="dash-logo brand-logo-mark" src="/images/rebly-logo-mark.svg" alt="" />
           <span>Rebly AI</span>
         </Link>
 

@@ -15,6 +15,14 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class GoogleConfigResponse(BaseModel):
+    client_id: str
+
+
+class GoogleCredentialRequest(BaseModel):
+    credential: str = Field(min_length=20, max_length=4096)
+
+
 class UserResponse(BaseModel):
     id: int
     email: EmailStr

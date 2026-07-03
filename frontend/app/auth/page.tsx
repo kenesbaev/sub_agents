@@ -1,13 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { Bot, Loader2 } from "lucide-react";
-import { FormEvent, Suspense, useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { Suspense, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
-type Mode = "signup" | "login";
 
 function GoogleIcon() {
   return (
@@ -33,129 +30,34 @@ function GoogleIcon() {
 }
 
 function AuthContent() {
-  const searchParams = useSearchParams();
-  const requestedMode = searchParams.get("mode") === "login" ? "login" : "signup";
-  const [mode, setMode] = useState<Mode>(requestedMode);
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    setMode(requestedMode);
-  }, [requestedMode]);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError("");
-    setLoading(true);
-    const endpoint = mode === "signup" ? "/api/auth/register" : "/api/auth/login";
-    const body =
-      mode === "signup"
-        ? { first_name: firstName || null, last_name: lastName || null, email, password }
-        : { email, password };
-
-    try {
-      const response = await fetch(`${API_URL}${endpoint}`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload.detail || "Authentication failed");
-      }
-      window.location.href = "/dashboard";
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Authentication failed");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   function googleLogin() {
+    setLoading(true);
     window.location.href = `${API_URL}/api/auth/google/start`;
   }
-
-  const signup = mode === "signup";
 
   return (
     <main className="grid-page auth-page">
       <section className="auth-card">
         <div className="auth-top">
           <Link className="brand" href="/">
-            <span className="brand-mark">
-              <Bot size={20} />
-            </span>
+            <img className="brand-logo-mark" src="/images/rebly-logo-mark.svg" alt="" />
             <span>Rebly AI</span>
           </Link>
-          <h1>{signup ? "Create your account" : "Welcome back"}</h1>
-          <p>{signup ? "Fill in the details to get started." : "Sign in to open your AI workspace."}</p>
+          <h1>Welcome back</h1>
+          <p>Sign in with Google to open your AI workspace.</p>
         </div>
 
-        <form className="auth-form" onSubmit={submit}>
-          {signup && (
-            <div className="name-grid">
-              <label className="field">
-                <span>
-                  First name <small>Optional</small>
-                </span>
-                <input value={firstName} onChange={(event) => setFirstName(event.target.value)} placeholder="First name" />
-              </label>
-              <label className="field">
-                <span>
-                  Last name <small>Optional</small>
-                </span>
-                <input value={lastName} onChange={(event) => setLastName(event.target.value)} placeholder="Last name" />
-              </label>
-            </div>
-          )}
-
-          <label className="field">
-            Email address
-            <input
-              required
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="you@example.com"
-              autoComplete="email"
-            />
-          </label>
-
-          <label className="field">
-            Password
-            <input
-              required
-              minLength={8}
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="••••••••"
-              autoComplete={signup ? "new-password" : "current-password"}
-            />
-          </label>
-
-          {error && <div className="auth-error">{error}</div>}
-
-          <button className="auth-submit" type="submit" disabled={loading}>
-            {loading ? <Loader2 size={18} /> : signup ? "Continue" : "Sign in"}
+        <div className="auth-form auth-google-only">
+          <button className="google-button" type="button" onClick={googleLogin} disabled={loading}>
+            {loading ? <Loader2 className="spin" size={18} /> : <GoogleIcon />}
+            Continue with Google
           </button>
 
-          <button className="google-button" type="button" onClick={googleLogin}>
-            <GoogleIcon /> Continue with Google
-          </button>
-        </form>
-
-        <div className="auth-switch">
-          {signup ? "Already have an account? " : "Need an account? "}
-          <button type="button" onClick={() => setMode(signup ? "login" : "signup")}>
-            {signup ? "Sign in" : "Get started"}
-          </button>
+          {loading && <div className="auth-status">Redirecting to Google...</div>}
         </div>
+
         <div className="auth-foot">Secured by Rebly AI</div>
       </section>
     </main>
@@ -170,9 +72,7 @@ export default function AuthPage() {
           <section className="auth-card">
             <div className="auth-top">
               <span className="brand">
-                <span className="brand-mark">
-                  <Bot size={20} />
-                </span>
+                <img className="brand-logo-mark" src="/images/rebly-logo-mark.svg" alt="" />
                 <span>Rebly AI</span>
               </span>
               <Loader2 size={22} />
