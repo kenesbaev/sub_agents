@@ -8,31 +8,42 @@ import { useEffect, useState } from "react";
 const plans = [
   {
     name: "Starter",
-    price: "$6",
-    suffix: "today",
-    copy: "Your first Business AI workforce for Instagram and Telegram.",
-    stats: ["1 team", "4 agents", "$20 credits"],
-    features: ["Business AI team", "Tasks + activity", "Instagram + Telegram ready"],
-    cta: "Start for $6"
+    price: "$29",
+    suffix: "/mo",
+    copy: "For founders and small teams starting with an AI office.",
+    stats: ["1 workspace", "5 agents", "50k credits"],
+    features: ["Coordinator AI", "Shared chat + task history", "Telegram integration"],
+    cta: "Start now"
   },
   {
     name: "Business",
-    price: "$89",
+    price: "$149",
     suffix: "/mo",
-    copy: "More workflows, approval gates, and room to scale.",
-    stats: ["3 teams", "12 agents", "$80 credits"],
-    features: ["Multiple workspaces", "Priority automations", "Best value"],
-    cta: "Scale up",
+    copy: "For SMBs that want AI agents across sales, support and marketing.",
+    stats: ["3 teams", "15 agents", "500k credits"],
+    features: ["AI Teams workspace", "Activity log and approvals", "Priority workflows"],
+    cta: "Choose Business",
+    badge: "Best value",
     popular: true
   },
   {
     name: "Agency",
-    price: "$179",
+    price: "$399",
     suffix: "/mo",
-    copy: "Build a full AI department for client operations.",
-    stats: ["10 teams", "40 agents", "$170 credits"],
-    features: ["Client workspaces", "Dedicated support", "Advanced controls"],
-    cta: "Go all in"
+    copy: "For agencies and operators managing AI work for multiple clients.",
+    stats: ["10 clients", "40 agents", "2M credits"],
+    features: ["Client workspaces", "Reusable AI team templates", "Advanced controls"],
+    cta: "Scale agency"
+  },
+  {
+    name: "Enterprise",
+    price: "$1.5k+",
+    suffix: "/mo",
+    copy: "For companies that need custom AI teams, security and onboarding.",
+    stats: ["Custom teams", "SLA support", "SSO ready"],
+    features: ["Dedicated success manager", "Custom integrations", "Private deployment options"],
+    cta: "Contact sales",
+    badge: "Custom"
   }
 ];
 
@@ -188,7 +199,7 @@ export default function HomePage() {
             <article className="step">
               <span className="step-number">01</span>
               <div className="step-people step-people-solo">
-                <StepAgent src="/images/member-woman.png" alt="Business AI agent" />
+                <StepAgent src="/images/member-man.png" alt="Business AI agent" />
               </div>
               <h3>Subscribe</h3>
               <p>Choose a plan and open your Rebly AI workspace.</p>
@@ -196,8 +207,8 @@ export default function HomePage() {
             <article className="step">
               <span className="step-number">02</span>
               <div className="step-people">
-                <StepAgent src="/images/member-man.png" alt="Business AI agent" />
-                <StepAgent src="/images/agents/dev.png" alt="Business AI agent" />
+                <StepAgent src="/images/member-woman.png" alt="Business AI agent" />
+                <StepAgent src="/images/agents/mika.png" alt="Business AI agent" />
               </div>
               <h3>Hire your team</h3>
               <p>Business AI agents coordinate Instagram and Telegram work.</p>
@@ -205,8 +216,8 @@ export default function HomePage() {
             <article className="step">
               <span className="step-number">03</span>
               <div className="step-people">
-                <StepAgent src="/images/agents/nova.png" alt="Business AI agent" />
-                <StepAgent src="/images/agents/coordinator.png" alt="Business AI agent" />
+                <StepAgent src="/images/agents/scout.png" alt="Business AI agent" />
+                <StepAgent src="/images/agents/dev.png" alt="Business AI agent" />
               </div>
               <h3>Assign tasks</h3>
               <p>Track replies, follow-ups, and daily activity in one dashboard.</p>
@@ -222,14 +233,14 @@ export default function HomePage() {
             </div>
             <div className="pricing-copy">
               <p>Pricing</p>
-              <h2>Choose the right size for your team</h2>
-              <span>Start small, then scale your AI workforce when your automation needs grow.</span>
+              <h2>Hire an AI team for less than one employee</h2>
+              <span>Start with a focused AI office, then scale into specialized agents for sales, support, marketing, analytics and operations.</span>
             </div>
           </div>
           <div className="pricing-grid">
             {plans.map((plan) => (
               <article className={`price-card ${plan.popular ? "popular" : ""}`} key={plan.name}>
-                {plan.popular && <span className="badge">Most popular</span>}
+                {plan.badge && <span className="badge">{plan.badge}</span>}
                 <h3>{plan.name}</h3>
                 <div className="price">
                   {plan.price} <span>{plan.suffix}</span>
@@ -258,6 +269,9 @@ export default function HomePage() {
               </article>
             ))}
           </div>
+          <p className="pricing-footnote">
+            All plans include AI credits. Extra usage, additional agents, premium integrations and custom workflows can be added as your automation volume grows.
+          </p>
         </section>
       </main>
     </div>

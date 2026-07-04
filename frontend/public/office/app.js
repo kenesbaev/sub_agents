@@ -217,7 +217,7 @@ const idleDestinations = [
   },
 ];
 
-const agents = [
+const DEFAULT_AGENTS = [
   {
     id: "coordinator",
     name: "Atlas",
@@ -280,6 +280,8 @@ const agents = [
   },
 ];
 
+let agents = DEFAULT_AGENTS.map(cloneAgent);
+
 const legacyAuthorToAgentId = {
   Coordinator: "coordinator",
   Atlas: "coordinator",
@@ -291,6 +293,43 @@ const legacyAuthorToAgentId = {
   Nova: "nova",
   Echo: "nova",
 };
+
+function cloneAgent(agent) {
+  return { ...agent };
+}
+
+function normalizeTeamAgent(rawAgent, index) {
+  const base = DEFAULT_AGENTS[index % DEFAULT_AGENTS.length];
+  const name = String(rawAgent?.name || base.name || `Agent ${index + 1}`).trim();
+  const role = String(rawAgent?.role || base.role || "AI agent").trim();
+  return {
+    id: base.id,
+    name,
+    role,
+    kind: "human",
+    color: String(rawAgent?.color || rawAgent?.accent || base.color || "#4f5bd5"),
+    avatar: String(rawAgent?.avatar || base.avatar || "/images/agents/coordinator.png"),
+    slot: index % slots.length,
+    state: index === 0 ? "focused" : "idle",
+    bubble: index === 0 ? "Team ready" : "Ready",
+    active: true,
+  };
+}
+
+function normalizeTeamPayload(data) {
+  const team = data && typeof data === "object" ? data : {};
+  const sourceAgents = Array.isArray(team.agents) ? team.agents : [];
+  const nextAgents = sourceAgents
+    .slice(0, Math.min(DEFAULT_AGENTS.length, slots.length))
+    .map(normalizeTeamAgent)
+    .filter((agent) => agent.name);
+  if (!nextAgents.length) return null;
+  return {
+    id: String(team.id || "custom-team"),
+    name: String(team.name || "Team"),
+    agents: nextAgents,
+  };
+}
 
 let selectedChatId = "all";
 let chatBusy = false;
@@ -1361,6 +1400,57 @@ function createAgentModel(agent) {
   const rig = createAgentRig(agent, index);
   holder.add(rig.root);
   holder.userData.rig = rig;
+}
+
+function clearAgentModels() {
+  agents.forEach((agent) => {
+    if (agent.group) {
+      scene.remove(agent.group);
+      agent.group = null;
+    }
+  });
+  clickTargets.length = 0;
+}
+
+function clearSpeechBubbles() {
+  bubbles.forEach((element) => element.remove());
+  bubbles.clear();
+}
+
+function applyOfficeTeam(rawTeam) {
+  const team = normalizeTeamPayload(rawTeam);
+  if (!team) return;
+
+  window.clearTimeout(teamWorkTimer);
+  teamWorkActive = false;
+  selectedIndex = 0;
+  selectedChatId = "all";
+  focusName.textContent = "Team";
+
+  clearAgentModels();
+  clearSpeechBubbles();
+  agents = team.agents;
+
+  teamProfile.name = team.name;
+  teamProfile.role = `${agents.length} agents`;
+  teamProfile.color = agents[0]?.color || "#1f2933";
+  teamProfile.bubble = "Ready";
+  teamStatus.textContent = `${agents.length} agents online`;
+
+  if (renderer) {
+    agents.forEach(createAgentModel);
+    initializeAgentDestinations();
+  }
+
+  saveChatState();
+  renderRoster();
+  renderChatTargets();
+  renderChatMessages();
+  addActivity(agents[0], "team loaded", `${team.name} is now in the 3D office.`);
+
+  if (window.agentOfficeDebug) {
+    window.agentOfficeDebug.agents = agents;
+  }
 }
 
 function colorForState(state) {
@@ -2480,6 +2570,10 @@ function notifyOfficeSelection(agentId) {
 function handleParentMessage(event) {
   if (event.origin !== window.location.origin) return;
   const data = event.data || {};
+  if (data.type === "rebly-office-set-team") {
+    applyOfficeTeam(data.team);
+    return;
+  }
   if (data.type !== "rebly-office-select-agent") return;
   const agentId = String(data.agentId || "").toLowerCase();
   selectAgentById(agentId);

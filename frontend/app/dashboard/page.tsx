@@ -21,6 +21,8 @@ import {
   Mail,
   MessageCircle,
   Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
   Paperclip,
   Plug,
   Plus,
@@ -99,6 +101,18 @@ interface TeamCardData {
   modalWorkflow: WorkflowData[];
 }
 
+interface OfficeTeamPayload {
+  id: string;
+  name: string;
+  agents: Array<{
+    id: string;
+    name: string;
+    role: string;
+    avatar: string;
+    color: string;
+  }>;
+}
+
 const officeAgents = [
   { id: "all", name: "Team", role: "AI crew", image: "/images/agents/coordinator.png", color: "#1F2933", state: "online" },
   { id: "coordinator", name: "Atlas", role: "Coordinator", image: "/images/agents/coordinator.png", color: "#4F5BD5", state: "online" },
@@ -107,6 +121,26 @@ const officeAgents = [
   { id: "dev", name: "Dex", role: "Developer", image: "/images/agents/dev.png", color: "#13A56F", state: "idle" },
   { id: "nova", name: "Echo", role: "Support", image: "/images/agents/nova.png", color: "#C98908", state: "idle" }
 ];
+
+const officeRuntimeAgents = officeAgents.filter((agent) => agent.id !== "all");
+
+function buildOfficeTeamPayload(team: TeamCardData): OfficeTeamPayload {
+  const source = team.roster.length ? team.roster : [{ name: team.name, role: team.category, accent: "#4F5BD5" }];
+  return {
+    id: team.id,
+    name: team.name,
+    agents: source.slice(0, officeRuntimeAgents.length).map((agent, index) => {
+      const fallback = officeRuntimeAgents[index] || officeRuntimeAgents[0];
+      return {
+        id: fallback.id,
+        name: agent.name,
+        role: agent.role || team.category,
+        avatar: agent.avatar || fallback.image,
+        color: agent.accent || fallback.color,
+      };
+    }),
+  };
+}
 
 const businessAgents: AgentData[] = [
   { name: "Adam", role: "Стратег", avatar: "/images/member-man.png", accent: "#635BFF" },
@@ -367,7 +401,36 @@ export default function DashboardPage() {
   const [telegramBotConnected, setTelegramBotConnected] = useState(false);
   const [telegramBotStatus, setTelegramBotStatus] = useState("");
   const [selectedOfficeAgent, setSelectedOfficeAgent] = useState("all");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [selectedOfficeTeam, setSelectedOfficeTeam] = useState<TeamCardData | null>(null);
   const officeFrameRef = useRef<HTMLIFrameElement | null>(null);
+
+  const selectedOfficeTeamPayload = useMemo(
+    () => (selectedOfficeTeam ? buildOfficeTeamPayload(selectedOfficeTeam) : null),
+    [selectedOfficeTeam]
+  );
+
+  const visibleOfficeAgents = useMemo(() => {
+    if (!selectedOfficeTeamPayload) return officeAgents;
+    return [
+      {
+        id: "all",
+        name: selectedOfficeTeamPayload.name,
+        role: "AI team",
+        image: selectedOfficeTeamPayload.agents[0]?.avatar || "/images/agents/coordinator.png",
+        color: "#1F2933",
+        state: "online",
+      },
+      ...selectedOfficeTeamPayload.agents.map((agent, index) => ({
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+        image: agent.avatar,
+        color: agent.color,
+        state: index < 3 ? "online" : "idle",
+      })),
+    ];
+  }, [selectedOfficeTeamPayload]);
 
   useEffect(() => {
     const storedTheme = localStorage.getItem("rebly-theme");
@@ -417,14 +480,9 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (activeView !== "office") return;
-    officeFrameRef.current?.contentWindow?.postMessage(
-      {
-        type: "rebly-office-select-agent",
-        agentId: selectedOfficeAgent,
-      },
-      window.location.origin,
-    );
-  }, [activeView, selectedOfficeAgent]);
+    sendOfficeTeam(selectedOfficeTeamPayload);
+    sendOfficeSelection(selectedOfficeAgent);
+  }, [activeView, selectedOfficeAgent, selectedOfficeTeamPayload]);
 
   const filteredTeams = useMemo(() => {
     const query = teamSearch.trim().toLowerCase();
@@ -466,15 +524,26 @@ export default function DashboardPage() {
     setActiveView("my-teams");
   }
 
-  function hireTeam() {
+  function hireTeam(team: TeamCardData) {
+    setSelectedOfficeTeam(team);
+    setSelectedOfficeAgent("all");
     setDetailTeam(null);
     setExpandedTeam("");
     setActiveView("office");
   }
 
-  function selectOfficeAgent(agentId: string) {
-    setActiveView("office");
-    setSelectedOfficeAgent(agentId);
+  function sendOfficeTeam(team: OfficeTeamPayload | null) {
+    if (!team) return;
+    officeFrameRef.current?.contentWindow?.postMessage(
+      {
+        type: "rebly-office-set-team",
+        team,
+      },
+      window.location.origin,
+    );
+  }
+
+  function sendOfficeSelection(agentId: string) {
     officeFrameRef.current?.contentWindow?.postMessage(
       {
         type: "rebly-office-select-agent",
@@ -482,6 +551,13 @@ export default function DashboardPage() {
       },
       window.location.origin,
     );
+  }
+
+  function selectOfficeAgent(agentId: string) {
+    setActiveView("office");
+    setSelectedOfficeAgent(agentId);
+    sendOfficeTeam(selectedOfficeTeamPayload);
+    sendOfficeSelection(agentId);
   }
 
   function changeTheme(mode: ThemeMode) {
@@ -562,14 +638,26 @@ export default function DashboardPage() {
   const displayName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || user?.email || "Rebly user";
 
   return (
-    <main className="dashboard">
-      <aside className="sidebar">
-        <Link className="dash-brand" href="/">
-          <img className="dash-logo brand-logo-mark" src="/images/rebly-logo-mark.svg" alt="" />
-          <span>Rebly AI</span>
-        </Link>
+    <main className={`dashboard ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`} aria-label="Workspace sidebar">
+        <div className="sidebar-top">
+          <Link className="dash-brand" href="/" aria-label="Rebly AI home">
+            <img className="dash-logo brand-logo-mark" src="/images/rebly-logo-mark.svg" alt="" />
+            <span>Rebly AI</span>
+          </Link>
+          <button
+            className="sidebar-toggle"
+            type="button"
+            aria-label={sidebarCollapsed ? "Открыть боковую панель" : "Закрыть боковую панель"}
+            aria-expanded={!sidebarCollapsed}
+            data-tooltip={sidebarCollapsed ? "Открыть боковую панель" : "Закрыть боковую панель"}
+            onClick={() => setSidebarCollapsed((current) => !current)}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}
+          </button>
+        </div>
 
-        <button className="button new-team" type="button" onClick={() => openTeams("ready")}>
+        <button className="button new-team" type="button" title="New team" onClick={() => openTeams("ready")}>
           <span>
             <Plus size={15} /> New team
           </span>
@@ -590,6 +678,7 @@ export default function DashboardPage() {
                 }`}
                 key={item.id}
                 type="button"
+                title={item.label}
                 onClick={() => {
                   if (item.id === "my-teams") {
                     openTeams("ready");
@@ -613,13 +702,13 @@ export default function DashboardPage() {
           <div className="office-team-strip" aria-label="Agent Office team">
             <div className="office-team-head">
               <strong>Team</strong>
-              <span>5 / 5</span>
+              <span>{Math.max(visibleOfficeAgents.length - 1, 0)} / {Math.max(visibleOfficeAgents.length - 1, 0)}</span>
             </div>
             <div className="office-team-list">
-              {officeAgents.map((agent) => (
+              {visibleOfficeAgents.map((agent) => (
                 <button
                   className={`office-agent-chip ${selectedOfficeAgent === agent.id ? "active" : ""}`}
-                  key={agent.name}
+                  key={agent.id}
                   type="button"
                   aria-pressed={selectedOfficeAgent === agent.id}
                   onClick={() => selectOfficeAgent(agent.id)}
@@ -649,6 +738,7 @@ export default function DashboardPage() {
                 className={`side-link ${activeView === item.id ? "active" : ""}`}
                 key={item.id}
                 type="button"
+                title={item.label}
                 onClick={() => setActiveView(item.id)}
               >
                 <Icon size={19} />
@@ -680,7 +770,10 @@ export default function DashboardPage() {
               className="office-full-frame"
               src="/office/index.html?embed=dashboard"
               title="Business AI office"
-              onLoad={() => selectOfficeAgent(selectedOfficeAgent)}
+              onLoad={() => {
+                sendOfficeTeam(selectedOfficeTeamPayload);
+                sendOfficeSelection(selectedOfficeAgent);
+              }}
             />
           </section>
         )}
@@ -816,7 +909,7 @@ export default function DashboardPage() {
                     expanded={expanded}
                     onToggle={() => setExpandedTeam(expanded ? "" : team.id)}
                     onDetails={() => setDetailTeam(team)}
-                    onHire={hireTeam}
+                    onHire={() => hireTeam(team)}
                   />
                 );
               })}
@@ -841,7 +934,7 @@ export default function DashboardPage() {
           </section>
         )}
 
-        {detailTeam && <TeamDetailsModal team={detailTeam} onClose={() => setDetailTeam(null)} onHire={hireTeam} />}
+        {detailTeam && <TeamDetailsModal team={detailTeam} onClose={() => setDetailTeam(null)} onHire={() => hireTeam(detailTeam)} />}
 
         {activeView === "shared" && (
           <section className="dashboard-view">
