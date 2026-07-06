@@ -21,9 +21,12 @@ import {
   Mail,
   MessageCircle,
   Moon,
+  Grid3X3,
+  List,
   PanelLeftClose,
   PanelLeftOpen,
   Paperclip,
+  Pencil,
   Plug,
   Plus,
   Rocket,
@@ -32,6 +35,7 @@ import {
   Settings,
   Share2,
   Sun,
+  Trash2,
   X,
   User,
   UsersRound
@@ -39,13 +43,15 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { type CSSProperties, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 type View = "office" | "tasks" | "activity" | "my-teams" | "shared" | "settings" | "support";
 type TaskStatus = "Queued" | "Working" | "Done";
 type SettingsTab = "profile" | "general" | "billing" | "notifications" | "memory" | "connected" | "writing" | "completion" | "developer";
-type TeamTab = "ready" | "mine" | "shared";
+type TeamTab = "history" | "ready" | "mine";
+type TeamViewMode = "grid" | "list";
 type ThemeMode = "light" | "dark" | "auto";
+type ConnectedAppsFilter = "all" | "connected" | "not_connected";
 
 interface UserData {
   id: number;
@@ -63,6 +69,67 @@ interface IntegrationsData {
     bot_username: string | null;
     updated_at: string | null;
   };
+  instagram: {
+    connected: boolean;
+    ig_user_id: string | null;
+    username: string | null;
+    updated_at: string | null;
+  };
+}
+
+interface ConnectedCapability {
+  key: string;
+  name: string;
+  description: string;
+  scope: string;
+  accessLevel: string;
+}
+
+interface ConnectedAccount {
+  id: number;
+  identifier: string;
+  label: string | null;
+  type: string | null;
+  isDefault: boolean;
+  connectedAt: string | null;
+  metadata?: Record<string, string | number | boolean | null>;
+}
+
+interface ConnectedProvider {
+  key: string;
+  name: string;
+  authType: string;
+  status: string;
+  connected: boolean;
+  connectedAt: string | null;
+  accounts: ConnectedAccount[];
+  capabilities: ConnectedCapability[];
+}
+
+interface ConnectedAppsData {
+  connectedCount: number;
+  totalCount: number;
+  providers: ConnectedProvider[];
+}
+
+interface ConnectedAppCardData {
+  key: string;
+  providerKey: string;
+  title: string;
+  description: string;
+  capabilities: string[];
+  requirements?: string[];
+  logo: string;
+  logoUrl: string;
+  logoTone: string;
+  connected: boolean;
+  connectedAt: string | null;
+  connectedLabel?: string;
+  connectedValue?: string;
+  connectedDetails?: Array<{ label: string; value: string }>;
+  statusDetail?: string;
+  connectLabel: string;
+  action: "oauth" | "manual" | "disabled";
 }
 
 interface TaskItem {
@@ -113,6 +180,105 @@ interface OfficeTeamPayload {
   }>;
 }
 
+interface ActiveOfficeConversation {
+  id: string;
+  teamId: string;
+  teamName: string;
+  source: "ready" | "mine";
+}
+
+interface ConversationSummary extends ActiveOfficeConversation {
+  lastMessage: string;
+  updatedAt: string;
+  unreadCount: number;
+  messageCount: number;
+}
+
+interface OfficeConversationUpdate {
+  id: string;
+  teamId: string;
+  teamName: string;
+  source?: "ready" | "mine";
+  lastMessage?: string;
+  updatedAt?: string;
+  unreadCount?: number;
+  messageCount?: number;
+}
+
+const CONVERSATION_STORAGE_VERSION = 1;
+const DASHBOARD_VIEW_STORAGE_KEY = "rebly-dashboard-active-view";
+const DASHBOARD_TEAM_TAB_STORAGE_KEY = "rebly-dashboard-team-tab";
+const DASHBOARD_OFFICE_STORAGE_KEY = "rebly-dashboard-active-office";
+
+const dashboardViews: View[] = ["office", "tasks", "activity", "my-teams", "shared", "settings", "support"];
+const teamTabs: TeamTab[] = ["history", "ready", "mine"];
+
+function isDashboardView(value: string | null): value is View {
+  return dashboardViews.includes(value as View);
+}
+
+function isTeamTab(value: string | null): value is TeamTab {
+  return teamTabs.includes(value as TeamTab);
+}
+
+function conversationStorageKey(ownerId: string) {
+  return `rebly-team-conversations-v${CONVERSATION_STORAGE_VERSION}:${ownerId}`;
+}
+
+function createConversationId(teamId: string) {
+  const random =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${teamId}-${random}`.replace(/[^A-Za-z0-9_.-]+/g, "-");
+}
+
+function loadConversationSummaries(ownerId: string): ConversationSummary[] {
+  try {
+    const raw = localStorage.getItem(conversationStorageKey(ownerId));
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item) => item && typeof item.id === "string" && typeof item.teamId === "string")
+      .map((item) => {
+        const source: "ready" | "mine" = item.source === "mine" ? "mine" : "ready";
+        return {
+          id: String(item.id),
+          teamId: String(item.teamId),
+          teamName: String(item.teamName || "AI Team"),
+          source,
+          lastMessage: String(item.lastMessage || "New chat"),
+          updatedAt: String(item.updatedAt || new Date().toISOString()),
+          unreadCount: Number.isFinite(Number(item.unreadCount)) ? Number(item.unreadCount) : 0,
+          messageCount: Number.isFinite(Number(item.messageCount)) ? Number(item.messageCount) : 0,
+        };
+      })
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  } catch {
+    return [];
+  }
+}
+
+function saveConversationSummaries(ownerId: string, conversations: ConversationSummary[]) {
+  try {
+    localStorage.setItem(conversationStorageKey(ownerId), JSON.stringify(conversations.slice(0, 80)));
+  } catch {
+    // Keep the dashboard usable when browser storage is unavailable.
+  }
+}
+
+function formatConversationTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (date.toDateString() === now.toDateString()) return `Today • ${time}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return `Yesterday • ${time}`;
+  return `${date.toLocaleDateString([], { month: "short", day: "numeric" })} • ${time}`;
+}
+
 const officeAgents = [
   { id: "all", name: "Team", role: "AI crew", image: "/images/agents/coordinator.png", color: "#1F2933", state: "online" },
   { id: "coordinator", name: "Atlas", role: "Coordinator", image: "/images/agents/coordinator.png", color: "#4F5BD5", state: "online" },
@@ -150,6 +316,23 @@ const businessAgents: AgentData[] = [
   { name: "Kai", role: "Аналитика", accent: "#0EA5E9" }
 ];
 
+const fallbackAgents: AgentData[] = [
+  { name: "Adam", role: "Strategist", avatar: "/images/member-man.png", accent: "#635BFF" },
+  { name: "Mira", role: "Researcher", avatar: "/images/member-woman.png", accent: "#16A3A3" },
+  { name: "Leo", role: "Sales", avatar: "/images/member-man.png", accent: "#2563EB" },
+  { name: "Nora", role: "CRM", accent: "#8B5CF6" },
+  { name: "Kai", role: "Analytics", accent: "#0EA5E9" },
+  { name: "Sofia", role: "Support", avatar: "/images/member-woman.png", accent: "#EC4899" },
+  { name: "Scout", role: "Signals", avatar: "/images/member-man.png", accent: "#0EA5E9" }
+];
+
+function completeTeamRoster(team: TeamCardData) {
+  if (team.roster.length >= team.agentsCount) return team.roster;
+  const usedNames = new Set(team.roster.map((agent) => agent.name));
+  const additions = fallbackAgents.filter((agent) => !usedNames.has(agent.name)).slice(0, team.agentsCount - team.roster.length);
+  return [...team.roster, ...additions];
+}
+
 const businessWorkflow = [
   "Coordinator быстро собирает контекст и фиксирует цель",
   "Adam собирает стратегию, позиционирование и план действий",
@@ -170,7 +353,42 @@ const businessModalWorkflow: WorkflowData[] = [
   { agent: "Coordinator", text: "Собирает финальный отчёт: что делать дальше, кто отвечает и где результат.", path: "workspace/business-ai/final-report.md" }
 ];
 
+const socialPostingTeam: TeamCardData = {
+  id: "social-posting-team",
+  name: "Social Posting Team",
+  category: "Social",
+  agents: "5 agents",
+  agentsCount: 5,
+  copy: "Команда для авто-постинга: готовит идеи, captions, визуальный brief и публикует approved-посты через Connected Apps.",
+  modalCopy: "Social Posting Team работает прямо в сайте. Пользователь подключает Telegram/Instagram в Connected Apps, команда готовит пост, показывает preview, а Dex отправляет approved-публикацию через backend API.",
+  output: "Publish-ready caption + media brief + Telegram/Instagram publish status",
+  tags: ["Marketing", "Instagram", "Telegram"],
+  icon: Share2,
+  roster: [
+    { name: "Atlas", role: "Coordinator", avatar: "/images/agents/coordinator.png", accent: "#4F5BD5" },
+    { name: "Scout", role: "Research", avatar: "/images/agents/scout.png", accent: "#0EA5E9" },
+    { name: "Mira", role: "Copy + creative", avatar: "/images/member-woman.png", accent: "#16A3A3" },
+    { name: "Dex", role: "Publisher", avatar: "/images/agents/dev.png", accent: "#13A56F" },
+    { name: "Echo", role: "Analytics", avatar: "/images/agents/nova.png", accent: "#C98908" }
+  ],
+  workflow: [
+    "Atlas принимает задачу и выбирает платформы: Telegram, Instagram или обе",
+    "Scout находит тему, аудиторию, угол подачи и актуальные сигналы",
+    "Mira пишет caption, hook, CTA и visual brief для картинки/видео",
+    "Dex проверяет Connected Apps и отправляет approved-пост через сайт",
+    "Echo сохраняет статус публикации и ошибки, чтобы вернуться к ним позже"
+  ],
+  modalWorkflow: [
+    { agent: "Atlas", text: "Собирает brief: цель поста, площадки, дедлайн, нужный формат и ограничения бренда.", path: "workspace/social/brief.md" },
+    { agent: "Scout", text: "Находит темы, аудиторию, боли, тренды и лучшие углы подачи для публикации.", path: "workspace/social/research.md" },
+    { agent: "Mira", text: "Пишет caption, hook, CTA, хэштеги, visual brief и image prompt для approval.", path: "workspace/social/copy.md" },
+    { agent: "Dex", text: "Проверяет Telegram Bot и Instagram Graph подключение, затем публикует approved-пост.", path: "connected-apps/publisher" },
+    { agent: "Echo", text: "Записывает publish result, external id, ошибки и следующую рекомендацию.", path: "workspace/social/history.md" }
+  ]
+};
+
 const readyTeams: TeamCardData[] = [
+  socialPostingTeam,
   {
     id: "business-ai-team",
     name: "Business AI Team",
@@ -369,6 +587,44 @@ const activityItems = [
   { who: "System", text: "Business AI office is online", time: "08:30" }
 ];
 
+const agentToolRoles = [
+  {
+    name: "Atlas",
+    role: "Coordinator",
+    summary: "Routes work, checks status, approves sensitive actions, and writes Activity.",
+    tools: ["assign_task", "approve_action", "write_activity_log", "schedule_task"],
+    approval: "Can approve send, publish, delete, admin"
+  },
+  {
+    name: "Scout",
+    role: "Marketing / Research",
+    summary: "Creates posts, captions, hashtags, image prompts, and research insights.",
+    tools: ["create_post", "create_caption", "create_image_prompt", "get_social_analytics"],
+    approval: "Requests approval for scheduling"
+  },
+  {
+    name: "Ava",
+    role: "Sales",
+    summary: "Works with Gmail drafts, meetings, leads, CRM rows, and follow-up.",
+    tools: ["create_gmail_draft", "send_gmail", "create_calendar_event", "update_google_sheet_row"],
+    approval: "Needs approval for send/write"
+  },
+  {
+    name: "Dex",
+    role: "Publisher / Ops",
+    summary: "Publishes approved social posts and handles operational writes.",
+    tools: ["publish_social_post", "schedule_social_post", "upload_document", "edit_google_doc"],
+    approval: "Needs approval for publish/write"
+  },
+  {
+    name: "Echo",
+    role: "Support",
+    summary: "Handles inbox, comments, DM replies, support drafts, and knowledge lookup.",
+    tools: ["read_gmail_thread", "reply_gmail", "reply_to_comment", "reply_instagram_direct"],
+    approval: "Needs approval for send/reply"
+  }
+];
+
 function applyThemeMode(mode: ThemeMode) {
   const dark = mode === "dark" || (mode === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
   document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -382,10 +638,15 @@ export default function DashboardPage() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("profile");
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [teamTab, setTeamTab] = useState<TeamTab>("ready");
+  const [teamViewMode, setTeamViewMode] = useState<TeamViewMode>("grid");
   const [teamSearch, setTeamSearch] = useState("");
   const [teamCategory, setTeamCategory] = useState("All");
   const [expandedTeam, setExpandedTeam] = useState("");
   const [detailTeam, setDetailTeam] = useState<TeamCardData | null>(null);
+  const [openHistoryMenu, setOpenHistoryMenu] = useState("");
+  const [deleteConversationTarget, setDeleteConversationTarget] = useState<ConversationSummary | null>(null);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeConversation, setActiveConversation] = useState<ActiveOfficeConversation | null>(null);
   const [tasks, setTasks] = useState(initialTasks);
   const [supportCategory, setSupportCategory] = useState("Bug");
   const [supportSubject, setSupportSubject] = useState("");
@@ -394,16 +655,23 @@ export default function DashboardPage() {
   const [supportStatus, setSupportStatus] = useState("");
   const [emailDigest, setEmailDigest] = useState(true);
   const [memoryEnabled, setMemoryEnabled] = useState(true);
-  const [telegramToken, setTelegramToken] = useState("");
   const [telegramBotToken, setTelegramBotToken] = useState("");
   const [telegramBotTarget, setTelegramBotTarget] = useState("");
-  const [telegramConnected, setTelegramConnected] = useState(false);
   const [telegramBotConnected, setTelegramBotConnected] = useState(false);
   const [telegramBotStatus, setTelegramBotStatus] = useState("");
+  const [instagramConnected, setInstagramConnected] = useState(false);
+  const [instagramStatus, setInstagramStatus] = useState("");
+  const [connectedApps, setConnectedApps] = useState<ConnectedAppsData | null>(null);
+  const [connectedAppsSearch, setConnectedAppsSearch] = useState("");
+  const [connectedAppsFilter, setConnectedAppsFilter] = useState<ConnectedAppsFilter>("all");
+  const [configuringConnectedApp, setConfiguringConnectedApp] = useState("");
   const [selectedOfficeAgent, setSelectedOfficeAgent] = useState("all");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedOfficeTeam, setSelectedOfficeTeam] = useState<TeamCardData | null>(null);
+  const [dashboardRestored, setDashboardRestored] = useState(false);
   const officeFrameRef = useRef<HTMLIFrameElement | null>(null);
+
+  const conversationOwnerId = user?.id ? `user-${user.id}` : "guest";
 
   const selectedOfficeTeamPayload = useMemo(
     () => (selectedOfficeTeam ? buildOfficeTeamPayload(selectedOfficeTeam) : null),
@@ -431,6 +699,60 @@ export default function DashboardPage() {
       })),
     ];
   }, [selectedOfficeTeamPayload]);
+
+  useEffect(() => {
+    const storedView = localStorage.getItem(DASHBOARD_VIEW_STORAGE_KEY);
+    const storedTeamTab = localStorage.getItem(DASHBOARD_TEAM_TAB_STORAGE_KEY);
+    const storedOffice = localStorage.getItem(DASHBOARD_OFFICE_STORAGE_KEY);
+
+    if (isDashboardView(storedView)) {
+      setActiveView(storedView);
+    }
+    if (isTeamTab(storedTeamTab)) {
+      setTeamTab(storedTeamTab);
+    }
+
+    if (storedOffice) {
+      try {
+        const parsed = JSON.parse(storedOffice) as ActiveOfficeConversation;
+        if (
+          parsed &&
+          typeof parsed.id === "string" &&
+          typeof parsed.teamId === "string" &&
+          typeof parsed.teamName === "string" &&
+          (parsed.source === "ready" || parsed.source === "mine")
+        ) {
+          const team = findTeamById(parsed.teamId);
+          if (team) {
+            setSelectedOfficeTeam(team);
+            setActiveConversation(parsed);
+            setSelectedOfficeAgent("all");
+          } else {
+            localStorage.removeItem(DASHBOARD_OFFICE_STORAGE_KEY);
+          }
+        }
+      } catch {
+        localStorage.removeItem(DASHBOARD_OFFICE_STORAGE_KEY);
+      }
+    }
+
+    setDashboardRestored(true);
+  }, []);
+
+  useEffect(() => {
+    if (!dashboardRestored) return;
+    localStorage.setItem(DASHBOARD_VIEW_STORAGE_KEY, activeView);
+    localStorage.setItem(DASHBOARD_TEAM_TAB_STORAGE_KEY, teamTab);
+  }, [activeView, dashboardRestored, teamTab]);
+
+  useEffect(() => {
+    if (!dashboardRestored) return;
+    if (selectedOfficeTeam && activeConversation) {
+      localStorage.setItem(DASHBOARD_OFFICE_STORAGE_KEY, JSON.stringify(activeConversation));
+      return;
+    }
+    localStorage.removeItem(DASHBOARD_OFFICE_STORAGE_KEY);
+  }, [activeConversation, dashboardRestored, selectedOfficeTeam]);
 
   useEffect(() => {
     const storedTheme = localStorage.getItem("rebly-theme");
@@ -464,35 +786,145 @@ export default function DashboardPage() {
   }, [themeMode]);
 
   useEffect(() => {
+    if (loading) return;
+    setConversations(loadConversationSummaries(conversationOwnerId));
+  }, [conversationOwnerId, loading]);
+
+  useEffect(() => {
     function handleOfficeMessage(event: MessageEvent) {
       if (event.origin !== window.location.origin) return;
-      const data = event.data as { type?: string; agentId?: string };
-      if (data?.type !== "rebly-office-agent-selected") return;
-      const agentId = String(data.agentId || "");
-      if (officeAgents.some((agent) => agent.id === agentId)) {
-        setSelectedOfficeAgent(agentId);
+      const data = event.data as { type?: string; agentId?: string; conversation?: OfficeConversationUpdate };
+      if (data?.type === "rebly-office-agent-selected") {
+        const agentId = String(data.agentId || "");
+        if (officeAgents.some((agent) => agent.id === agentId)) {
+          setSelectedOfficeAgent(agentId);
+        }
+        return;
+      }
+      if (data?.type === "rebly-office-conversation-updated" && data.conversation) {
+        upsertConversationFromOffice(data.conversation);
       }
     }
 
     window.addEventListener("message", handleOfficeMessage);
     return () => window.removeEventListener("message", handleOfficeMessage);
-  }, []);
+  }, [activeConversation, conversationOwnerId]);
 
   useEffect(() => {
     if (activeView !== "office") return;
-    sendOfficeTeam(selectedOfficeTeamPayload);
+    sendOfficeTeam(selectedOfficeTeamPayload, activeConversation);
     sendOfficeSelection(selectedOfficeAgent);
-  }, [activeView, selectedOfficeAgent, selectedOfficeTeamPayload]);
+  }, [activeConversation, activeView, selectedOfficeAgent, selectedOfficeTeamPayload]);
+
+  const visibleHistory = useMemo(() => {
+    const query = teamSearch.trim().toLowerCase();
+    if (!query) return conversations;
+    return conversations.filter((conversation) =>
+      `${conversation.teamName} ${conversation.lastMessage}`.toLowerCase().includes(query)
+    );
+  }, [conversations, teamSearch]);
 
   const filteredTeams = useMemo(() => {
     const query = teamSearch.trim().toLowerCase();
-    const source = teamTab === "ready" ? readyTeams : teamTab === "mine" ? myTeams : sharedTeams;
+    const source = teamTab === "mine" ? myTeams : readyTeams;
     return source.filter((team) => {
       const matchesQuery = !query || `${team.name} ${team.copy} ${team.tags.join(" ")}`.toLowerCase().includes(query);
       const matchesCategory = teamCategory === "All" || team.tags.includes(teamCategory);
       return matchesQuery && matchesCategory;
     });
   }, [teamCategory, teamSearch, teamTab]);
+
+  function updateConversations(updater: (current: ConversationSummary[]) => ConversationSummary[]) {
+    setConversations((current) => {
+      const next = updater(current).sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      saveConversationSummaries(conversationOwnerId, next);
+      return next;
+    });
+  }
+
+  function teamSource(team: TeamCardData): "ready" | "mine" {
+    return myTeams.some((item) => item.id === team.id) ? "mine" : "ready";
+  }
+
+  function findTeamById(teamId: string): TeamCardData | null {
+    return [...readyTeams, ...myTeams, ...sharedTeams].find((team) => team.id === teamId) || null;
+  }
+
+  function openConversationOffice(conversation: ActiveOfficeConversation) {
+    const team = findTeamById(conversation.teamId);
+    if (!team) return;
+    setSelectedOfficeTeam(team);
+    setActiveConversation(conversation);
+    setSelectedOfficeAgent("all");
+    setDetailTeam(null);
+    setExpandedTeam("");
+    setActiveView("office");
+  }
+
+  function openTeamOffice(team: TeamCardData) {
+    const existing = conversations.find((conversation) => conversation.teamId === team.id);
+    const conversation: ActiveOfficeConversation = existing
+      ? {
+          id: existing.id,
+          teamId: existing.teamId,
+          teamName: existing.teamName,
+          source: existing.source,
+        }
+      : {
+          id: createConversationId(team.id),
+          teamId: team.id,
+          teamName: team.name,
+          source: teamSource(team),
+        };
+    openConversationOffice(conversation);
+  }
+
+  function upsertConversationFromOffice(update: OfficeConversationUpdate) {
+    if (!update.id || !update.teamId || Number(update.messageCount || 0) <= 0) return;
+    const source = update.source || activeConversation?.source || (myTeams.some((team) => team.id === update.teamId) ? "mine" : "ready");
+    const nextConversation: ConversationSummary = {
+      id: update.id,
+      teamId: update.teamId,
+      teamName: update.teamName || activeConversation?.teamName || findTeamById(update.teamId)?.name || "AI Team",
+      source,
+      lastMessage: update.lastMessage?.trim() || "New chat",
+      updatedAt: update.updatedAt || new Date().toISOString(),
+      unreadCount: Number.isFinite(Number(update.unreadCount)) ? Number(update.unreadCount) : 0,
+      messageCount: Number.isFinite(Number(update.messageCount)) ? Number(update.messageCount) : 0,
+    };
+    updateConversations((current) => {
+      const withoutCurrent = current.filter((conversation) => conversation.id !== nextConversation.id);
+      const existing = current.find((conversation) => conversation.id === nextConversation.id);
+      return [{ ...nextConversation, teamName: existing?.teamName || nextConversation.teamName }, ...withoutCurrent];
+    });
+  }
+
+  function renameConversation(conversation: ConversationSummary) {
+    const nextName = window.prompt("Rename history", conversation.teamName)?.trim();
+    setOpenHistoryMenu("");
+    if (!nextName || nextName === conversation.teamName) return;
+    updateConversations((current) =>
+      current.map((item) => (item.id === conversation.id ? { ...item, teamName: nextName } : item))
+    );
+    if (activeConversation?.id === conversation.id) {
+      setActiveConversation({ ...activeConversation, teamName: nextName });
+    }
+  }
+
+  function deleteConversation(conversation: ConversationSummary) {
+    setOpenHistoryMenu("");
+    setDeleteConversationTarget(conversation);
+  }
+
+  function confirmDeleteConversation() {
+    if (!deleteConversationTarget) return;
+    const conversation = deleteConversationTarget;
+    updateConversations((current) => current.filter((item) => item.id !== conversation.id));
+    if (activeConversation?.id === conversation.id) {
+      setActiveConversation(null);
+    }
+    setDeleteConversationTarget(null);
+  }
 
   async function logout() {
     await fetch(`${API_URL}/api/auth/logout`, { method: "POST", credentials: "include" });
@@ -524,20 +956,26 @@ export default function DashboardPage() {
     setActiveView("my-teams");
   }
 
-  function hireTeam(team: TeamCardData) {
-    setSelectedOfficeTeam(team);
+  function exitOfficeTeam() {
+    setSelectedOfficeTeam(null);
+    setActiveConversation(null);
     setSelectedOfficeAgent("all");
-    setDetailTeam(null);
     setExpandedTeam("");
+    setDetailTeam(null);
     setActiveView("office");
   }
 
-  function sendOfficeTeam(team: OfficeTeamPayload | null) {
+  function hireTeam(team: TeamCardData) {
+    openTeamOffice(team);
+  }
+
+  function sendOfficeTeam(team: OfficeTeamPayload | null, conversation: ActiveOfficeConversation | null) {
     if (!team) return;
     officeFrameRef.current?.contentWindow?.postMessage(
       {
-        type: "rebly-office-set-team",
+        type: conversation ? "rebly-office-open-conversation" : "rebly-office-set-team",
         team,
+        conversation,
       },
       window.location.origin,
     );
@@ -556,7 +994,7 @@ export default function DashboardPage() {
   function selectOfficeAgent(agentId: string) {
     setActiveView("office");
     setSelectedOfficeAgent(agentId);
-    sendOfficeTeam(selectedOfficeTeamPayload);
+    sendOfficeTeam(selectedOfficeTeamPayload, activeConversation);
     sendOfficeSelection(agentId);
   }
 
@@ -567,26 +1005,37 @@ export default function DashboardPage() {
 
   async function loadIntegrations() {
     try {
-      const response = await fetch(`${API_URL}/api/integrations`, { credentials: "include" });
-      if (!response.ok) return;
-      const payload: IntegrationsData = await response.json();
-      setTelegramBotConnected(Boolean(payload.telegram_bot.connected));
-      setTelegramBotTarget(payload.telegram_bot.target_chat_id || "");
-      setTelegramBotStatus(
-        payload.telegram_bot.connected
-          ? `Connected${payload.telegram_bot.bot_username ? ` as @${payload.telegram_bot.bot_username}` : ""}`
-          : ""
-      );
+      const [legacyResponse, connectedResponse] = await Promise.all([
+        fetch(`${API_URL}/api/integrations`, { credentials: "include" }),
+        fetch(`${API_URL}/api/connected-apps`, { credentials: "include" })
+      ]);
+      if (legacyResponse.ok) {
+        const payload: IntegrationsData = await legacyResponse.json();
+        setTelegramBotConnected(Boolean(payload.telegram_bot.connected));
+        setTelegramBotTarget(payload.telegram_bot.target_chat_id || "");
+        setTelegramBotStatus(
+          payload.telegram_bot.connected
+            ? `Connected${payload.telegram_bot.bot_username ? ` as @${payload.telegram_bot.bot_username}` : ""}`
+            : ""
+        );
+        setInstagramConnected(Boolean(payload.instagram.connected));
+        setInstagramStatus(
+          payload.instagram.connected
+            ? `Connected${payload.instagram.username ? ` as @${payload.instagram.username}` : ""}`
+            : ""
+        );
+      }
+      if (connectedResponse.ok) {
+        const appsPayload: ConnectedAppsData = await connectedResponse.json();
+        setConnectedApps(appsPayload);
+      }
     } catch {
       setTelegramBotStatus("Could not load Telegram status");
+      setInstagramStatus("Could not load Instagram status");
     }
   }
 
-  async function connectTelegram(kind: "account" | "bot") {
-    if (kind === "account" && telegramToken.trim().length > 8) {
-      setTelegramConnected(true);
-      setTelegramToken("");
-    }
+  async function connectTelegram(kind: "bot") {
     if (kind === "bot" && telegramBotToken.trim().length > 8 && telegramBotTarget.trim()) {
       setTelegramBotStatus("Connecting...");
       try {
@@ -612,6 +1061,22 @@ export default function DashboardPage() {
     }
   }
 
+  function connectOAuthProvider(providerKey: string) {
+    window.location.href = `${API_URL}/api/connected-apps/${providerKey}/start`;
+  }
+
+  async function disconnectConnectedApp(providerKey: string) {
+    try {
+      await fetch(`${API_URL}/api/connected-apps/${providerKey}/disconnect`, {
+        method: "POST",
+        credentials: "include"
+      });
+      await loadIntegrations();
+    } catch {
+      // Keep the current card state; manual refresh is still available.
+    }
+  }
+
   if (loading) {
     return (
       <main className="dashboard">
@@ -626,8 +1091,8 @@ export default function DashboardPage() {
     { id: "office" as View, label: "Office", icon: BriefcaseBusiness },
     { id: "tasks" as View, label: "Tasks", icon: ListTodo },
     { id: "activity" as View, label: "Activity", icon: Activity },
-    { id: "my-teams" as View, label: "My teams", icon: UsersRound },
-    { id: "shared" as View, label: "Shared with me", icon: Share2 }
+    { id: "my-teams" as View, label: "Your teams", icon: UsersRound },
+    { id: "shared" as View, label: "Shared with me", icon: UsersRound }
   ];
 
   const bottomItems = [
@@ -670,9 +1135,8 @@ export default function DashboardPage() {
             return (
               <button
                 className={`side-link ${
-                  (item.id === "shared" && activeView === "my-teams" && teamTab === "shared") ||
-                  (item.id === "my-teams" && activeView === "my-teams" && teamTab !== "shared") ||
-                  (activeView === item.id && item.id !== "my-teams" && item.id !== "shared")
+                  (item.id === "my-teams" && activeView === "my-teams") ||
+                  (activeView === item.id && item.id !== "my-teams")
                     ? "active"
                     : ""
                 }`}
@@ -682,10 +1146,6 @@ export default function DashboardPage() {
                 onClick={() => {
                   if (item.id === "my-teams") {
                     openTeams("ready");
-                    return;
-                  }
-                  if (item.id === "shared") {
-                    openTeams("shared");
                     return;
                   }
                   setActiveView(item.id);
@@ -698,7 +1158,7 @@ export default function DashboardPage() {
           })}
         </nav>
 
-        {activeView === "office" && (
+        {activeView === "office" && selectedOfficeTeamPayload && (
           <div className="office-team-strip" aria-label="Agent Office team">
             <div className="office-team-head">
               <strong>Team</strong>
@@ -765,16 +1225,36 @@ export default function DashboardPage() {
 
         {activeView === "office" && (
           <section className="office-view" aria-label="Agent Office">
-            <iframe
-              ref={officeFrameRef}
-              className="office-full-frame"
-              src="/office/index.html?embed=dashboard"
-              title="Business AI office"
-              onLoad={() => {
-                sendOfficeTeam(selectedOfficeTeamPayload);
-                sendOfficeSelection(selectedOfficeAgent);
-              }}
-            />
+            {selectedOfficeTeamPayload ? (
+              <>
+                <div className="office-exit-bar">
+                  <button className="button office-exit-button" type="button" onClick={exitOfficeTeam}>
+                    <LogOut size={16} /> Exit team
+                  </button>
+                </div>
+                <iframe
+                  ref={officeFrameRef}
+                  className="office-full-frame"
+                  src="/office/index.html?embed=dashboard"
+                  title="Business AI office"
+                  onLoad={() => {
+                    sendOfficeTeam(selectedOfficeTeamPayload, activeConversation);
+                    sendOfficeSelection(selectedOfficeAgent);
+                  }}
+                />
+              </>
+            ) : (
+              <div className="office-empty-wrap">
+                <section className="shared-panel office-empty-panel">
+                  <UsersRound size={32} />
+                  <strong>No team selected</strong>
+                  <p>Choose a ready team to open its Office and start working with agents.</p>
+                  <button className="button solid" type="button" onClick={() => openTeams("ready")}>
+                    <BriefcaseBusiness size={16} /> Choose Team
+                  </button>
+                </section>
+              </div>
+            )}
           </section>
         )}
 
@@ -851,93 +1331,143 @@ export default function DashboardPage() {
         )}
 
         {activeView === "my-teams" && (
-          <section className="dashboard-view team-marketplace">
-            <div className="market-pills">
-              <span>
-                <Check size={14} /> Assign goals
-              </span>
-              <span>
-                <Check size={14} /> Agents coordinate
-              </span>
-              <span>
-                <Check size={14} /> Get deliverables
-              </span>
-            </div>
-            <nav className="market-tabs" aria-label="Team views">
-              <button className={teamTab === "ready" ? "active" : ""} type="button" onClick={() => setTeamTab("ready")}>
-                <Rocket size={16} /> Ready teams
-              </button>
-              <button className={teamTab === "mine" ? "active" : ""} type="button" onClick={() => setTeamTab("mine")}>
-                <BriefcaseBusiness size={16} /> My teams
-              </button>
-              <button className={teamTab === "shared" ? "active" : ""} type="button" onClick={() => setTeamTab("shared")}>
-                <Share2 size={16} /> Shared with me
-              </button>
-            </nav>
-            <div className="team-tools">
-              <label className="searchbox">
-                <Search size={17} />
-                <input value={teamSearch} onChange={(event) => setTeamSearch(event.target.value)} placeholder="Search teams..." />
-              </label>
-              <label className="team-category">
-                <span>Category</span>
-                <select value={teamCategory} onChange={(event) => setTeamCategory(event.target.value)}>
-                  <option>All</option>
-                  <option>Business</option>
-                  <option>Strategy</option>
-                  <option>CRM</option>
-                  <option>Founder</option>
-                  <option>Operations</option>
-                  <option>Marketing</option>
-                  <option>Instagram</option>
-                  <option>Telegram</option>
-                  <option>Sales</option>
-                  <option>Leads</option>
-                  <option>Support</option>
-                  <option>Tickets</option>
-                </select>
-              </label>
+          <section className="dashboard-view team-marketplace teams-history-page">
+            <div className="view-head teams-view-head">
+              <div>
+                <p className="eyebrow">Workspace</p>
+                <h1>Your Teams</h1>
+              </div>
             </div>
 
-            <div className="market-grid">
-              {filteredTeams.map((team) => {
-                const expanded = expandedTeam === team.id;
-                return (
-                  <TeamCard
-                    key={team.id}
-                    team={team}
-                    expanded={expanded}
-                    onToggle={() => setExpandedTeam(expanded ? "" : team.id)}
-                    onDetails={() => setDetailTeam(team)}
-                    onHire={() => hireTeam(team)}
-                  />
-                );
-              })}
-              {teamTab === "ready" && (
-                <article className="market-card help-market-card">
-                  <div className="market-card-head">
-                    <span className="team-symbol">
-                      <LifeBuoy size={22} />
-                    </span>
-                    <div>
-                      <h2>I&apos;m stuck</h2>
-                      <small>Talk to a human</small>
-                    </div>
-                  </div>
-                  <p>Not sure which team fits? Send a short note and a real person will help you choose the right setup.</p>
-                  <button className="button solid support-cta" type="button" onClick={() => setActiveView("support")}>
-                    <LifeBuoy size={16} /> Get help
+            <nav className="market-tabs teams-tabs" aria-label="Team views">
+              <button className={teamTab === "history" ? "active" : ""} type="button" onClick={() => setTeamTab("history")}>
+                <Clock size={16} /> History ({conversations.length})
+              </button>
+              <button className={teamTab === "ready" ? "active" : ""} type="button" onClick={() => setTeamTab("ready")}>
+                <Rocket size={16} /> Ready Teams ({readyTeams.length})
+              </button>
+              <button className={teamTab === "mine" ? "active" : ""} type="button" onClick={() => setTeamTab("mine")}>
+                <BriefcaseBusiness size={16} /> My Teams ({myTeams.length})
+              </button>
+            </nav>
+
+            {teamTab !== "history" && (
+              <div className="team-directory-toolbar">
+                <label className="searchbox teams-directory-search">
+                  <Search size={17} />
+                  <input value={teamSearch} onChange={(event) => setTeamSearch(event.target.value)} placeholder="Search teams..." />
+                </label>
+                <label className="team-category">
+                  <span>Category</span>
+                  <select value={teamCategory} onChange={(event) => setTeamCategory(event.target.value)}>
+                    <option>All</option>
+                    <option>Business</option>
+                    <option>Strategy</option>
+                    <option>CRM</option>
+                    <option>Founder</option>
+                    <option>Operations</option>
+                    <option>Marketing</option>
+                    <option>Instagram</option>
+                    <option>Telegram</option>
+                    <option>Sales</option>
+                    <option>Leads</option>
+                    <option>Support</option>
+                    <option>Tickets</option>
+                  </select>
+                </label>
+                <div className="teams-view-toggle" aria-label="Team view mode">
+                  <button
+                    className={teamViewMode === "grid" ? "active" : ""}
+                    type="button"
+                    aria-label="Grid view"
+                    aria-pressed={teamViewMode === "grid"}
+                    onClick={() => setTeamViewMode("grid")}
+                  >
+                    <Grid3X3 size={17} />
                   </button>
-                </article>
-              )}
-            </div>
+                  <button
+                    className={teamViewMode === "list" ? "active" : ""}
+                    type="button"
+                    aria-label="List view"
+                    aria-pressed={teamViewMode === "list"}
+                    onClick={() => setTeamViewMode("list")}
+                  >
+                    <List size={17} />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {teamTab === "history" ? (
+              visibleHistory.length ? (
+                <div className="history-list">
+                  {visibleHistory.map((conversation) => (
+                    <HistoryCard
+                      conversation={conversation}
+                      key={conversation.id}
+                      menuOpen={openHistoryMenu === conversation.id}
+                      onDelete={() => deleteConversation(conversation)}
+                      onMenuToggle={() => setOpenHistoryMenu(openHistoryMenu === conversation.id ? "" : conversation.id)}
+                      onOpen={() => openConversationOffice(conversation)}
+                      onRename={() => renameConversation(conversation)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <StartNewChatCard onOpenReadyTeams={() => setTeamTab("ready")} />
+              )
+            ) : (
+              <div className={`market-grid ${teamViewMode === "list" ? "team-list-mode" : ""}`}>
+                {filteredTeams.map((team) => {
+                  const expanded = expandedTeam === team.id;
+                  return (
+                    <TeamCard
+                      team={team}
+                      key={team.id}
+                      expanded={expanded}
+                      onToggle={() => setExpandedTeam(expanded ? "" : team.id)}
+                      onDetails={() => setDetailTeam(team)}
+                      onHire={() => openTeamOffice(team)}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </section>
         )}
 
         {detailTeam && <TeamDetailsModal team={detailTeam} onClose={() => setDetailTeam(null)} onHire={() => hireTeam(detailTeam)} />}
 
+        {deleteConversationTarget && (
+          <div className="delete-chat-overlay" role="presentation" onClick={() => setDeleteConversationTarget(null)}>
+            <section
+              className="delete-chat-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="delete-chat-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <h2 id="delete-chat-title">Удалить чат?</h2>
+              <p>
+                Это удалит <strong>{deleteConversationTarget.teamName}</strong>.
+              </p>
+              <p className="delete-chat-muted">
+                Посетите <span>настройки</span> для удаления всех записей в памяти, сохраненных во время этого чата.
+              </p>
+              <div className="delete-chat-actions">
+                <button className="button cancel-delete" type="button" onClick={() => setDeleteConversationTarget(null)}>
+                  Отменить
+                </button>
+                <button className="button confirm-delete" type="button" onClick={confirmDeleteConversation}>
+                  Удалить
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+
         {activeView === "shared" && (
-          <section className="dashboard-view">
+          <section className="dashboard-view shared-view">
             <div className="view-head">
               <div>
                 <p className="eyebrow">Collaboration</p>
@@ -1019,16 +1549,24 @@ export default function DashboardPage() {
                   setMemoryEnabled,
                   themeMode,
                   changeTheme,
-                  telegramToken,
-                  setTelegramToken,
                   telegramBotToken,
                   setTelegramBotToken,
                   telegramBotTarget,
                   setTelegramBotTarget,
-                  telegramConnected,
                   telegramBotConnected,
                   telegramBotStatus,
+                  instagramConnected,
+                  instagramStatus,
+                  connectedApps,
+                  connectedAppsSearch,
+                  setConnectedAppsSearch,
+                  connectedAppsFilter,
+                  setConnectedAppsFilter,
+                  configuringConnectedApp,
+                  setConfiguringConnectedApp,
                   connectTelegram,
+                  connectOAuthProvider,
+                  disconnectConnectedApp,
                   loadIntegrations
                 })}
               </div>
@@ -1126,6 +1664,75 @@ export default function DashboardPage() {
   );
 }
 
+function StartNewChatCard({ onOpenReadyTeams }: { onOpenReadyTeams: () => void }) {
+  return (
+    <button className="market-card start-chat-card" type="button" onClick={onOpenReadyTeams}>
+      <span className="team-symbol">
+        <Clock size={22} />
+      </span>
+      <div>
+        <h2>Start a new chat</h2>
+        <p>
+          Open a team and start chatting with your AI agents.
+          <br />
+          Your conversations will appear here automatically.
+        </p>
+      </div>
+    </button>
+  );
+}
+
+function HistoryCard({
+  conversation,
+  menuOpen,
+  onDelete,
+  onMenuToggle,
+  onOpen,
+  onRename
+}: {
+  conversation: ConversationSummary;
+  menuOpen: boolean;
+  onDelete: () => void;
+  onMenuToggle: () => void;
+  onOpen: () => void;
+  onRename: () => void;
+}) {
+  return (
+    <article className={`history-card ${menuOpen ? "menu-open" : ""}`}>
+      <button className="history-card-open" type="button" onClick={onOpen}>
+        <span className="team-symbol history-symbol">
+          <BriefcaseBusiness size={21} />
+        </span>
+        <span className="history-card-main">
+          <strong>{conversation.teamName}</strong>
+          <small>{conversation.lastMessage}</small>
+          <em>{formatConversationTime(conversation.updatedAt)}</em>
+        </span>
+        {conversation.unreadCount > 0 && <span className="unread-badge">{conversation.unreadCount}</span>}
+      </button>
+      <button
+        className="history-more"
+        type="button"
+        aria-expanded={menuOpen}
+        aria-label={`${conversation.teamName} options`}
+        onClick={onMenuToggle}
+      >
+        ...
+      </button>
+      {menuOpen && (
+        <div className="history-menu" role="menu">
+          <button type="button" role="menuitem" onClick={onRename}>
+            <Pencil size={16} /> Rename
+          </button>
+          <button className="danger" type="button" role="menuitem" onClick={onDelete}>
+            <Trash2 size={16} /> Delete
+          </button>
+        </div>
+      )}
+    </article>
+  );
+}
+
 function TeamCard({
   team,
   expanded,
@@ -1140,6 +1747,7 @@ function TeamCard({
   onHire: () => void;
 }) {
   const TeamIcon = team.icon;
+  const roster = completeTeamRoster(team);
 
   return (
     <article
@@ -1176,7 +1784,7 @@ function TeamCard({
       </div>
 
       <div className="market-roster" aria-label={`${team.name} agents`}>
-        {team.roster.map((agent) => (
+        {roster.map((agent) => (
           <AgentMiniCard agent={agent} key={agent.name} />
         ))}
       </div>
@@ -1209,7 +1817,7 @@ function TeamCard({
                 onHire();
               }}
             >
-              <Rocket size={16} /> Нанять
+              <Rocket size={16} /> Open Office
             </button>
           </div>
         </div>
@@ -1323,16 +1931,24 @@ function renderSettingsPanel({
   setMemoryEnabled,
   themeMode,
   changeTheme,
-  telegramToken,
-  setTelegramToken,
   telegramBotToken,
   setTelegramBotToken,
   telegramBotTarget,
   setTelegramBotTarget,
-  telegramConnected,
   telegramBotConnected,
   telegramBotStatus,
+  instagramConnected,
+  instagramStatus,
+  connectedApps,
+  connectedAppsSearch,
+  setConnectedAppsSearch,
+  connectedAppsFilter,
+  setConnectedAppsFilter,
+  configuringConnectedApp,
+  setConfiguringConnectedApp,
   connectTelegram,
+  connectOAuthProvider,
+  disconnectConnectedApp,
   loadIntegrations
 }: {
   tab: SettingsTab;
@@ -1344,16 +1960,24 @@ function renderSettingsPanel({
   setMemoryEnabled: (value: boolean) => void;
   themeMode: ThemeMode;
   changeTheme: (mode: ThemeMode) => void;
-  telegramToken: string;
-  setTelegramToken: (value: string) => void;
   telegramBotToken: string;
   setTelegramBotToken: (value: string) => void;
   telegramBotTarget: string;
   setTelegramBotTarget: (value: string) => void;
-  telegramConnected: boolean;
   telegramBotConnected: boolean;
   telegramBotStatus: string;
-  connectTelegram: (kind: "account" | "bot") => void;
+  instagramConnected: boolean;
+  instagramStatus: string;
+  connectedApps: ConnectedAppsData | null;
+  connectedAppsSearch: string;
+  setConnectedAppsSearch: (value: string) => void;
+  connectedAppsFilter: ConnectedAppsFilter;
+  setConnectedAppsFilter: (value: ConnectedAppsFilter) => void;
+  configuringConnectedApp: string;
+  setConfiguringConnectedApp: (value: string) => void;
+  connectTelegram: (kind: "bot") => void;
+  connectOAuthProvider: (providerKey: string) => void;
+  disconnectConnectedApp: (providerKey: string) => void | Promise<void>;
   loadIntegrations: () => void | Promise<void>;
 }) {
   if (tab === "profile") {
@@ -1541,42 +2165,159 @@ function renderSettingsPanel({
   }
 
   if (tab === "connected") {
+    const providerCards: ConnectedProvider[] =
+      connectedApps?.providers ?? [
+        { key: "google", name: "Google", authType: "oauth2", status: user?.google_connected ? "Connected" : "Not Connected", connected: Boolean(user?.google_connected), connectedAt: null, accounts: [], capabilities: [] },
+        { key: "telegram", name: "Telegram", authType: "bot_token", status: telegramBotConnected ? "Connected" : "Not Connected", connected: telegramBotConnected, connectedAt: null, accounts: [], capabilities: [] },
+        { key: "instagram", name: "Instagram", authType: "meta_oauth2", status: instagramConnected ? "Connected" : "Not Connected", connected: instagramConnected, connectedAt: null, accounts: [], capabilities: [] },
+        { key: "facebook", name: "Facebook", authType: "meta_oauth2", status: "Not Connected", connected: false, connectedAt: null, accounts: [], capabilities: [] },
+        { key: "linkedin", name: "LinkedIn", authType: "oauth2", status: "Not Connected", connected: false, connectedAt: null, accounts: [], capabilities: [] },
+        { key: "youtube", name: "YouTube", authType: "oauth2", status: "Not Connected", connected: false, connectedAt: null, accounts: [], capabilities: [] }
+      ];
+    const providersByKey = new Map(providerCards.map((provider) => [provider.key, provider]));
+    const appCards = buildConnectedAppCards(providersByKey, {
+      google: Boolean(user?.google_connected || providersByKey.get("google")?.connected),
+      telegram: Boolean(telegramBotConnected || providersByKey.get("telegram")?.connected),
+      instagram: Boolean(instagramConnected || providersByKey.get("instagram")?.connected),
+      userEmail: user?.email || "",
+      telegramTarget: telegramBotTarget,
+      telegramStatus: telegramBotStatus,
+      instagramStatus
+    });
+    const connectedCount = providerCards.filter((provider) => {
+      if (provider.key === "google") return Boolean(user?.google_connected || provider.connected);
+      if (provider.key === "telegram") return Boolean(telegramBotConnected || provider.connected);
+      if (provider.key === "instagram") return Boolean(instagramConnected || provider.connected);
+      return provider.connected;
+    }).length;
+    const filteredCards = appCards.filter((card) => {
+      const matchesSearch = `${card.title} ${card.description} ${card.capabilities.join(" ")} ${(card.requirements || []).join(" ")}`
+        .toLowerCase()
+        .includes(connectedAppsSearch.trim().toLowerCase());
+      const matchesFilter =
+        connectedAppsFilter === "all" ||
+        (connectedAppsFilter === "connected" && card.connected) ||
+        (connectedAppsFilter === "not_connected" && !card.connected);
+      return matchesSearch && matchesFilter;
+    });
     return (
-      <div className="settings-page">
-        <div className="settings-page-head">
-          <h1>Connected apps</h1>
-          <p>Connect Telegram and other tools your agents can use</p>
+      <div className="settings-page connected-apps-page">
+        <div className="connected-apps-head">
+          <div>
+            <h1>Connected Apps</h1>
+            <p>Connect your favorite apps and unlock powerful automation with your AI agents.</p>
+          </div>
+          <div className="connected-head-actions">
+            <section className="connected-summary-card">
+              <span className="connected-summary-icon">
+                <Plug size={18} />
+              </span>
+              <div>
+                <strong>{connectedCount} of {providerCards.length} connected</strong>
+                <p>Workspace integrations</p>
+              </div>
+            </section>
+            <button className="connected-refresh-button" type="button" onClick={loadIntegrations}>
+              <Clock size={15} /> Refresh
+            </button>
+          </div>
         </div>
-        <section className="settings-block connected-summary">
-          <span>{(user?.google_connected ? 1 : 0) + (telegramConnected ? 1 : 0) + (telegramBotConnected ? 1 : 0)} of 4 connected</span>
-          <button className="button" type="button" onClick={loadIntegrations}>
-            <Clock size={15} /> Refresh
+        <div className="connected-toolbar">
+          <label className="connected-search">
+            <Search size={16} />
+            <input
+              type="search"
+              name="rebly-connected-apps-search"
+              value={connectedAppsSearch}
+              onChange={(event) => setConnectedAppsSearch(event.target.value)}
+              placeholder="Search apps..."
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </label>
+          <div className="connected-filter" role="tablist" aria-label="Connected apps filter">
+            {[
+              ["all", "ALL"],
+              ["connected", "CONNECTED"],
+              ["not_connected", "NOT CONNECTED"]
+            ].map(([value, label]) => (
+              <button
+                className={connectedAppsFilter === value ? "active" : ""}
+                key={value}
+                type="button"
+                onClick={() => setConnectedAppsFilter(value as ConnectedAppsFilter)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="connected-view-toggle" aria-label="Connected apps view">
+            <button className="active" type="button" aria-pressed="true" title="Grid view">
+              <Grid3X3 size={15} />
+            </button>
+            <button type="button" aria-pressed="false" title="List view">
+              <List size={16} />
+            </button>
+          </div>
+        </div>
+        <div className="connected-app-list">
+          {filteredCards.map((card) => {
+            const isTelegram = card.providerKey === "telegram";
+            const isManual = card.action === "manual";
+            const isConfiguring = configuringConnectedApp === card.providerKey;
+            return (
+              <ConnectionCard
+                key={card.key}
+                card={card}
+                token={isTelegram ? telegramBotToken : undefined}
+                setToken={isTelegram ? setTelegramBotToken : undefined}
+                target={isTelegram ? telegramBotTarget : undefined}
+                setTarget={isTelegram ? setTelegramBotTarget : undefined}
+                tokenPlaceholder="Bot Token"
+                targetPlaceholder="Channel / Group Username or ID"
+                configuring={isManual && isConfiguring}
+                onConnect={() => {
+                  if (card.action === "disabled") return;
+                  setConnectedAppsSearch("");
+                  setConnectedAppsFilter("all");
+                  if (isManual && !isConfiguring) {
+                    setConfiguringConnectedApp(card.providerKey);
+                    return;
+                  }
+                  if (isTelegram) connectTelegram("bot");
+                  else connectOAuthProvider(card.providerKey);
+                }}
+                onReconnect={() => {
+                  setConnectedAppsSearch("");
+                  setConnectedAppsFilter("all");
+                  if (isManual) {
+                    setConfiguringConnectedApp(card.providerKey);
+                    return;
+                  }
+                  connectOAuthProvider(card.providerKey);
+                }}
+                onDisconnect={() => {
+                  setConfiguringConnectedApp("");
+                  disconnectConnectedApp(card.providerKey);
+                }}
+                onCancelConfigure={() => setConfiguringConnectedApp("")}
+              />
+            );
+          })}
+        </div>
+        <section className="connected-security">
+          <span className="connected-security-icon">
+            <Check size={17} />
+          </span>
+          <div>
+            <strong>Your data is safe and secure</strong>
+            <p>OAuth tokens are encrypted on the backend. The frontend never receives access tokens.</p>
+          </div>
+          <button className="connected-security-link" type="button">
+            Learn more
           </button>
         </section>
-        <h3 className="settings-section-title">Communication</h3>
-        <div className="connected-grid">
-          <ConnectionCard name="Google" copy="Read, search, send, and draft Gmail messages." status={user?.google_connected ? "Connected" : "Ready"} />
-          <ConnectionCard
-            name="Telegram"
-            copy="Connect a Telegram account token for direct team updates."
-            token={telegramToken}
-            setToken={setTelegramToken}
-            connected={telegramConnected}
-            onConnect={() => connectTelegram("account")}
-          />
-          <ConnectionCard
-            name="Telegram Bot"
-            copy="Paste your bot token so agents can post approved messages."
-            token={telegramBotToken}
-            setToken={setTelegramBotToken}
-            target={telegramBotTarget}
-            setTarget={setTelegramBotTarget}
-            connected={telegramBotConnected}
-            statusDetail={telegramBotStatus}
-            onConnect={() => connectTelegram("bot")}
-          />
-          <ConnectionCard name="Instagram" copy="Route social replies and mentions into the team queue." status="Ready" />
-        </div>
       </div>
     );
   }
@@ -1627,72 +2368,326 @@ function renderSettingsPanel({
   );
 }
 
+function formatConnectedDate(value: string | null) {
+  if (!value) return "Not connected";
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+function firstConnectedAccount(providers: Map<string, ConnectedProvider>, key: string) {
+  return providers.get(key)?.accounts?.[0] || null;
+}
+
+function metadataValue(account: ConnectedAccount | null, key: string) {
+  const value = account?.metadata?.[key];
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function accountValue(account: ConnectedAccount | null, fallback = "") {
+  return account?.label || fallback || account?.identifier || "";
+}
+
+function asHandle(value: string) {
+  const clean = value.trim();
+  if (!clean) return "";
+  return clean.startsWith("@") ? clean : `@${clean}`;
+}
+
+function telegramBotFromStatus(statusText: string) {
+  const match = statusText.match(/@[\w_]+/);
+  return match?.[0] || "";
+}
+
+function buildConnectedAppCards(
+  providers: Map<string, ConnectedProvider>,
+  overrides: {
+    google: boolean;
+    telegram: boolean;
+    instagram: boolean;
+    userEmail: string;
+    telegramTarget: string;
+    telegramStatus: string;
+    instagramStatus: string;
+  }
+): ConnectedAppCardData[] {
+  const providerConnected = (key: string) => {
+    if (key === "google") return overrides.google;
+    if (key === "telegram") return overrides.telegram;
+    if (key === "instagram") return overrides.instagram;
+    return Boolean(providers.get(key)?.connected);
+  };
+  const connectedAt = (key: string) => providers.get(key)?.connectedAt || null;
+  const googleAccount = firstConnectedAccount(providers, "google");
+  const telegramAccount = firstConnectedAccount(providers, "telegram");
+  const instagramAccount = firstConnectedAccount(providers, "instagram");
+  const facebookAccount = firstConnectedAccount(providers, "facebook");
+  const linkedinAccount = firstConnectedAccount(providers, "linkedin");
+  const youtubeAccount = firstConnectedAccount(providers, "youtube");
+  const telegramBot = asHandle(metadataValue(telegramAccount, "botUsername") || telegramBotFromStatus(overrides.telegramStatus));
+  const telegramTarget = accountValue(telegramAccount, overrides.telegramTarget);
+  const instagramUsername = asHandle(metadataValue(instagramAccount, "username") || accountValue(instagramAccount));
+  const instagramBusiness = metadataValue(instagramAccount, "businessAccount") || metadataValue(instagramAccount, "pageName");
+  const facebookPage = metadataValue(facebookAccount, "pageName") || accountValue(facebookAccount);
+  const linkedinCompany = metadataValue(linkedinAccount, "company");
+  const youtubeChannel = accountValue(youtubeAccount);
+  return [
+    {
+      key: "google",
+      providerKey: "google",
+      title: "Google",
+      description: "Connect Google Workspace so agents can work with email, calendar, files, docs, and spreadsheets.",
+      capabilities: ["Gmail", "Calendar", "Drive", "Docs", "Sheets"],
+      logo: "G",
+      logoUrl: "https://cdn.simpleicons.org/google",
+      logoTone: "google",
+      connected: providerConnected("google"),
+      connectedAt: connectedAt("google"),
+      connectedLabel: "Connected as",
+      connectedValue: accountValue(googleAccount, overrides.userEmail),
+      connectLabel: "Connect with Google",
+      action: "oauth"
+    },
+    {
+      key: "telegram",
+      providerKey: "telegram",
+      title: "Telegram",
+      description: "Connect a Telegram bot to publish approved messages to your channel or group.",
+      capabilities: ["Publish Messages", "Publish Photos", "Publish Videos", "Schedule Posts"],
+      logo: "T",
+      logoUrl: "https://cdn.simpleicons.org/telegram",
+      logoTone: "telegram",
+      connected: providerConnected("telegram"),
+      connectedAt: connectedAt("telegram"),
+      connectedLabel: "Connected as",
+      connectedValue: telegramBot,
+      connectedDetails: telegramTarget ? [{ label: "Publishing to", value: telegramTarget }] : [],
+      statusDetail: overrides.telegramStatus,
+      connectLabel: "Verify & Connect",
+      action: "manual"
+    },
+    {
+      key: "instagram",
+      providerKey: "instagram",
+      title: "Instagram",
+      description: "Use Meta OAuth to connect an Instagram Business account linked to a Facebook Page.",
+      capabilities: ["Publish Images", "Publish Reels", "Publish Stories", "Publish Carousels", "Read Comments", "Reply to Comments"],
+      requirements: ["Instagram Business Account", "Connected Facebook Page"],
+      logo: "I",
+      logoUrl: "https://cdn.simpleicons.org/instagram",
+      logoTone: "instagram",
+      connected: providerConnected("instagram"),
+      connectedAt: connectedAt("instagram"),
+      connectedLabel: "Connected as",
+      connectedValue: instagramUsername || accountValue(instagramAccount),
+      connectedDetails: instagramBusiness ? [{ label: "Business Account", value: instagramBusiness }] : [],
+      statusDetail: overrides.instagramStatus,
+      connectLabel: "Connect with Meta",
+      action: "oauth"
+    },
+    {
+      key: "facebook",
+      providerKey: "facebook",
+      title: "Facebook",
+      description: "Connect a Facebook Page for publishing, comments, videos, and Messenger workflows.",
+      capabilities: ["Publish Posts", "Publish Photos", "Publish Videos", "Read Comments", "Messenger"],
+      logo: "f",
+      logoUrl: "https://cdn.simpleicons.org/facebook",
+      logoTone: "facebook",
+      connected: providerConnected("facebook"),
+      connectedAt: connectedAt("facebook"),
+      connectedLabel: "Facebook Page",
+      connectedValue: facebookPage,
+      connectLabel: "Connect with Meta",
+      action: "oauth"
+    },
+    {
+      key: "linkedin",
+      providerKey: "linkedin",
+      title: "LinkedIn",
+      description: "Connect LinkedIn to publish company or member updates and review performance signals.",
+      capabilities: ["Publish Posts", "Publish Images", "Analytics"],
+      logo: "in",
+      logoUrl: "https://cdn.jsdelivr.net/npm/simple-icons@v13/icons/linkedin.svg",
+      logoTone: "linkedin",
+      connected: providerConnected("linkedin"),
+      connectedAt: connectedAt("linkedin"),
+      connectedLabel: "Connected as",
+      connectedValue: accountValue(linkedinAccount),
+      connectedDetails: linkedinCompany ? [{ label: "Company", value: linkedinCompany }] : [],
+      connectLabel: "Connect with LinkedIn",
+      action: "oauth"
+    },
+    {
+      key: "youtube",
+      providerKey: "youtube",
+      title: "YouTube",
+      description: "Use Google OAuth to connect a YouTube channel for video publishing and analytics.",
+      capabilities: ["Upload Videos", "Edit Metadata", "Thumbnails", "Analytics"],
+      logo: "YT",
+      logoUrl: "https://cdn.simpleicons.org/youtube",
+      logoTone: "youtube",
+      connected: providerConnected("youtube"),
+      connectedAt: connectedAt("youtube"),
+      connectedLabel: "Connected channel",
+      connectedValue: youtubeChannel,
+      connectLabel: "Connect with Google",
+      action: "oauth"
+    },
+  ];
+}
+
 function ConnectionCard({
-  name,
-  copy,
-  status,
+  card,
   token,
   setToken,
   target,
   setTarget,
-  connected,
-  statusDetail,
-  onConnect
+  tokenPlaceholder,
+  targetPlaceholder,
+  configuring,
+  onConnect,
+  onReconnect,
+  onDisconnect,
+  onCancelConfigure
 }: {
-  name: string;
-  copy: string;
-  status?: string;
+  card: ConnectedAppCardData;
   token?: string;
   setToken?: (value: string) => void;
   target?: string;
   setTarget?: (value: string) => void;
-  connected?: boolean;
-  statusDetail?: string;
+  tokenPlaceholder?: string;
+  targetPlaceholder?: string;
+  configuring?: boolean;
   onConnect?: () => void;
+  onReconnect?: () => void;
+  onDisconnect?: () => void;
+  onCancelConfigure?: () => void;
 }) {
   const isTokenCard = Boolean(setToken && onConnect);
+  const canSubmitTelegram = !isTokenCard || Boolean(token && token.length >= 9 && (!setTarget || target));
   return (
     <article className="connected-card">
-      <span className="app-plug">
-        <Plug size={18} />
-      </span>
-      <div>
-        <h2>{name}</h2>
-        <p>{copy}</p>
-        {isTokenCard && (
+      <div className="connected-card-top">
+        <span className={`app-logo app-logo-${card.logoTone}`}>
+          <img
+            src={card.logoUrl}
+            alt=""
+            onError={(event) => {
+              event.currentTarget.style.display = "none";
+              const fallback = event.currentTarget.nextElementSibling as HTMLElement | null;
+              if (fallback) fallback.style.display = "inline";
+            }}
+          />
+          <span>{card.logo}</span>
+        </span>
+        <div className="connected-card-title">
+          <h2>{card.title}</h2>
+          <span className={`connected-status-pill ${card.connected ? "connected" : ""}`}>
+            {card.connected ? "Connected" : "Not connected"}
+          </span>
+        </div>
+      </div>
+      <div className="connected-card-main">
+        <p>{card.description}</p>
+        {card.requirements && card.requirements.length > 0 && !card.connected && (
+          <div className="requirement-list" aria-label={`${card.title} requirements`}>
+            <strong>Requirements</strong>
+            <div>
+              {card.requirements.map((requirement) => (
+                <span key={requirement}>{requirement}</span>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="capability-list">
+          {card.capabilities.map((tag) => (
+            <span key={tag}>{tag}</span>
+          ))}
+        </div>
+        {configuring && isTokenCard && (
           <div className="connection-fields">
-            <input
-              type="password"
-              value={token}
-              onChange={(event) => setToken?.(event.target.value)}
-              placeholder={connected ? "Connected" : "Paste token"}
-              disabled={connected}
-            />
-            {setTarget && (
+            <label>
+              <span>Bot Token</span>
               <input
-                type="text"
-                value={target}
-                onChange={(event) => setTarget(event.target.value)}
-                placeholder="@channel or chat id"
-                disabled={connected}
+                type="password"
+                name={`rebly-${card.providerKey}-token`}
+                value={token}
+                onChange={(event) => setToken?.(event.target.value)}
+                placeholder={tokenPlaceholder || "Bot Token"}
+                autoComplete="new-password"
+                autoCorrect="off"
+                spellCheck={false}
               />
+            </label>
+            {setTarget && (
+              <label>
+                <span>Channel / Group Username or ID</span>
+                <input
+                  type="text"
+                  name={`rebly-${card.providerKey}-target`}
+                  value={target}
+                  onChange={(event) => setTarget(event.target.value)}
+                  placeholder={targetPlaceholder || "@channel or chat id"}
+                  disabled={false}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
+              </label>
             )}
-            {statusDetail && <small>{statusDetail}</small>}
+            {card.statusDetail && <small>{card.statusDetail}</small>}
           </div>
         )}
       </div>
-      {isTokenCard ? (
-        <button
-          className="button solid connect-button"
-          type="button"
-          onClick={onConnect}
-          disabled={connected || !token || token.length < 9 || Boolean(setTarget && !target)}
-        >
-          {connected ? "Connected" : "Connect"}
-        </button>
-      ) : (
-        <strong className={status === "Connected" ? "connected-status" : ""}>{status}</strong>
+      {card.connected && card.connectedValue && (
+        <div className="connected-account-cell">
+          <div className="connected-account">
+            <strong>{card.connectedLabel}</strong>
+            <span>{card.connectedValue}</span>
+            {card.connectedAt && <small>{formatConnectedDate(card.connectedAt)}</small>}
+            {card.connectedDetails?.map((detail) => (
+              <div className="connected-account-detail" key={`${detail.label}-${detail.value}`}>
+                <strong>{detail.label}</strong>
+                <span>{detail.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
+      <div className="connected-actions">
+        {configuring && isTokenCard ? (
+          <>
+            <button
+              className="button solid connect-button"
+              type="button"
+              onClick={onConnect}
+              disabled={!canSubmitTelegram}
+            >
+              Verify &amp; Connect
+            </button>
+            <button className="button connect-button" type="button" onClick={onCancelConfigure}>
+              Cancel
+            </button>
+          </>
+        ) : card.connected ? (
+          <>
+            <button className="button connect-button" type="button" onClick={onReconnect}>
+              Reconnect
+            </button>
+            <button className="button danger-button connect-button" type="button" onClick={onDisconnect}>
+              Disconnect
+            </button>
+          </>
+        ) : (
+          <button
+            className="button solid connect-button"
+            type="button"
+            onClick={onConnect}
+            disabled={card.action === "disabled"}
+          >
+            {card.action === "disabled" ? "Coming Soon" : card.connectLabel}
+          </button>
+        )}
+      </div>
     </article>
   );
 }

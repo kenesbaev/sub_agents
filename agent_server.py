@@ -33,6 +33,11 @@ from kaliya.agent_memory import (  # noqa: E402
     auto_remember_if_useful,
     memory_store,
 )
+from kaliya.agent_tool_registry import (  # noqa: E402
+    agent_capabilities_payload,
+    agent_tool_prompt,
+    get_agent_capabilities,
+)
 from kaliya.agent_tools import TurnContext, build_turn_context  # noqa: E402
 from kaliya.local_crm import LocalCRM  # noqa: E402
 from kaliya.text_safety import redact_sensitive_text  # noqa: E402
@@ -124,12 +129,20 @@ PUBLISH_TRIGGERS = (
     "публикац",
     "пост",
     "telegram",
+    "instagram",
+    "insta",
     "телеграм",
     "тг",
     "канал",
     "tg",
+    "инстаграм",
     "post",
 )
+DIRECT_MEDIA_URL_RE = re.compile(
+    r"https?://[^\s<>\")']+\.(?:avif|gif|jpe?g|png|webp|m4v|mov|mp4|mpeg|mpg|webm)(?:[?#][^\s<>\")']*)?",
+    re.IGNORECASE,
+)
+EXPLICIT_PUBLISH_TEXT_RE = re.compile(r"[\"“”«»']([^\"“”«»']{1,4000})[\"“”«»']")
 PENDING_TEAM_RUNS: dict[str, dict[str, Any]] = {}
 ACTIVE_AGENT_RUNS: dict[str, dict[str, Any]] = {}
 ACTIVE_AGENT_RUNS_LOCK = threading.Lock()
@@ -536,6 +549,10 @@ class AgentHandler(SimpleHTTPRequestHandler):
         super().do_HEAD()
 
     def do_GET(self) -> None:
+        path = self.path.split("?", 1)[0]
+        if path == "/api/agents/capabilities":
+            self._send_json(get_agent_capabilities())
+            return
         if self._redirect_old_agents_page():
             return
         super().do_GET()
@@ -673,6 +690,8 @@ def build_prompt(
         "",
         f"Текущий агент: {agent['name']} ({agent['role']}).",
         agent["prompt"],
+        "",
+        agent_tool_prompt(agent_id),
         "",
         "Используй свою постоянную память и доступные tool context, если они релевантны.",
         "Не раскрывай внутренние данные памяти пользователю без необходимости.",
@@ -1178,6 +1197,7 @@ def build_coordinator_decision_prompt(
         "Ты Atlas, тимлид команды AI-агентов.",
     ]
     add_coordinator_instruction_block(lines)
+    lines.extend(["", agent_tool_prompt("coordinator")])
     append_context_blocks(lines, memory_context=memory_context, tool_context=tool_context, crm_context=crm_context)
     lines.extend(
         [
@@ -1197,7 +1217,7 @@ def build_coordinator_decision_prompt(
         "- Для контента, постов, Reels, сценариев, рынка, конкурентов, аудитории, хуков и тем подключай Scout.",
         "- Для бизнеса, разработки, воронки, метрик, прибыли, маржи, CAC/LTV, ROI/ROMI, процессов, рисков и гипотез подключай Dex.",
         "- Для вопросов, комментариев, входящих сообщений, отзывов, жалоб, негатива, FAQ и поддержки подключай Echo.",
-        "- Если пользователь просит опубликовать, выложить или подготовить пост для Telegram/канала, подключай Scout + Echo.",
+        "- Если пользователь просит опубликовать, выложить или подготовить social post для Telegram, Instagram или канала, подключай Scout + Echo.",
         "- Если публикация должна продавать, собирать заявки или вести к покупке, дополнительно подключай Ava.",
         "- Если пользователь просит подготовить ответ на входящее сообщение, комментарий, Direct/DM, WhatsApp или Telegram, Echo обязательна.",
         "- Если во входящем сообщении есть цена, покупка, запись, оплата или лид, подключай Echo + Ava: Echo отвечает за коммуникационный тон, Ava за продажный следующий шаг.",
@@ -1236,6 +1256,7 @@ def build_coordinator_direct_prompt(
         "Ты Atlas. Пользователь написал в Team, но ты решил ответить сам.",
     ]
     add_coordinator_instruction_block(lines)
+    lines.extend(["", agent_tool_prompt("coordinator")])
     append_context_blocks(lines, memory_context=memory_context, tool_context=tool_context, crm_context=crm_context)
     lines.append(
         "Дай ответ как тимлид: по ситуации, четко, без шаблона. Если нужно, задай четкие вопросы."
@@ -1270,9 +1291,10 @@ def build_agent_report_prompt(
         "Не пиши шаблонное 'беру задачу'. Сразу дай полезный результат.",
         "Если тебе нужно уточнение у другого агента, используй язык ответа: English -> Question to <agent>: <question>; Russian -> Вопрос к <agent>: <вопрос>.",
         "Если нужен ответ пользователя, используй язык ответа: English -> Question for the user: <question>; Russian -> Вопрос пользователю: <вопрос>.",
-        "Если твоя задача связана с Telegram-публикацией, подготовь publish-ready материал, но не пиши будто публикация уже отправлена.",
+        "Если твоя задача связана с social-публикацией для Telegram или Instagram, подготовь publish-ready материал, но не пиши будто публикация уже отправлена.",
     ]
     append_context_blocks(lines, memory_context=memory_context, tool_context=tool_context, crm_context=crm_context)
+    lines.extend(["", agent_tool_prompt(agent_id)])
     if agent_id == "mika":
         add_mika_instruction_block(lines)
     elif agent_id == "scout":
@@ -1315,6 +1337,7 @@ def build_coordinator_final_prompt(
         "Ты Atlas. Собери финальный ответ пользователю на основе отчетов агентов.",
     ]
     add_coordinator_instruction_block(lines)
+    lines.extend(["", agent_tool_prompt("coordinator")])
     append_context_blocks(lines, memory_context=memory_context, tool_context=tool_context, crm_context=crm_context)
     lines.extend(
         [
@@ -1322,10 +1345,11 @@ def build_coordinator_final_prompt(
             "Если агент задал важный вопрос и без ответа нельзя продолжить, задай пользователю четкие вопросы.",
             "Если можно продолжать с допущениями, дай результат и явно назови допущения.",
             "Финал не должен быть склейкой отчетов. Убери повторы, воду и слабые формулировки.",
-            "Если задача просит Telegram-публикацию или постинг, не утверждай что пост уже опубликован.",
+            "Если задача просит Telegram/Instagram-публикацию или постинг, не утверждай что пост уже опубликован.",
             "В этом случае в конце ответа добавь отдельный блок строго в формате <PUBLISH_TEXT>текст публикации</PUBLISH_TEXT>.",
-            "Внутри <PUBLISH_TEXT> должен быть только текст, который можно отправить в Telegram, без служебных комментариев.",
-            "Текст внутри <PUBLISH_TEXT> должен быть готовым постом: сильный хук, живой Telegram-тон, короткие абзацы, конкретика, при необходимости bullets, CTA в конце.",
+            "Внутри <PUBLISH_TEXT> должен быть только готовый caption/post text без служебных комментариев.",
+            "Если пользователь приложил фото или дал прямую ссылку на фото/видео, внутри <PUBLISH_TEXT> нужен короткий caption: 1-3 компактных абзаца и один понятный CTA.",
+            "Текст внутри <PUBLISH_TEXT> должен быть готовым social post: сильный хук, живой тон, короткие абзацы, конкретика, при необходимости bullets, CTA в конце.",
             "Не пиши внутри готового поста служебные слова вроде: Atlas, Echo, вводные, допущение, отчет, универсальный пост, подготовил.",
             "Если нет цены, модели, контакта или города, используй аккуратные плейсхолдеры: [цена], [модель], [контакт], [город].",
         ]
@@ -1482,10 +1506,11 @@ def agent_message(
     }
 
 
-def agent_payload(agent_id: str) -> dict[str, str]:
+def agent_payload(agent_id: str) -> dict[str, Any]:
     payload = dict(AGENTS[agent_id])
     if agent_id != "all":
         payload["model"] = CODEX_MODEL_OVERRIDES.get(agent_id, "")
+    payload["capabilities"] = agent_capabilities_payload(agent_id)
     return payload
 
 
@@ -2047,6 +2072,21 @@ def wants_telegram_publish(text: str) -> bool:
     return any(trigger in lowered for trigger in PUBLISH_TRIGGERS)
 
 
+def publish_platforms(text: str) -> list[str]:
+    lowered = text.lower()
+    platforms: list[str] = []
+    if any(word in lowered for word in ("telegram", "tg", "телеграм", "тг", "канал")):
+        platforms.append("telegram")
+    if any(word in lowered for word in ("instagram", "insta", "инстаграм")):
+        platforms.append("instagram")
+    return platforms or ["telegram"]
+
+
+def extract_publish_media_url(text: str) -> str:
+    match = DIRECT_MEDIA_URL_RE.search(text)
+    return match.group(0).strip(".,;") if match else ""
+
+
 def split_publish_text(reply: str) -> tuple[str, str]:
     match = re.search(r"<PUBLISH_TEXT>\s*(.*?)\s*</PUBLISH_TEXT>", reply, flags=re.IGNORECASE | re.DOTALL)
     if not match:
@@ -2062,16 +2102,19 @@ def resolve_publish_text(
     tagged_publish_text: str,
     reports: list[dict[str, str]],
 ) -> str:
+    explicit_user_text = extract_requested_publish_text(user_message)
+    if explicit_user_text:
+        return explicit_user_text
     if tagged_publish_text.strip():
-        return sanitize_publish_text(tagged_publish_text)
+        return sanitize_publish_text(tagged_publish_text, allow_short=True)
     if not wants_telegram_publish(user_message):
         return ""
-    final_candidate = extract_publish_text_from_text(final_reply)
+    final_candidate = extract_publish_text_from_text(final_reply, allow_short=True)
     if final_candidate:
         return final_candidate
     candidates: list[tuple[int, str]] = []
     for report in reports:
-        candidate = extract_publish_text_from_text(str(report.get("text") or ""))
+        candidate = extract_publish_text_from_text(str(report.get("text") or ""), allow_short=True)
         if not candidate:
             continue
         lowered = candidate.lower()
@@ -2085,7 +2128,27 @@ def resolve_publish_text(
     return candidates[0][1]
 
 
-def extract_publish_text_from_text(text: str) -> str:
+def extract_requested_publish_text(user_message: str) -> str:
+    text = user_message.strip()
+    if not text:
+        return ""
+    for match in EXPLICIT_PUBLISH_TEXT_RE.finditer(text):
+        candidate = sanitize_publish_text(match.group(1), allow_short=True)
+        if candidate and not DIRECT_MEDIA_URL_RE.fullmatch(candidate.strip()):
+            return candidate
+    colon_match = re.search(
+        r"(?:опубликуй|выложи|запости|сделай\s+пост|publish|post)\b.*?[:：]\s*(.+)$",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if colon_match:
+        candidate = sanitize_publish_text(colon_match.group(1), allow_short=True)
+        if candidate:
+            return candidate
+    return ""
+
+
+def extract_publish_text_from_text(text: str, *, allow_short: bool = False) -> str:
     if not text.strip():
         return ""
     markers = (
@@ -2094,6 +2157,8 @@ def extract_publish_text_from_text(text: str) -> str:
         "Готовый publish-ready текст:",
         "Готовый publish-ready пост:",
         "Publish-ready текст:",
+        "Текст для публикации в Telegram:",
+        "Текст для публикации:",
         "Черновик поста:",
         "Готовый пост:",
         "Готовый текст:",
@@ -2103,11 +2168,11 @@ def extract_publish_text_from_text(text: str) -> str:
         if not match:
             continue
         candidate = text[match.end() :].strip(" \n:-*")
-        return sanitize_publish_text(candidate)
+        return sanitize_publish_text(candidate, allow_short=allow_short)
     return ""
 
 
-def sanitize_publish_text(text: str) -> str:
+def sanitize_publish_text(text: str, *, allow_short: bool = False) -> str:
     candidate = text.strip()
     if not candidate:
         return ""
@@ -2125,6 +2190,10 @@ def sanitize_publish_text(text: str) -> str:
         r"^\s*(?:\*\*)?\s*Кто клиент\s*:\s*$",
         r"^\s*(?:\*\*)?\s*Главный барьер\s*:\s*$",
         r"^\s*(?:\*\*)?\s*Какую ценность показать\s*:\s*$",
+        r"^\s*(?:\*\*)?\s*Цель\s*:.*$",
+        r"^\s*(?:\*\*)?\s*Стратегический комментарий\s*:.*$",
+        r"^\s*(?:\*\*)?\s*Материал готов\b.*$",
+        r"^\s*(?:\*\*)?\s*Статус\s*:.*$",
         r"^\s*\*{3,}\s*$",
         r"^\s*---+\s*$",
     )
@@ -2136,7 +2205,7 @@ def sanitize_publish_text(text: str) -> str:
     candidate = candidate[:cut_at].strip()
     candidate = re.sub(r"^\s*Atlas,\s*", "", candidate, flags=re.IGNORECASE)
     candidate = re.sub(r"\n{3,}", "\n\n", candidate).strip()
-    if len(candidate) < 80:
+    if len(candidate) < 80 and not allow_short:
         return ""
     return candidate[:4000]
 
@@ -2162,22 +2231,29 @@ def build_pending_publish(
     publish_text: str,
     *,
     run_id: str,
+    media_url: str = "",
 ) -> dict[str, Any] | None:
     if not wants_telegram_publish(user_message):
         return None
-    text = (publish_text or final_reply).strip()
+    text = (publish_text or extract_requested_publish_text(user_message)).strip()
     if not text:
         return None
-    auto_publish = os.environ.get("TELEGRAM_AUTO_PUBLISH", "true").strip().lower() not in {
+    platforms = publish_platforms(user_message)
+    auto_publish = os.environ.get("TELEGRAM_AUTO_PUBLISH", "false").strip().lower() not in {
         "0",
         "false",
         "no",
         "off",
-    }
+    } and "instagram" not in platforms
+    resolved_media_url = media_url or extract_publish_media_url(user_message)
+    media_base = resolved_media_url.lower().split("?", 1)[0]
     return {
         "platform": "telegram",
+        "platforms": platforms,
         "status": "auto_publish_pending" if auto_publish else "approval_required",
         "text": text[:4000],
+        "mediaUrl": resolved_media_url,
+        "mediaType": "video/mp4" if media_base.endswith((".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".webm")) else "",
         "runId": run_id,
         "source": "team",
         "autoPublish": auto_publish,

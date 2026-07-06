@@ -1,7 +1,6 @@
 from urllib.parse import urlencode
 import secrets
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
 from google.auth.transport import requests as google_requests
@@ -10,6 +9,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.connected_apps.google_oauth import (
+    exchange_google_code,
+    google_login_provider_keys,
+    google_login_scopes,
+    store_google_oauth_accounts,
+)
 from app.db.session import get_db
 from app.models import User
 from app.schemas import (
@@ -167,9 +172,9 @@ def google_start() -> RedirectResponse:
         "client_id": settings.google_client_id,
         "redirect_uri": settings.google_redirect_uri,
         "response_type": "code",
-        "scope": "openid email profile",
+        "scope": " ".join(google_login_scopes()),
         "access_type": "offline",
-        "prompt": "select_account",
+        "prompt": "consent select_account",
         "state": state,
     }
     response = RedirectResponse(f"{settings.google_auth_uri}?{urlencode(params)}")
@@ -197,35 +202,19 @@ async def google_callback(
     if not expected_state or expected_state != state:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state")
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        token_response = await client.post(
-            settings.google_token_uri,
-            data={
-                "code": code,
-                "client_id": settings.google_client_id,
-                "client_secret": settings.google_client_secret,
-                "redirect_uri": settings.google_redirect_uri,
-                "grant_type": "authorization_code",
-            },
-        )
-    if token_response.status_code >= 400:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google token exchange failed")
-
-    token_data = token_response.json()
+    token_data = await exchange_google_code(code=code, redirect_uri=settings.google_redirect_uri)
     raw_id_token = token_data.get("id_token")
     if not raw_id_token:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google did not return an ID token")
 
-    try:
-        id_info = id_token.verify_oauth2_token(
-            raw_id_token,
-            google_requests.Request(),
-            settings.google_client_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google identity") from exc
-
-    user = upsert_google_user(id_info, db)
+    user = upsert_google_user(verify_google_identity(raw_id_token), db)
+    await store_google_oauth_accounts(
+        db,
+        user=user,
+        token_data=token_data,
+        provider_keys=google_login_provider_keys(),
+    )
+    db.commit()
 
     response = RedirectResponse(f"{str(settings.frontend_url).rstrip('/')}/dashboard")
     set_session_cookie(response, user.id)

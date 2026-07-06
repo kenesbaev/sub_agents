@@ -42,6 +42,10 @@ const CHAT_WIDTH_MIN = 280;
 const CHAT_WIDTH_MAX = 520;
 const MAIN_WIDTH_MIN = 520;
 
+let officeConversationId = "default";
+let officeConversationTeamId = "default-team";
+let officeConversationTeamName = "Agent Office";
+let officeConversationSource = "ready";
 let accountKey = getGuestAccountKey();
 let chatSessionId = getOrCreateChatSessionId(accountKey);
 let storageReady = false;
@@ -1420,16 +1424,21 @@ function clearSpeechBubbles() {
 function applyOfficeTeam(rawTeam) {
   const team = normalizeTeamPayload(rawTeam);
   if (!team) return;
+  const restoredChatId = selectedChatId;
 
   window.clearTimeout(teamWorkTimer);
   teamWorkActive = false;
-  selectedIndex = 0;
-  selectedChatId = "all";
-  focusName.textContent = "Team";
 
   clearAgentModels();
   clearSpeechBubbles();
   agents = team.agents;
+  if (officeConversationTeamId === "default-team") {
+    officeConversationTeamId = team.id;
+  }
+  officeConversationTeamName = team.name;
+  selectedChatId = validChatId(restoredChatId) ? restoredChatId : "all";
+  selectedIndex = selectedChatId === "all" ? 0 : Math.max(0, agents.findIndex((agent) => agentChatId(agent) === selectedChatId));
+  focusName.textContent = selectedChatId === "all" ? "Team" : agents[selectedIndex]?.name || "Team";
 
   teamProfile.name = team.name;
   teamProfile.role = `${agents.length} agents`;
@@ -1665,17 +1674,17 @@ function getGuestAccountKey() {
   return next;
 }
 
-function getOrCreateChatSessionId(nextAccountKey) {
-  const key = `rebly-office-session:${nextAccountKey}`;
+function getOrCreateChatSessionId(nextAccountKey, nextConversationId = officeConversationId) {
+  const key = `rebly-office-session:${nextAccountKey}:${nextConversationId}`;
   const existing = safeStorageGet(key);
   if (existing) return existing;
-  const next = `office-${nextAccountKey}-${randomStorageId()}`;
+  const next = `office-${nextAccountKey}-${nextConversationId}-${randomStorageId()}`;
   safeStorageSet(key, next);
   return next;
 }
 
-function chatStorageKey(nextAccountKey = accountKey) {
-  return `rebly-office-chat-v${CHAT_STORAGE_VERSION}:${nextAccountKey}`;
+function chatStorageKey(nextAccountKey = accountKey, nextConversationId = officeConversationId) {
+  return `rebly-office-chat-v${CHAT_STORAGE_VERSION}:${nextAccountKey}:${nextConversationId}`;
 }
 
 function serializeChatThreads() {
@@ -1685,7 +1694,12 @@ function serializeChatThreads() {
       thread
         .filter((message) => message?.text && message.text !== "Thinking...")
         .slice(-120)
-        .map(({ images, animate, ...message }) => message),
+        .map(({ images, animate, ...message }) => ({
+          ...message,
+          pendingPublish: message.pendingPublish
+            ? { ...message.pendingPublish, mediaDataUrl: "" }
+            : message.pendingPublish,
+        })),
     ]),
   );
 }
@@ -1705,6 +1719,7 @@ function hydrateChatThreads(value) {
           from: String(message.from || ""),
           text: String(message.text || ""),
           time: String(message.time || ""),
+          savedAt: String(message.savedAt || ""),
           phase: String(message.phase || ""),
           audience: String(message.audience || ""),
           to: String(message.to || ""),
@@ -1720,15 +1735,99 @@ function hydrateChatThreads(value) {
 
 function normalizePendingPublish(value) {
   if (!value || typeof value !== "object" || typeof value.text !== "string") return null;
+  const platforms = normalizePublishPlatforms(value.platforms || value.platform);
   return {
-    platform: value.platform === "telegram" ? "telegram" : "telegram",
+    platform: platforms[0] || "telegram",
+    platforms,
     status: String(value.status || "approval_required"),
     text: String(value.text || ""),
+    mediaUrl: String(value.mediaUrl || value.media_url || ""),
+    mediaDataUrl: String(value.mediaDataUrl || value.media_data_url || ""),
+    mediaType: String(value.mediaType || value.media_type || ""),
+    mediaName: String(value.mediaName || value.media_name || ""),
     runId: String(value.runId || ""),
     source: String(value.source || "team"),
     autoPublish: Boolean(value.autoPublish),
     error: String(value.error || ""),
   };
+}
+
+function normalizePublishPlatforms(value) {
+  const raw = Array.isArray(value) ? value : [value];
+  const platforms = raw
+    .map((item) => String(item || "").toLowerCase())
+    .filter((item) => item === "telegram" || item === "instagram");
+  return [...new Set(platforms.length ? platforms : ["telegram"])];
+}
+
+function extractPublishMediaFromText(text) {
+  const urls = String(text || "").match(/https?:\/\/[^\s<>"')]+/gi) || [];
+  const mediaUrl = urls.find((url) => /\.(avif|gif|jpe?g|png|webp|m4v|mov|mp4|mpeg|mpg|webm)(?:[?#].*)?$/i.test(url));
+  if (!mediaUrl) return null;
+  const isVideo = /\.(m4v|mov|mp4|mpeg|mpg|webm)(?:[?#].*)?$/i.test(mediaUrl);
+  return {
+    mediaUrl,
+    mediaType: isVideo ? "video/mp4" : "image/jpeg",
+    mediaName: mediaUrl.split("/").pop()?.split(/[?#]/)[0] || (isVideo ? "video.mp4" : "image.jpg"),
+  };
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result || "")));
+    reader.addEventListener("error", () => reject(reader.error || new Error("Could not read media file")));
+    reader.readAsDataURL(file);
+  });
+}
+
+function allPersistedMessages() {
+  return [...chatThreads.values()]
+    .flat()
+    .filter((message) => message?.text && message.text !== "Thinking...")
+    .sort((a, b) => {
+      const aTime = Date.parse(a.savedAt || "");
+      const bTime = Date.parse(b.savedAt || "");
+      if (Number.isNaN(aTime) || Number.isNaN(bTime)) return 0;
+      return aTime - bTime;
+    });
+}
+
+function notifyConversationUpdated() {
+  if (!isDashboardEmbed || window.parent === window) return;
+  const messages = allPersistedMessages();
+  const lastMessage = messages[messages.length - 1];
+  window.parent.postMessage(
+    {
+      type: "rebly-office-conversation-updated",
+      conversation: {
+        id: officeConversationId,
+        teamId: officeConversationTeamId,
+        teamName: officeConversationTeamName,
+        source: officeConversationSource,
+        lastMessage: lastMessage?.text || "",
+        updatedAt: new Date().toISOString(),
+        unreadCount: 0,
+        messageCount: messages.length,
+      },
+    },
+    window.location.origin,
+  );
+}
+
+function applyOfficeConversation(rawConversation) {
+  const conversation = rawConversation && typeof rawConversation === "object" ? rawConversation : {};
+  const nextId = String(conversation.id || "default");
+  const changed = nextId !== officeConversationId;
+  officeConversationId = nextId;
+  officeConversationTeamId = String(conversation.teamId || officeConversationTeamId || "default-team");
+  officeConversationTeamName = String(conversation.teamName || officeConversationTeamName || "Agent Office");
+  officeConversationSource = conversation.source === "mine" ? "mine" : "ready";
+  if (changed) {
+    loadChatState(accountKey);
+  } else {
+    chatSessionId = getOrCreateChatSessionId(accountKey, officeConversationId);
+  }
 }
 
 function saveChatState() {
@@ -1740,11 +1839,12 @@ function saveChatState() {
       threads: serializeChatThreads(),
     }),
   );
+  notifyConversationUpdated();
 }
 
 function loadChatState(nextAccountKey) {
   accountKey = nextAccountKey;
-  chatSessionId = getOrCreateChatSessionId(accountKey);
+  chatSessionId = getOrCreateChatSessionId(accountKey, officeConversationId);
   storageReady = false;
 
   const raw = safeStorageGet(chatStorageKey(accountKey));
@@ -2031,9 +2131,47 @@ function createPublishCard(chatId, message) {
   card.className = `publish-card ${pending.status}`;
 
   const title = document.createElement("strong");
-  title.textContent = "Telegram publish";
+  const platforms = normalizePublishPlatforms(pending.platforms || pending.platform);
+  title.textContent = `Publish to ${platforms.map(platformLabel).join(" + ")}`;
   const preview = document.createElement("p");
   preview.textContent = pending.text;
+
+  card.append(title, preview);
+
+  if (pending.mediaDataUrl || pending.mediaUrl) {
+    const mediaChip = document.createElement("div");
+    mediaChip.className = "publish-media-chip";
+    if (pending.mediaDataUrl && pending.mediaType?.startsWith("image/")) {
+      const image = document.createElement("img");
+      image.src = pending.mediaDataUrl;
+      image.alt = "";
+      mediaChip.appendChild(image);
+    }
+    const mediaText = document.createElement("span");
+    mediaText.textContent = pending.mediaUrl || pending.mediaName || "Uploaded media";
+    mediaChip.appendChild(mediaText);
+    card.appendChild(mediaChip);
+  }
+
+  const mediaField = document.createElement("label");
+  mediaField.className = "publish-media-field";
+  const mediaLabel = document.createElement("span");
+  mediaLabel.textContent = platforms.includes("instagram") ? "Photo/video URL for Instagram" : "Photo/video URL";
+  const mediaInput = document.createElement("input");
+  mediaInput.type = "url";
+  mediaInput.placeholder = "https://.../image.jpg or video.mp4";
+  mediaInput.value = pending.mediaUrl || "";
+  mediaInput.addEventListener("input", () => {
+    pending.mediaUrl = mediaInput.value;
+    const inferred = extractPublishMediaFromText(mediaInput.value);
+    if (inferred) {
+      pending.mediaType = inferred.mediaType;
+      pending.mediaName = inferred.mediaName;
+    }
+    saveChatState();
+  });
+  mediaField.append(mediaLabel, mediaInput);
+  card.appendChild(mediaField);
 
   const action = document.createElement("button");
   action.type = "button";
@@ -2041,13 +2179,18 @@ function createPublishCard(chatId, message) {
   action.disabled = pending.status === "auto_publish_pending" || pending.status === "publishing" || pending.status === "published";
   action.addEventListener("click", () => publishPendingMessage(chatId, message));
 
-  card.append(title, preview, action);
+  card.appendChild(action);
   if (pending.error) {
     const error = document.createElement("small");
     error.textContent = pending.error;
     card.appendChild(error);
   }
   return card;
+}
+
+function platformLabel(platform) {
+  if (platform === "instagram") return "Instagram";
+  return "Telegram";
 }
 
 function publishButtonText(status) {
@@ -2063,6 +2206,7 @@ function appendChatMessage(chatId, message, { save = true } = {}) {
     chatThreads.set(chatId, []);
   }
   const entry = {
+    savedAt: new Date().toISOString(),
     time: currentChatTime(),
     animate: message.type !== "user",
     ...message,
@@ -2077,7 +2221,7 @@ function replaceChatMessage(chatId, current, next, { save = true } = {}) {
   const thread = chatThreads.get(chatId) || [];
   const index = thread.indexOf(current);
   if (index >= 0) {
-    thread.splice(index, 1, { time: currentChatTime(), animate: true, ...next });
+    thread.splice(index, 1, { savedAt: new Date().toISOString(), time: currentChatTime(), animate: true, ...next });
     if (save) saveChatState();
   }
   if (chatId === selectedChatId) renderChatMessages();
@@ -2408,6 +2552,18 @@ async function sendChatMessage(event) {
     const replies = normalizeAgentMessages(result, chatId);
     await playAgentMessages(chatId, loading, replies, activeChatRun);
     if (result.pendingPublish?.text) {
+      const pendingPublish = normalizePendingPublish(result.pendingPublish);
+      const linkedMedia = extractPublishMediaFromText(messageText);
+      if (linkedMedia && !pendingPublish.mediaUrl) {
+        pendingPublish.mediaUrl = linkedMedia.mediaUrl;
+        pendingPublish.mediaType = linkedMedia.mediaType;
+        pendingPublish.mediaName = linkedMedia.mediaName;
+      }
+      if (selectedImages[0] && !pendingPublish.mediaUrl && !pendingPublish.mediaDataUrl) {
+        pendingPublish.mediaDataUrl = await fileToDataUrl(selectedImages[0].file);
+        pendingPublish.mediaType = selectedImages[0].type || "image/jpeg";
+        pendingPublish.mediaName = selectedImages[0].name || "uploaded-image.jpg";
+      }
       const publishMessage = {
         author: "Echo",
         type: "agent",
@@ -2415,21 +2571,21 @@ async function sendChatMessage(event) {
         phase: "internal",
         to: "coordinator",
         text: result.pendingPublish.autoPublish
-          ? "Публикация готова. Echo отправляет ее в Telegram автоматически."
-          : "Публикация готова. Проверь текст и нажми Publish, когда можно отправлять в Telegram.",
-        pendingPublish: result.pendingPublish,
+          ? "Публикация готова. Echo отправляет ее автоматически через подключенные apps."
+          : "Публикация готова. Проверь текст и нажми Publish, когда можно отправлять.",
+        pendingPublish,
       };
       const activity = phaseActivity(publishMessage, chatId);
       setAgentLiveState(activity.agent, activity.state, "Publish ready");
       addActivity(
         activity.agent,
-        result.pendingPublish.autoPublish ? "auto-publish" : "publish-ready",
-        result.pendingPublish.autoPublish
-          ? "Sending the approved Telegram text automatically."
-          : "Prepared a Telegram publish card for approval.",
+        pendingPublish.autoPublish ? "auto-publish" : "publish-ready",
+        pendingPublish.autoPublish
+          ? "Sending the approved social post automatically."
+          : "Prepared a social publish card for approval.",
       );
       const entry = appendChatMessage(chatId, publishMessage);
-      if (result.pendingPublish.autoPublish) {
+      if (pendingPublish.autoPublish) {
         await publishPendingMessage(chatId, entry);
       }
     }
@@ -2461,12 +2617,18 @@ async function publishPendingMessage(chatId, message) {
   saveChatState();
   renderChatMessages();
   try {
-    const response = await fetch(`${AUTH_API}/api/publish/telegram`, {
+    const platforms = normalizePublishPlatforms(pending.platforms || pending.platform);
+    const response = await fetch(`${AUTH_API}/api/publish/social`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify({
         text: pending.text,
+        platforms,
+        media_url: pending.mediaUrl || null,
+        media_data_url: pending.mediaDataUrl || null,
+        media_type: pending.mediaType || null,
+        media_name: pending.mediaName || null,
         run_id: pending.runId,
         source: pending.source,
       }),
@@ -2475,17 +2637,24 @@ async function publishPendingMessage(chatId, message) {
     if (!response.ok) {
       throw new Error(payload.detail || `HTTP ${response.status}`);
     }
+    if (Array.isArray(payload.results)) {
+      const failed = payload.results.filter((result) => !result.ok);
+      if (failed.length) {
+        throw new Error(failed.map((result) => `${platformLabel(result.platform)}: ${result.error || "failed"}`).join(" | "));
+      }
+    }
     pending.status = "published";
     saveChatState();
+    const publishedText = `Published to ${platforms.map(platformLabel).join(" + ")}.`;
     appendChatMessage(chatId, {
       author: "Echo",
       type: "agent",
       from: "nova",
-      text: "Опубликовано в Telegram.",
+      text: publishedText,
     });
   } catch (error) {
     pending.status = "error";
-    pending.error = error instanceof Error ? error.message : "Telegram publish failed";
+    pending.error = error instanceof Error ? error.message : "Social publish failed";
     saveChatState();
     renderChatMessages();
   }
@@ -2570,6 +2739,12 @@ function notifyOfficeSelection(agentId) {
 function handleParentMessage(event) {
   if (event.origin !== window.location.origin) return;
   const data = event.data || {};
+  if (data.type === "rebly-office-open-conversation") {
+    applyOfficeConversation(data.conversation);
+    applyOfficeTeam(data.team);
+    notifyConversationUpdated();
+    return;
+  }
   if (data.type === "rebly-office-set-team") {
     applyOfficeTeam(data.team);
     return;

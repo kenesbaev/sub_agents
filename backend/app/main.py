@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth.router import router as auth_router
 from app.config import get_settings
+from app.connected_apps.router import router as connected_apps_router
 from app.db.base import Base
 from app.db.session import engine
 from app.integrations import router as integrations_router
@@ -14,6 +15,7 @@ app = FastAPI(title=settings.app_name)
 
 allowed_origins = {
     str(settings.frontend_url).rstrip("/"),
+    "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:4173",
     "http://127.0.0.1:4173",
@@ -40,3 +42,4 @@ def health() -> dict[str, str]:
 
 app.include_router(auth_router)
 app.include_router(integrations_router)
+app.include_router(connected_apps_router)
