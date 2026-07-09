@@ -15,6 +15,7 @@ from app.connected_apps.google_oauth import (
     google_login_scopes,
     store_google_oauth_accounts,
 )
+from app.core_domain.service import ensure_default_workspace
 from app.db.session import get_db
 from app.models import User
 from app.schemas import (
@@ -99,6 +100,9 @@ def upsert_google_user(id_info: dict, db: Session) -> User:
 
     db.commit()
     db.refresh(user)
+    ensure_default_workspace(db, user)
+    db.commit()
+    db.refresh(user)
     return user
 
 
@@ -117,6 +121,8 @@ def register(payload: RegisterRequest, response: Response, db: Session = Depends
     db.add(user)
     db.commit()
     db.refresh(user)
+    ensure_default_workspace(db, user)
+    db.commit()
     set_session_cookie(response, user.id)
     return AuthResponse(user=serialize_user(user))
 
@@ -127,6 +133,8 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
+    ensure_default_workspace(db, user)
+    db.commit()
     set_session_cookie(response, user.id)
     return AuthResponse(user=serialize_user(user))
 

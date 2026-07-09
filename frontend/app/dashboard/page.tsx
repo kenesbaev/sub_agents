@@ -143,6 +143,54 @@ interface TaskItem {
   title: string;
   owner: string;
   status: TaskStatus;
+  persisted?: boolean;
+}
+
+interface ApiAgent {
+  id: number;
+  slug: string;
+  name: string;
+  role: string;
+  avatar: string | null;
+  status: string;
+}
+
+interface ApiTeamAgent {
+  id: number;
+  agent_id: number;
+  position: number;
+  role_override: string | null;
+  agent: ApiAgent | null;
+}
+
+interface ApiTeam {
+  id: number;
+  workspace_id: number;
+  slug: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  status: string;
+  metadata_json: {
+    source?: "ready" | "mine";
+    agentsCount?: number;
+    output?: string;
+    tags?: string[];
+    icon?: string;
+    workflow?: string[];
+    roster?: AgentData[];
+  } | null;
+  agents: ApiTeamAgent[];
+}
+
+interface ApiTask {
+  id: number;
+  title: string;
+  description: string | null;
+  status: string;
+  input_json: {
+    owner?: string;
+  } | null;
 }
 
 interface AgentData {
@@ -571,11 +619,78 @@ const sharedTeams: TeamCardData[] = [
   }
 ];
 
+const teamIconMap: Record<string, LucideIcon> = {
+  BriefcaseBusiness,
+  LifeBuoy,
+  Rocket,
+  Share2,
+  UsersRound
+};
+
+function fallbackTeamBySlug(slug: string) {
+  return [...readyTeams, ...myTeams, ...sharedTeams].find((team) => team.id === slug) || null;
+}
+
+function mapApiTeamToCard(team: ApiTeam): TeamCardData {
+  const fallback = fallbackTeamBySlug(team.slug);
+  const metadata = team.metadata_json || {};
+  const roster =
+    metadata.roster?.length
+      ? metadata.roster
+      : team.agents
+          .map((membership) => membership.agent)
+          .filter((agent): agent is ApiAgent => Boolean(agent))
+          .map((agent) => ({
+            name: agent.name,
+            role: agent.role,
+            avatar: agent.avatar || undefined,
+            accent: "#635BFF",
+          }));
+  const agentsCount = metadata.agentsCount || roster.length || fallback?.agentsCount || 0;
+  return {
+    id: team.slug || String(team.id),
+    name: team.name || fallback?.name || "AI Team",
+    category: team.category || fallback?.category || "Workspace",
+    agents: `${agentsCount} ${agentsCount === 1 ? "agent" : "agents"}`,
+    agentsCount,
+    copy: fallback?.copy || team.description || "",
+    modalCopy: fallback?.modalCopy || team.description || "",
+    output: metadata.output || fallback?.output || "Workspace result",
+    tags: metadata.tags?.length ? metadata.tags : fallback?.tags || [],
+    icon: teamIconMap[metadata.icon || ""] || fallback?.icon || BriefcaseBusiness,
+    roster: roster.length ? roster : fallback?.roster || [],
+    workflow: metadata.workflow?.length ? metadata.workflow : fallback?.workflow || [],
+    modalWorkflow: fallback?.modalWorkflow || [],
+  };
+}
+
 const initialTasks: TaskItem[] = [
   { id: 1, title: "Review Instagram DM queue", owner: "Sofia", status: "Working" },
   { id: 2, title: "Prepare Telegram follow-up copy", owner: "Leo", status: "Queued" },
   { id: 3, title: "Create daily activity summary", owner: "Mira", status: "Done" }
 ];
+
+function mapApiTaskStatus(status: string): TaskStatus {
+  if (status === "completed") return "Done";
+  if (status === "queued" || status === "planning" || status === "assigned") return "Queued";
+  return "Working";
+}
+
+function mapTaskStatusToApi(status: TaskStatus) {
+  if (status === "Done") return "completed";
+  if (status === "Working") return "in_progress";
+  return "queued";
+}
+
+function mapApiTaskToItem(task: ApiTask): TaskItem {
+  return {
+    id: task.id,
+    title: task.title,
+    owner: task.input_json?.owner || "Workspace",
+    status: mapApiTaskStatus(task.status),
+    persisted: true,
+  };
+}
 
 const taskTemplates = [
   "Review Instagram DM queue",
@@ -654,6 +769,12 @@ export default function DashboardPage() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeConversation, setActiveConversation] = useState<ActiveOfficeConversation | null>(null);
   const [tasks, setTasks] = useState(initialTasks);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [tasksError, setTasksError] = useState("");
+  const [apiTeams, setApiTeams] = useState<TeamCardData[]>([]);
+  const [teamsLoading, setTeamsLoading] = useState(false);
+  const [teamsError, setTeamsError] = useState("");
+  const [teamsLoaded, setTeamsLoaded] = useState(false);
   const [supportCategory, setSupportCategory] = useState("Bug");
   const [supportSubject, setSupportSubject] = useState("");
   const [supportMessage, setSupportMessage] = useState("");
@@ -782,6 +903,8 @@ export default function DashboardPage() {
         if (payload?.user) {
           setUser(payload.user);
           loadIntegrations();
+          loadTeams();
+          loadTasks();
         }
       })
       .finally(() => setLoading(false));
@@ -834,15 +957,27 @@ export default function DashboardPage() {
     );
   }, [conversations, teamSearch]);
 
+  const readyTeamSource = useMemo(() => {
+    if (!teamsLoaded) return readyTeams;
+    const readyIds = new Set(readyTeams.map((team) => team.id));
+    return apiTeams.filter((team) => readyIds.has(team.id));
+  }, [apiTeams, teamsLoaded]);
+
+  const myTeamSource = useMemo(() => {
+    if (!teamsLoaded) return myTeams;
+    const readyIds = new Set(readyTeams.map((team) => team.id));
+    return apiTeams.filter((team) => !readyIds.has(team.id));
+  }, [apiTeams, teamsLoaded]);
+
   const filteredTeams = useMemo(() => {
     const query = teamSearch.trim().toLowerCase();
-    const source = teamTab === "mine" ? myTeams : readyTeams;
+    const source = teamTab === "mine" ? myTeamSource : readyTeamSource;
     return source.filter((team) => {
       const matchesQuery = !query || `${team.name} ${team.copy} ${team.tags.join(" ")}`.toLowerCase().includes(query);
       const matchesCategory = teamCategory === "All" || team.tags.includes(teamCategory);
       return matchesQuery && matchesCategory;
     });
-  }, [teamCategory, teamSearch, teamTab]);
+  }, [myTeamSource, readyTeamSource, teamCategory, teamSearch, teamTab]);
 
   function updateConversations(updater: (current: ConversationSummary[]) => ConversationSummary[]) {
     setConversations((current) => {
@@ -853,11 +988,11 @@ export default function DashboardPage() {
   }
 
   function teamSource(team: TeamCardData): "ready" | "mine" {
-    return myTeams.some((item) => item.id === team.id) ? "mine" : "ready";
+    return myTeamSource.some((item) => item.id === team.id) ? "mine" : "ready";
   }
 
   function findTeamById(teamId: string): TeamCardData | null {
-    return [...readyTeams, ...myTeams, ...sharedTeams].find((team) => team.id === teamId) || null;
+    return [...readyTeamSource, ...myTeamSource, ...sharedTeams, ...readyTeams, ...myTeams].find((team) => team.id === teamId) || null;
   }
 
   function openConversationOffice(conversation: ActiveOfficeConversation) {
@@ -891,7 +1026,7 @@ export default function DashboardPage() {
 
   function upsertConversationFromOffice(update: OfficeConversationUpdate) {
     if (!update.id || !update.teamId || Number(update.messageCount || 0) <= 0) return;
-    const source = update.source || activeConversation?.source || (myTeams.some((team) => team.id === update.teamId) ? "mine" : "ready");
+    const source = update.source || activeConversation?.source || (myTeamSource.some((team) => team.id === update.teamId) ? "mine" : "ready");
     const nextConversation: ConversationSummary = {
       id: update.id,
       teamId: update.teamId,
@@ -941,14 +1076,95 @@ export default function DashboardPage() {
     window.location.href = "/";
   }
 
-  function cycleTaskStatus(id: number) {
-    setTasks((current) =>
-      current.map((task) => {
-        if (task.id !== id) return task;
-        const nextStatus: TaskStatus = task.status === "Queued" ? "Working" : task.status === "Working" ? "Done" : "Queued";
-        return { ...task, status: nextStatus };
-      })
-    );
+  async function loadTeams() {
+    setTeamsLoading(true);
+    setTeamsError("");
+    try {
+      const response = await fetch(`${API_URL}/api/teams`, { credentials: "include" });
+      if (!response.ok) throw new Error("Unable to load teams");
+      const payload = (await response.json()) as ApiTeam[];
+      setApiTeams(payload.map(mapApiTeamToCard));
+      setTeamsLoaded(true);
+    } catch (error) {
+      setTeamsError(error instanceof Error ? error.message : "Unable to load teams");
+      setTeamsLoaded(false);
+    } finally {
+      setTeamsLoading(false);
+    }
+  }
+
+  async function loadTasks() {
+    setTasksLoading(true);
+    setTasksError("");
+    try {
+      const response = await fetch(`${API_URL}/api/tasks`, { credentials: "include" });
+      if (!response.ok) throw new Error("Unable to load tasks");
+      const payload = (await response.json()) as ApiTask[];
+      setTasks(payload.map(mapApiTaskToItem));
+    } catch (error) {
+      setTasksError(error instanceof Error ? error.message : "Unable to load tasks");
+      setTasks(initialTasks);
+    } finally {
+      setTasksLoading(false);
+    }
+  }
+
+  async function addTask() {
+    const nextIndex = tasks.length;
+    const owner = officeAgents[nextIndex % officeAgents.length].name;
+    const title = taskTemplates[nextIndex % taskTemplates.length];
+    try {
+      const response = await fetch(`${API_URL}/api/tasks`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          status: "queued",
+          priority: "normal",
+          input_json: { owner },
+        }),
+      });
+      if (!response.ok) throw new Error("Unable to create task");
+      const payload = (await response.json()) as ApiTask;
+      setTasks((current) => [...current, mapApiTaskToItem(payload)]);
+      setTasksError("");
+    } catch (error) {
+      setTasksError(error instanceof Error ? error.message : "Unable to create task");
+      setTasks((current) => [
+        ...current,
+        {
+          id: Date.now(),
+          title,
+          owner,
+          status: "Queued"
+        }
+      ]);
+    }
+  }
+
+  async function cycleTaskStatus(id: number) {
+    const target = tasks.find((task) => task.id === id);
+    if (!target) return;
+    const nextStatus: TaskStatus = target.status === "Queued" ? "Working" : target.status === "Working" ? "Done" : "Queued";
+    if (target.persisted) {
+      try {
+        const response = await fetch(`${API_URL}/api/tasks/${id}`, {
+          method: "PATCH",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: mapTaskStatusToApi(nextStatus) }),
+        });
+        if (!response.ok) throw new Error("Unable to update task");
+        const payload = (await response.json()) as ApiTask;
+        setTasks((current) => current.map((task) => (task.id === id ? mapApiTaskToItem(payload) : task)));
+        setTasksError("");
+        return;
+      } catch (error) {
+        setTasksError(error instanceof Error ? error.message : "Unable to update task");
+      }
+    }
+    setTasks((current) => current.map((task) => (task.id === id ? { ...task, status: nextStatus } : task)));
   }
 
   function submitSupport(event: FormEvent<HTMLFormElement>) {
@@ -1337,39 +1553,45 @@ export default function DashboardPage() {
               <button
                 className="button solid"
                 type="button"
-                onClick={() =>
-                  setTasks((current) => {
-                    const nextIndex = current.length;
-                    const owner = officeAgents[nextIndex % officeAgents.length].name;
-                    const title = taskTemplates[nextIndex % taskTemplates.length];
-                    return [
-                      ...current,
-                      {
-                        id: Date.now(),
-                        title,
-                        owner,
-                        status: "Queued"
-                      }
-                    ];
-                  })
-                }
+                onClick={addTask}
               >
                 <Plus size={16} /> Add task
               </button>
             </div>
             <div className="task-board">
-              {tasks.map((task) => (
-                <article className="task-row" key={task.id}>
-                  <span className={`status-badge ${task.status.toLowerCase()}`}>{task.status}</span>
-                  <div>
-                    <strong>{task.title}</strong>
-                    <small>{task.owner}</small>
-                  </div>
-                  <button className="button" type="button" onClick={() => cycleTaskStatus(task.id)}>
-                    <Check size={15} /> Move
-                  </button>
-                </article>
-              ))}
+              {tasksLoading ? (
+                <div className="shared-panel">
+                  <Loader2 size={24} />
+                  <strong>Loading tasks</strong>
+                  <p>Preparing your workspace queue.</p>
+                </div>
+              ) : tasks.length ? (
+                tasks.map((task) => (
+                  <article className="task-row" key={task.id}>
+                    <span className={`status-badge ${task.status.toLowerCase()}`}>{task.status}</span>
+                    <div>
+                      <strong>{task.title}</strong>
+                      <small>{task.owner}</small>
+                    </div>
+                    <button className="button" type="button" onClick={() => cycleTaskStatus(task.id)}>
+                      <Check size={15} /> Move
+                    </button>
+                  </article>
+                ))
+              ) : (
+                <div className="shared-panel">
+                  <ListTodo size={24} />
+                  <strong>No tasks yet</strong>
+                  <p>Create a task to add it to this workspace queue.</p>
+                </div>
+              )}
+              {tasksError && (
+                <div className="shared-panel">
+                  <LifeBuoy size={24} />
+                  <strong>Task sync issue</strong>
+                  <p>{tasksError}</p>
+                </div>
+              )}
             </div>
           </section>
         )}
@@ -1413,10 +1635,10 @@ export default function DashboardPage() {
                 <Clock size={16} /> History ({conversations.length})
               </button>
               <button className={teamTab === "ready" ? "active" : ""} type="button" onClick={() => setTeamTab("ready")}>
-                <Rocket size={16} /> Ready Teams ({readyTeams.length})
+                <Rocket size={16} /> Ready Teams ({readyTeamSource.length})
               </button>
               <button className={teamTab === "mine" ? "active" : ""} type="button" onClick={() => setTeamTab("mine")}>
-                <BriefcaseBusiness size={16} /> My Teams ({myTeams.length})
+                <BriefcaseBusiness size={16} /> My Teams ({myTeamSource.length})
               </button>
             </nav>
 
@@ -1487,19 +1709,33 @@ export default function DashboardPage() {
               )
             ) : (
               <div className={`market-grid ${teamViewMode === "list" ? "team-list-mode" : ""}`}>
-                {filteredTeams.map((team) => {
-                  const expanded = expandedTeam === team.id;
-                  return (
-                    <TeamCard
-                      team={team}
-                      key={team.id}
-                      expanded={expanded}
-                      onToggle={() => setExpandedTeam(expanded ? "" : team.id)}
-                      onDetails={() => setDetailTeam(team)}
-                      onHire={() => openTeamOffice(team)}
-                    />
-                  );
-                })}
+                {teamsLoading ? (
+                  <div className="shared-panel">
+                    <Loader2 size={24} />
+                    <strong>Loading teams</strong>
+                    <p>Preparing your workspace teams.</p>
+                  </div>
+                ) : filteredTeams.length ? (
+                  filteredTeams.map((team) => {
+                    const expanded = expandedTeam === team.id;
+                    return (
+                      <TeamCard
+                        team={team}
+                        key={team.id}
+                        expanded={expanded}
+                        onToggle={() => setExpandedTeam(expanded ? "" : team.id)}
+                        onDetails={() => setDetailTeam(team)}
+                        onHire={() => openTeamOffice(team)}
+                      />
+                    );
+                  })
+                ) : (
+                  <div className="shared-panel">
+                    <UsersRound size={24} />
+                    <strong>No teams found</strong>
+                    <p>{teamsError || "This workspace does not have teams in this view yet."}</p>
+                  </div>
+                )}
               </div>
             )}
           </section>
