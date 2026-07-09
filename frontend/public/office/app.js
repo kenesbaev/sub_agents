@@ -304,15 +304,18 @@ function cloneAgent(agent) {
 
 function normalizeTeamAgent(rawAgent, index) {
   const base = DEFAULT_AGENTS[index % DEFAULT_AGENTS.length];
+  const requestedId = String(rawAgent?.id || "").trim();
+  const allowedId = DEFAULT_AGENTS.some((agent) => agent.id === requestedId) ? requestedId : base.id;
+  const runtimeBase = DEFAULT_AGENTS.find((agent) => agent.id === allowedId) || base;
   const name = String(rawAgent?.name || base.name || `Agent ${index + 1}`).trim();
   const role = String(rawAgent?.role || base.role || "AI agent").trim();
   return {
-    id: base.id,
+    id: allowedId,
     name,
     role,
-    kind: "human",
-    color: String(rawAgent?.color || rawAgent?.accent || base.color || "#4f5bd5"),
-    avatar: String(rawAgent?.avatar || base.avatar || "/images/agents/coordinator.png"),
+    kind: runtimeBase.kind || "human",
+    color: String(rawAgent?.color || rawAgent?.accent || runtimeBase.color || "#4f5bd5"),
+    avatar: String(rawAgent?.avatar || runtimeBase.avatar || "/images/agents/coordinator.png"),
     slot: index % slots.length,
     state: index === 0 ? "focused" : "idle",
     bubble: index === 0 ? "Team ready" : "Ready",
@@ -1725,6 +1728,8 @@ function hydrateChatThreads(value) {
           to: String(message.to || ""),
           isFinal: Boolean(message.isFinal),
           runId: String(message.runId || ""),
+          taskId: String(message.taskId || ""),
+          agentStatus: message.agentStatus || null,
           animate: false,
           pendingPublish: normalizePendingPublish(message.pendingPublish),
         })),
@@ -1746,6 +1751,7 @@ function normalizePendingPublish(value) {
     mediaType: String(value.mediaType || value.media_type || ""),
     mediaName: String(value.mediaName || value.media_name || ""),
     runId: String(value.runId || ""),
+    taskId: value.taskId || value.task_id || null,
     source: String(value.source || "team"),
     autoPublish: Boolean(value.autoPublish),
     error: String(value.error || ""),
@@ -2244,6 +2250,8 @@ function normalizeAgentMessages(result, fallbackChatId) {
       to: message.to || "",
       isFinal: Boolean(message.isFinal),
       runId: message.runId || "",
+      taskId: message.taskId || result.task?.id || "",
+      agentStatus: message.agentStatus || null,
       pendingPublish: normalizePendingPublish(message.pendingPublish),
     }));
 }
@@ -2293,6 +2301,8 @@ async function requestAgentChat(chatId, text, files = [], runId = createClientRu
     sessionId: chatSessionId,
     accountId: accountKey,
     runId,
+    teamId: officeConversationTeamId,
+    teamName: officeConversationTeamName,
   };
   let lastError = null;
   for (const [index, apiUrl] of AGENT_CHAT_API_CANDIDATES.entries()) {
@@ -2459,6 +2469,40 @@ function setAgentLiveState(agent, state, bubble) {
   renderRoster();
 }
 
+function officeStateForTaskStatus(status) {
+  const value = String(status || "").toLowerCase();
+  if (value === "working" || value === "planning" || value === "assigned") return "working";
+  if (value === "completed") return "happy";
+  if (value === "failed") return "focused";
+  if (value === "waiting") return "focused";
+  return "idle";
+}
+
+function bubbleForTaskStatus(status) {
+  const value = String(status || "").toLowerCase();
+  return {
+    ready: "Ready",
+    planning: "Planning",
+    assigned: "Waiting",
+    waiting: "Waiting",
+    working: "Working",
+    completed: "Completed",
+    failed: "Failed",
+  }[value] || "Ready";
+}
+
+function applyAgentStatus(status) {
+  if (!status?.id) return;
+  const agent = agentByChatId(status.id);
+  if (!agent) return;
+  setAgentLiveState(agent, officeStateForTaskStatus(status.status), bubbleForTaskStatus(status.status));
+}
+
+function applyAgentStatuses(statuses) {
+  if (!Array.isArray(statuses)) return;
+  statuses.forEach(applyAgentStatus);
+}
+
 function markTeamAccepted(chatId, text) {
   const lang = detectUserLanguage(text);
   const agent = chatId === "all" ? agentByChatId("coordinator") : agentByChatId(chatId);
@@ -2484,6 +2528,7 @@ async function playAgentMessages(chatId, loadingEntry, replies, run = null) {
   const first = replies[0] || agentErrorReply(new Error(uiText("empty", "ru")));
   const firstActivity = phaseActivity(first, chatId);
   setAgentLiveState(firstActivity.agent, firstActivity.state, firstActivity.bubble);
+  applyAgentStatus(first.agentStatus);
   addActivity(firstActivity.agent, firstActivity.action, firstActivity.detail);
   if (loadingEntry) {
     replaceChatMessage(chatId, loadingEntry, first);
@@ -2496,6 +2541,7 @@ async function playAgentMessages(chatId, loadingEntry, replies, run = null) {
     if (run?.cancelRequested) throw new Error("Task stopped by user.");
     const activity = phaseActivity(reply, chatId);
     setAgentLiveState(activity.agent, activity.state, activity.bubble);
+    applyAgentStatus(reply.agentStatus);
     addActivity(activity.agent, activity.action, activity.detail);
     appendChatMessage(chatId, reply);
     await sleep(reply.phase === "final" ? 220 : 680);
@@ -2551,6 +2597,7 @@ async function sendChatMessage(event) {
     }
     const replies = normalizeAgentMessages(result, chatId);
     await playAgentMessages(chatId, loading, replies, activeChatRun);
+    applyAgentStatuses(result.agentStatuses);
     if (result.pendingPublish?.text) {
       const pendingPublish = normalizePendingPublish(result.pendingPublish);
       const linkedMedia = extractPublishMediaFromText(messageText);
@@ -2630,6 +2677,7 @@ async function publishPendingMessage(chatId, message) {
         media_type: pending.mediaType || null,
         media_name: pending.mediaName || null,
         run_id: pending.runId,
+        task_id: pending.taskId || null,
         source: pending.source,
       }),
     });

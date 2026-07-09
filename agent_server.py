@@ -26,6 +26,9 @@ ROOT = Path(__file__).resolve().parent
 KALIYA_CORE_SRC = ROOT / "kaliya-core" / "src"
 if KALIYA_CORE_SRC.exists() and str(KALIYA_CORE_SRC) not in sys.path:
     sys.path.insert(0, str(KALIYA_CORE_SRC))
+BACKEND_SRC = ROOT / "backend"
+if BACKEND_SRC.exists() and str(BACKEND_SRC) not in sys.path:
+    sys.path.insert(0, str(BACKEND_SRC))
 
 from kaliya.agent_memory import (  # noqa: E402
     DEFAULT_ACCOUNT_ID,
@@ -146,6 +149,37 @@ EXPLICIT_PUBLISH_TEXT_RE = re.compile(r"[\"“”«»']([^\"“”«»']{1,4000}
 PENDING_TEAM_RUNS: dict[str, dict[str, Any]] = {}
 ACTIVE_AGENT_RUNS: dict[str, dict[str, Any]] = {}
 ACTIVE_AGENT_RUNS_LOCK = threading.Lock()
+SOCIAL_POSTING_TEAM_SLUG = "social-posting-team"
+SOCIAL_POSTING_AGENT_CHAIN = (
+    {
+        "runtimeId": "scout",
+        "dbSlug": "scout",
+        "name": "Scout",
+        "role": "Research",
+        "task": "Research the context, audience angle, travel signal, hook options, and any cultural sensitivities for the post.",
+    },
+    {
+        "runtimeId": "mika",
+        "dbSlug": "mira",
+        "name": "Mira",
+        "role": "Copy + creative",
+        "task": "Write the publish-ready caption/post text using Scout's context. Keep it natural and ready for Telegram.",
+    },
+    {
+        "runtimeId": "dev",
+        "dbSlug": "dex",
+        "name": "Dex",
+        "role": "Publisher",
+        "task": "Check that the material is safe to publish, identify the target platform, and prepare the final publishing handoff.",
+    },
+    {
+        "runtimeId": "nova",
+        "dbSlug": "echo",
+        "name": "Echo",
+        "role": "Analytics",
+        "task": "Review the final post for clarity, publish-readiness, and concise status reporting to Atlas.",
+    },
+)
 
 
 class AgentRunCancelled(RuntimeError):
@@ -158,6 +192,189 @@ def normalize_run_id(value: object | None = None) -> str:
     raw = str(value or "").strip()
     clean = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw)[:80].strip(".-")
     return clean or f"run-{uuid.uuid4().hex[:12]}"
+
+
+def user_id_from_account_id(account_id: str) -> int | None:
+    match = re.fullmatch(r"user-(\d+)", str(account_id or "").strip())
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def load_domain_modules() -> dict[str, Any] | None:
+    try:
+        from sqlalchemy import select  # type: ignore
+
+        from app.core_domain.service import ensure_default_workspace  # type: ignore
+        from app.db.session import SessionLocal  # type: ignore
+        from app.models import Agent, Task, Team, User  # type: ignore
+    except Exception:
+        return None
+    return {
+        "select": select,
+        "ensure_default_workspace": ensure_default_workspace,
+        "SessionLocal": SessionLocal,
+        "Agent": Agent,
+        "Task": Task,
+        "Team": Team,
+        "User": User,
+    }
+
+
+class SocialTaskBridge:
+    def __init__(self, account_id: str, session_id: str, run_id: str, message: str, team_slug: str) -> None:
+        self.account_id = account_id
+        self.session_id = session_id
+        self.run_id = run_id
+        self.message = message
+        self.team_slug = team_slug
+        self.modules = load_domain_modules()
+        self.user_id = user_id_from_account_id(account_id)
+        self.task_id: int | None = None
+        self.workspace_id: int | None = None
+        self.team_id: int | None = None
+        self.enabled = bool(self.modules and self.user_id)
+
+    def create_task(self) -> dict[str, Any] | None:
+        if not self.enabled or not self.modules or not self.user_id:
+            return None
+        SessionLocal = self.modules["SessionLocal"]
+        User = self.modules["User"]
+        Team = self.modules["Team"]
+        Task = self.modules["Task"]
+        select = self.modules["select"]
+        ensure_default_workspace = self.modules["ensure_default_workspace"]
+        with SessionLocal() as db:
+            user = db.get(User, self.user_id)
+            if not user:
+                self.enabled = False
+                return None
+            workspace = ensure_default_workspace(db, user)
+            team = db.scalar(select(Team).where(Team.workspace_id == workspace.id, Team.slug == self.team_slug))
+            task = Task(
+                workspace_id=workspace.id,
+                team_id=team.id if team else None,
+                title=social_task_title(self.message),
+                description=self.message[:10000],
+                status="queued",
+                priority="normal",
+                progress=0,
+                input_json={
+                    "source": "office",
+                    "teamId": self.team_slug,
+                    "runId": self.run_id,
+                    "sessionId": self.session_id,
+                    "accountId": self.account_id,
+                    "message": self.message,
+                    "owner": "Atlas",
+                },
+                created_by=user.id,
+            )
+            db.add(task)
+            db.commit()
+            db.refresh(task)
+            self.task_id = task.id
+            self.workspace_id = workspace.id
+            self.team_id = team.id if team else None
+            return self.payload(status=task.status, progress=task.progress)
+
+    def payload(self, *, status: str, progress: int) -> dict[str, Any]:
+        return {
+            "id": self.task_id,
+            "workspaceId": self.workspace_id,
+            "teamId": self.team_id,
+            "status": status,
+            "progress": progress,
+            "runId": self.run_id,
+        }
+
+    def update_task(
+        self,
+        status: str,
+        *,
+        progress: int | None = None,
+        result_json: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not self.enabled or not self.modules or not self.task_id:
+            return None
+        SessionLocal = self.modules["SessionLocal"]
+        Task = self.modules["Task"]
+        with SessionLocal() as db:
+            task = db.get(Task, self.task_id)
+            if not task:
+                self.enabled = False
+                return None
+            task.status = status
+            if progress is not None:
+                task.progress = max(0, min(100, progress))
+            if result_json is not None:
+                task.result_json = {**(task.result_json or {}), **result_json}
+            if error is not None:
+                task.error = error
+            db.commit()
+            return self.payload(status=task.status, progress=task.progress)
+
+    def update_agent(self, db_slug: str, status: str) -> None:
+        if not self.enabled or not self.modules or not self.workspace_id:
+            return
+        SessionLocal = self.modules["SessionLocal"]
+        Agent = self.modules["Agent"]
+        select = self.modules["select"]
+        with SessionLocal() as db:
+            agent = db.scalar(select(Agent).where(Agent.workspace_id == self.workspace_id, Agent.slug == db_slug))
+            if not agent:
+                return
+            agent.status = status
+            db.commit()
+
+
+class SocialAgentStatusTracker:
+    def __init__(self, bridge: SocialTaskBridge | None = None) -> None:
+        self.bridge = bridge
+        self.statuses: dict[str, dict[str, str]] = {}
+        self.set("coordinator", "ready", db_slug="atlas", name="Atlas")
+        for item in SOCIAL_POSTING_AGENT_CHAIN:
+            self.set(item["runtimeId"], "ready", db_slug=item["dbSlug"], name=item["name"])
+
+    def set(self, runtime_id: str, status: str, *, db_slug: str = "", name: str = "") -> dict[str, str]:
+        payload = {
+            "id": runtime_id,
+            "name": name or display_agent_name(runtime_id),
+            "status": status,
+        }
+        self.statuses[runtime_id] = payload
+        if self.bridge and db_slug:
+            self.bridge.update_agent(db_slug, db_agent_status(status))
+        return payload
+
+    def payload(self) -> list[dict[str, str]]:
+        return list(self.statuses.values())
+
+
+def db_agent_status(status: str) -> str:
+    return {
+        "ready": "ready",
+        "planning": "planning",
+        "assigned": "waiting",
+        "working": "working",
+        "waiting": "waiting",
+        "completed": "completed",
+        "failed": "failed",
+    }.get(status, "ready")
+
+
+def display_agent_name(runtime_id: str) -> str:
+    return AGENTS.get(runtime_id, {}).get("name", runtime_id)
+
+
+def social_task_title(message: str) -> str:
+    clean = re.sub(r"\s+", " ", message).strip()
+    return (clean[:72] + "...") if len(clean) > 75 else clean or "Social post"
+
+
+def is_social_posting_team_run(team_id: str, message: str) -> bool:
+    return team_id == SOCIAL_POSTING_TEAM_SLUG and wants_telegram_publish(message)
 
 
 def start_agent_run(
@@ -586,6 +803,8 @@ class AgentHandler(SimpleHTTPRequestHandler):
             session_id = str(payload.get("sessionId", "")).strip() or "local-browser"
             account_id = normalize_account_id(str(payload.get("accountId", "")).strip() or ACCOUNT_ID)
             run_id = normalize_run_id(payload.get("runId"))
+            team_id = str(payload.get("teamId", "")).strip()
+            team_name = str(payload.get("teamName", "")).strip()
             history = clean_client_history(payload.get("history", []), current_message=message)
             raw_attachments = payload.get("attachments", [])
             if not isinstance(raw_attachments, list):
@@ -614,7 +833,15 @@ class AgentHandler(SimpleHTTPRequestHandler):
             check_agent_run_cancelled(run_id)
 
             if agent_id == "all":
-                result = run_team_chat(session_id, account_id, turn_context, history, run_id=run_id)
+                result = run_team_chat(
+                    session_id,
+                    account_id,
+                    turn_context,
+                    history,
+                    run_id=run_id,
+                    team_id=team_id,
+                    team_name=team_name,
+                )
                 result["runId"] = run_id
                 self._send_json(result)
                 return
@@ -903,6 +1130,8 @@ def run_team_chat(
     history: object | None = None,
     *,
     run_id: str,
+    team_id: str = "",
+    team_name: str = "",
 ) -> dict[str, Any]:
     check_agent_run_cancelled(run_id)
     pending_key = f"{account_id}:{session_id}"
@@ -913,6 +1142,18 @@ def run_team_chat(
             "Продолжение Team-задачи после уточняющего вопроса Atlas.\n\n"
             f"Исходная задача:\n{pending.get('message', '')}\n\n"
             f"Уточнение пользователя:\n{turn_context.message}"
+        )
+    if is_social_posting_team_run(team_id, effective_message):
+        return run_social_posting_team_chat(
+            session_id,
+            account_id,
+            turn_context,
+            history,
+            run_id=run_id,
+            effective_message=effective_message,
+            pending=pending,
+            team_id=team_id,
+            team_name=team_name,
         )
     coordinator = get_memory("coordinator", account_id=account_id)
     team_history = merge_histories(
@@ -1146,6 +1387,261 @@ def run_team_chat(
         "decision": decision,
         "pendingPublish": pending_publish,
     }
+
+
+def run_social_posting_team_chat(
+    session_id: str,
+    account_id: str,
+    turn_context: TurnContext,
+    history: object | None,
+    *,
+    run_id: str,
+    effective_message: str,
+    pending: dict[str, Any] | None,
+    team_id: str,
+    team_name: str,
+) -> dict[str, Any]:
+    bridge = SocialTaskBridge(account_id, session_id, run_id, effective_message, team_id)
+    task_payload = bridge.create_task()
+    statuses = SocialAgentStatusTracker(bridge if bridge.enabled else None)
+    messages: list[dict[str, Any]] = []
+    reports: list[dict[str, str]] = []
+    coordinator = get_memory("coordinator", account_id=account_id)
+    team_history = merge_histories(
+        memory_turns("coordinator", account_id=account_id, limit=8),
+        history,
+        limit=14,
+    )
+    user_message_id = coordinator.add_message(
+        role="user",
+        author="User",
+        text=effective_message,
+        event_type="social_task_user",
+        team_run_id=run_id,
+        metadata={
+            "sessionId": session_id,
+            "taskId": bridge.task_id,
+            "teamId": team_id,
+            "teamName": team_name,
+            "continuedFrom": pending.get("runId") if pending else "",
+        },
+    )
+    try:
+        statuses.set("coordinator", "planning", db_slug="atlas", name="Atlas")
+        task_payload = bridge.update_task("planning", progress=10) or task_payload
+        decision = coordinator_decision(
+            turn_context,
+            run_id,
+            account_id=account_id,
+            effective_message=effective_message,
+            history=team_history,
+        )
+        check_agent_run_cancelled(run_id)
+        assignments = social_posting_assignments(decision, effective_message)
+        task_payload = bridge.update_task(
+            "assigned",
+            progress=20,
+            result_json={"decision": decision, "assignments": assignments},
+        ) or task_payload
+        for item in SOCIAL_POSTING_AGENT_CHAIN:
+            statuses.set(item["runtimeId"], "waiting", db_slug=item["dbSlug"], name=item["name"])
+        coordinator_text = social_routing_text(decision, assignments)
+        routing_status = statuses.set("coordinator", "working", db_slug="atlas", name="Atlas")
+        messages.append(
+            agent_message(
+                "Atlas",
+                coordinator_text,
+                phase="routing",
+                audience="team",
+                from_id="coordinator",
+                to_id="team",
+                run_id=run_id,
+                agent_status=routing_status,
+                task_id=bridge.task_id,
+            )
+        )
+        coordinator.add_message(
+            role="assistant",
+            author="Atlas",
+            text=coordinator_text,
+            event_type="social_task_routing",
+            team_run_id=run_id,
+            metadata={"sessionId": session_id, "taskId": bridge.task_id, "decision": decision},
+        )
+
+        for index, assignment in enumerate(assignments):
+            check_agent_run_cancelled(run_id)
+            runtime_id = assignment["agentId"]
+            working_status = statuses.set(
+                runtime_id,
+                "working",
+                db_slug=assignment.get("dbSlug", ""),
+                name=assignment.get("displayName", display_agent_name(runtime_id)),
+            )
+            task_payload = bridge.update_task("in_progress", progress=min(85, 28 + index * 14)) or task_payload
+            contextual_assignment = {
+                **assignment,
+                "task": build_social_assignment_task(assignment, effective_message, reports),
+            }
+            item = run_single_assignment_report(
+                contextual_assignment,
+                effective_message,
+                turn_context,
+                run_id,
+                session_id,
+                account_id,
+                history,
+            )
+            report = item["report"]
+            report["agent"] = assignment.get("displayName", report.get("agent", "Agent"))
+            reports.append(report)
+            completed_status = statuses.set(
+                runtime_id,
+                "completed",
+                db_slug=assignment.get("dbSlug", ""),
+                name=assignment.get("displayName", display_agent_name(runtime_id)),
+            )
+            message = item["message"]
+            message["author"] = assignment.get("displayName", message.get("author", "Agent"))
+            message["agentStatus"] = completed_status
+            message["taskId"] = bridge.task_id
+            messages.append(message)
+
+        final_reply = run_ai(
+            build_coordinator_final_prompt(
+                effective_message,
+                team_history,
+                decision,
+                reports,
+                memory_context=coordinator.context_for_prompt(effective_message),
+                tool_context=turn_context.tool_context,
+                crm_context=get_crm(account_id=account_id).context_for_query(effective_message),
+                language_source=turn_context.message,
+            ),
+            agent_id="coordinator",
+            image_paths=turn_context.image_paths,
+            search_enabled=False,
+            run_id=run_id,
+        )
+        check_agent_run_cancelled(run_id)
+        final_reply, publish_text = split_publish_text(final_reply)
+        publish_text = resolve_publish_text(effective_message, final_reply, publish_text, reports)
+        if publish_text:
+            final_reply = append_copyable_post_block(final_reply, publish_text)
+        pending_publish = build_pending_publish(
+            effective_message,
+            final_reply,
+            publish_text,
+            run_id=run_id,
+            force_auto_publish=True,
+            task_id=bridge.task_id,
+        )
+        task_payload = bridge.update_task(
+            "in_progress" if pending_publish else "completed",
+            progress=90 if pending_publish else 100,
+            result_json={
+                "finalReply": final_reply,
+                "publishText": publish_text,
+                "reports": reports,
+                "pendingPublish": pending_publish,
+            },
+        ) or task_payload
+        final_status = statuses.set("coordinator", "completed", db_slug="atlas", name="Atlas")
+        coordinator_final_id = coordinator.add_message(
+            role="assistant",
+            author="Atlas",
+            text=final_reply,
+            event_type="social_task_final",
+            team_run_id=run_id,
+            metadata={"sessionId": session_id, "taskId": bridge.task_id, "runId": run_id},
+        )
+        auto_remember_if_useful(
+            coordinator,
+            text=f"User: {effective_message}\nFinal: {final_reply}",
+            title="Social Posting Team final",
+            source_message_id=coordinator_final_id or user_message_id,
+            event_type="social_task_final",
+            metadata={"sessionId": session_id, "runId": run_id, "taskId": bridge.task_id},
+        )
+        messages.append(
+            agent_message(
+                "Atlas",
+                final_reply,
+                phase="final",
+                audience="user",
+                from_id="coordinator",
+                is_final=True,
+                run_id=run_id,
+                agent_status=final_status,
+                task_id=bridge.task_id,
+            )
+        )
+        return {
+            "reply": final_reply,
+            "messages": messages,
+            "agent": agent_payload("all"),
+            "decision": decision,
+            "pendingPublish": pending_publish,
+            "task": task_payload,
+            "agentStatuses": statuses.payload(),
+        }
+    except Exception as exc:
+        for item in SOCIAL_POSTING_AGENT_CHAIN:
+            current = statuses.statuses.get(item["runtimeId"], {})
+            if current.get("status") == "working":
+                statuses.set(item["runtimeId"], "failed", db_slug=item["dbSlug"], name=item["name"])
+        statuses.set("coordinator", "failed", db_slug="atlas", name="Atlas")
+        bridge.update_task("failed", progress=0, error=str(exc), result_json={"runId": run_id})
+        raise
+
+
+def social_posting_assignments(decision: dict[str, Any], message: str) -> list[dict[str, str]]:
+    raw_assignments = normalize_assignments(decision.get("assignments"))
+    raw_summary = "\n".join(f"{item['agentId']}: {item['task']}" for item in raw_assignments)
+    assignments: list[dict[str, str]] = []
+    for item in SOCIAL_POSTING_AGENT_CHAIN:
+        assignments.append(
+            {
+                "agentId": item["runtimeId"],
+                "dbSlug": item["dbSlug"],
+                "displayName": item["name"],
+                "role": item["role"],
+                "task": (
+                    f"Role: {item['name']} / {item['role']}.\n"
+                    f"{item['task']}\n"
+                    f"Atlas planning context:\n{raw_summary or 'Atlas selected the Social Posting Team pipeline.'}\n"
+                    f"Original user request:\n{message}"
+                ),
+            }
+        )
+    return assignments
+
+
+def social_routing_text(decision: dict[str, Any], assignments: list[dict[str, str]]) -> str:
+    coordinator_note = str(decision.get("coordinatorMessage") or decision.get("summary") or "").strip()
+    lines = [coordinator_note or "Atlas planned the Social Posting Team route."]
+    lines.extend(f"{item['displayName']}: {item['role']}" for item in assignments)
+    return "\n".join(lines)
+
+
+def build_social_assignment_task(
+    assignment: dict[str, str],
+    effective_message: str,
+    previous_reports: list[dict[str, str]],
+) -> str:
+    previous = "\n\n".join(
+        f"{report.get('agent', 'Agent')} report:\n{report.get('text', '')}"
+        for report in previous_reports
+        if str(report.get("text", "")).strip()
+    )
+    if not previous:
+        previous = "No previous agent output yet."
+    return (
+        f"{assignment['task']}\n\n"
+        "Use previous agent output as context. Do not redo another agent's role unless needed for coherence.\n\n"
+        f"Previous outputs:\n{previous}\n\n"
+        f"User request:\n{effective_message}"
+    )
 
 
 def coordinator_decision(
@@ -1492,8 +1988,10 @@ def agent_message(
     to_id: str = "",
     is_final: bool = False,
     run_id: str = "",
+    agent_status: dict[str, str] | None = None,
+    task_id: int | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "author": author,
         "text": text,
         "type": "agent",
@@ -1504,6 +2002,11 @@ def agent_message(
         "isFinal": is_final,
         "runId": run_id,
     }
+    if agent_status:
+        payload["agentStatus"] = agent_status
+    if task_id:
+        payload["taskId"] = task_id
+    return payload
 
 
 def agent_payload(agent_id: str) -> dict[str, Any]:
@@ -2232,6 +2735,8 @@ def build_pending_publish(
     *,
     run_id: str,
     media_url: str = "",
+    force_auto_publish: bool = False,
+    task_id: int | None = None,
 ) -> dict[str, Any] | None:
     if not wants_telegram_publish(user_message):
         return None
@@ -2239,12 +2744,13 @@ def build_pending_publish(
     if not text:
         return None
     platforms = publish_platforms(user_message)
-    auto_publish = os.environ.get("TELEGRAM_AUTO_PUBLISH", "false").strip().lower() not in {
+    env_auto_publish = os.environ.get("TELEGRAM_AUTO_PUBLISH", "false").strip().lower() not in {
         "0",
         "false",
         "no",
         "off",
-    } and "instagram" not in platforms
+    }
+    auto_publish = (force_auto_publish or env_auto_publish) and "instagram" not in platforms
     resolved_media_url = media_url or extract_publish_media_url(user_message)
     media_base = resolved_media_url.lower().split("?", 1)[0]
     return {
@@ -2255,6 +2761,7 @@ def build_pending_publish(
         "mediaUrl": resolved_media_url,
         "mediaType": "video/mp4" if media_base.endswith((".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".webm")) else "",
         "runId": run_id,
+        "taskId": task_id,
         "source": "team",
         "autoPublish": auto_publish,
     }

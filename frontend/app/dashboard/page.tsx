@@ -346,13 +346,20 @@ const officeRuntimeAgents = officeAgents.filter((agent) => agent.id !== "all");
 
 function buildOfficeTeamPayload(team: TeamCardData): OfficeTeamPayload {
   const source = team.roster.length ? team.roster : [{ name: team.name, role: team.category, accent: "#4F5BD5" }];
+  const socialRuntimeIds: Record<string, string> = {
+    Atlas: "coordinator",
+    Scout: "scout",
+    Mira: "mika",
+    Dex: "dev",
+    Echo: "nova",
+  };
   return {
     id: team.id,
     name: team.name,
     agents: source.slice(0, officeRuntimeAgents.length).map((agent, index) => {
       const fallback = officeRuntimeAgents[index] || officeRuntimeAgents[0];
       return {
-        id: fallback.id,
+        id: team.id === "social-posting-team" ? socialRuntimeIds[agent.name] || fallback.id : fallback.id,
         name: agent.name,
         role: agent.role || team.category,
         avatar: agent.avatar || fallback.image,

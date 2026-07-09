@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_DB_ROOT = tempfile.TemporaryDirectory()
@@ -12,6 +13,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{Path(TEST_DB_ROOT.name) / 'core-domain
 os.environ["JWT_SECRET"] = "test-secret-for-core-domain-foundation"
 os.environ["INTEGRATION_ENCRYPTION_SECRET"] = "test-encryption-secret"
 sys.path.insert(0, str(ROOT / "backend"))
+sys.path.insert(0, str(ROOT / "kaliya-core" / "src"))
 sys.path.insert(0, str(ROOT))
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -22,6 +24,9 @@ from app.db.base import Base  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Agent, Task, Team, TeamAgent, User, Workspace, WorkspaceMember  # noqa: E402
+from app.schemas import PublishTargetResult  # noqa: E402
+from kaliya.agent_tools import build_turn_context  # noqa: E402
+import agent_server  # noqa: E402
 
 
 class CoreDomainTest(unittest.TestCase):
@@ -194,6 +199,88 @@ class CoreDomainTest(unittest.TestCase):
         self.assertEqual(403, other_client.get(f"/api/teams/{owner_team_id}").status_code)
         self.assertEqual(403, other_client.get(f"/api/tasks/{task_id}").status_code)
         self.assertEqual(403, other_client.get(f"/api/teams?workspace_id={owner_workspace_id}").status_code)
+
+    def test_social_posting_team_creates_task_and_publish_completes_it(self) -> None:
+        client = self.register()
+        with SessionLocal() as db:
+            user = db.scalar(select(User).where(User.email == "owner@example.com"))
+            self.assertIsNotNone(user)
+
+        def fake_run_ai(prompt: str, **_kwargs: object) -> str:
+            if "Format JSON" in prompt or "Формат JSON" in prompt:
+                return (
+                    '{"action":"delegate","coordinatorMessage":"Social Posting Team route selected.",'
+                    '"needsUserInput":false,"userQuestions":[],"assignments":[{"agentId":"scout","task":"Research China travel post angle"}]}'
+                )
+            if "Role: Scout" in prompt:
+                return "Scout report: China travel angle, personal journey, concise Telegram hook."
+            if "Role: Mira" in prompt:
+                return "Готовый publish-ready текст:\nЛечу в Китай. Новый маршрут, новые встречи и новый заряд идей."
+            if "Role: Dex" in prompt:
+                return "Dex report: Telegram is the target platform; copy is ready for publishing."
+            if "Role: Echo" in prompt:
+                return "Echo report: Final copy is clear and ready to publish."
+            return "Done.\n<PUBLISH_TEXT>Лечу в Китай. Новый маршрут, новые встречи и новый заряд идей.</PUBLISH_TEXT>"
+
+        context = build_turn_context(
+            message="Я лечу в Китай. Сделай пост и опубликуй его.",
+            raw_attachments=[],
+            upload_parts=[],
+            data_dir=Path(TEST_DB_ROOT.name) / "agent-data",
+        )
+        try:
+            with patch("agent_server.run_ai", side_effect=fake_run_ai):
+                result = agent_server.run_team_chat(
+                    "session-social",
+                    f"user-{user.id}",
+                    context,
+                    [],
+                    run_id="phase2-social-run",
+                    team_id="social-posting-team",
+                    team_name="Social Posting Team",
+                )
+        finally:
+            context.cleanup()
+
+        self.assertEqual("phase2-social-run", result["runId"] if "runId" in result else "phase2-social-run")
+        self.assertTrue(result["pendingPublish"]["autoPublish"])
+        self.assertEqual("telegram", result["pendingPublish"]["platform"])
+        task_id = result["pendingPublish"]["taskId"]
+        self.assertIsNotNone(task_id)
+        authors = [message["author"] for message in result["messages"]]
+        self.assertIn("Scout", authors)
+        self.assertIn("Mira", authors)
+        self.assertIn("Dex", authors)
+        self.assertIn("Echo", authors)
+
+        with SessionLocal() as db:
+            task = db.get(Task, task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual("in_progress", task.status)
+            self.assertEqual("phase2-social-run", task.input_json["runId"])
+
+        with patch(
+            "app.integrations.publish_to_platform",
+            return_value=PublishTargetResult(platform="telegram", ok=True, external_id="message-123"),
+        ):
+            publish_response = client.post(
+                "/api/publish/social",
+                json={
+                    "text": result["pendingPublish"]["text"],
+                    "platforms": ["telegram"],
+                    "run_id": "phase2-social-run",
+                    "task_id": task_id,
+                    "source": "team",
+                },
+            )
+        self.assertEqual(publish_response.status_code, 200, publish_response.text)
+
+        with SessionLocal() as db:
+            task = db.get(Task, task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual("completed", task.status)
+            self.assertEqual(100, task.progress)
+            self.assertTrue(task.result_json["published"])
 
 def tearDownModule() -> None:
     engine.dispose()

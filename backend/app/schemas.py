@@ -94,6 +94,7 @@ class PublishSocialRequest(BaseModel):
     timezone: str = Field(default="UTC", max_length=80)
     repeat_rule: str | None = Field(default=None, max_length=160)
     run_id: str | None = Field(default=None, max_length=80)
+    task_id: int | None = None
     source: str | None = Field(default=None, max_length=80)
 
 
