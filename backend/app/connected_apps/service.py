@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -22,6 +22,48 @@ from app.token_crypto import encrypt_token
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def normalize_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+STALE_CONNECTING_AFTER = timedelta(minutes=15)
+
+
+def integration_connection_state(integration: UserIntegration | None, tokens: list[IntegrationToken]) -> tuple[str, str, bool]:
+    if integration is None or integration.status in {"not_connected", "disconnected"}:
+        return "not_connected", "Not Connected", False
+    now = utc_now()
+    if integration.status == "connecting":
+        updated_at = normalize_datetime(integration.updated_at)
+        if updated_at is not None and updated_at <= now - STALE_CONNECTING_AFTER:
+            integration.status = "error"
+            integration.last_error = integration.last_error or "Authorization was not completed. Try connecting again."
+            return "error", "Error", False
+        return "connecting", "Connecting", False
+    if integration.status == "connected":
+        expired_tokens = [
+            token
+            for token in tokens
+            if (expires_at := normalize_datetime(token.expires_at)) is not None and expires_at <= now
+        ]
+        if expired_tokens:
+            integration.status = "reconnect_required" if any(token.encrypted_refresh_token for token in expired_tokens) else "expired"
+            integration.last_error = integration.last_error or "Authorization expired. Reconnect this app."
+        else:
+            return "connected", "Connected", True
+    if integration.status == "reconnect_required":
+        return "reconnect_required", "Reconnect Required", False
+    if integration.status == "expired":
+        return "expired", "Expired", False
+    if integration.status == "error":
+        return "error", "Error", False
+    return integration.status, integration.status.replace("_", " ").title(), False
 
 
 def ensure_provider_records(db: Session) -> dict[str, IntegrationProvider]:
@@ -125,6 +167,22 @@ def upsert_user_integration(
             integration.disconnected_at = None
         elif status == "disconnected":
             integration.disconnected_at = now
+    return integration
+
+
+def set_user_integration_status(
+    db: Session,
+    *,
+    user_id: int,
+    provider_key: str,
+    status: str,
+    last_error: str | None = None,
+) -> UserIntegration:
+    provider = get_provider_record(db, provider_key)
+    integration = upsert_user_integration(db, user_id=user_id, provider=provider, status=status)
+    integration.last_error = last_error
+    if status in {"connecting", "connected"}:
+        integration.disconnected_at = None
     return integration
 
 
@@ -291,7 +349,10 @@ def provider_status_payload(db: Session, user: User) -> dict[str, Any]:
     for key, definition in PROVIDERS.items():
         provider = providers[key]
         integration = get_user_integration(db, user_id=user.id, provider_id=provider.id)
-        connected = bool(integration and integration.status == "connected")
+        tokens = []
+        if integration:
+            tokens = db.scalars(select(IntegrationToken).where(IntegrationToken.user_integration_id == integration.id)).all()
+        connection_state, status_text, connected = integration_connection_state(integration, tokens)
         if connected:
             connected_count += 1
         accounts = []
@@ -320,7 +381,8 @@ def provider_status_payload(db: Session, user: User) -> dict[str, Any]:
                 "authType": definition.auth_type,
                 "logo": definition.logo,
                 "docsUrl": definition.docs_url,
-                "status": "Connected" if connected else "Not Connected",
+                "status": status_text,
+                "connectionState": connection_state,
                 "connected": connected,
                 "connectedAt": integration.connected_at if integration else None,
                 "disconnectedAt": integration.disconnected_at if integration else None,
@@ -331,7 +393,7 @@ def provider_status_payload(db: Session, user: User) -> dict[str, Any]:
                         "key": capability.key,
                         "name": capability.name,
                         "description": capability.description,
-                        "scope": capability.scope,
+                        "scope": "",
                         "accessLevel": capability.access_level,
                     }
                     for capability in definition.capabilities

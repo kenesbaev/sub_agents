@@ -133,6 +133,95 @@ YOUTUBE_CAPABILITIES = (
     CapabilityDefinition("youtube.analytics", "Channel Analytics", "Read channel and video analytics.", "read", "https://www.googleapis.com/auth/youtube.readonly"),
 )
 
+SHOPIFY_CAPABILITIES = (
+    CapabilityDefinition("shopify.products", "Products", "Read and update Shopify products.", "write", "read_products write_products"),
+    CapabilityDefinition("shopify.orders", "Orders", "Read order details and fulfillment signals.", "read", "read_orders"),
+    CapabilityDefinition("shopify.customers", "Customers", "Read customer profiles and segments.", "read", "read_customers"),
+    CapabilityDefinition("shopify.inventory", "Inventory", "Read and update inventory levels.", "write", "read_inventory write_inventory"),
+    CapabilityDefinition("shopify.discounts", "Discounts", "Create and manage discount codes.", "write", "read_discounts write_discounts"),
+    CapabilityDefinition("shopify.analytics", "Analytics", "Review storefront and commerce performance.", "read", "read_analytics"),
+)
+
+TIKTOK_CAPABILITIES = (
+    CapabilityDefinition("tiktok.user", "User Profile", "Read TikTok account profile details.", "read", "user.info.basic"),
+    CapabilityDefinition("tiktok.videos", "Videos", "Read and prepare short-form video workflows.", "read", "video.list"),
+    CapabilityDefinition("tiktok.analytics", "Analytics", "Review video and account performance signals.", "read", "video.list"),
+    CapabilityDefinition("tiktok.comments", "Comments", "Coordinate TikTok comment workflows.", "read", "user.info.basic"),
+)
+
+X_CAPABILITIES = (
+    CapabilityDefinition("x.profile", "Profile", "Read X account profile details.", "read", "users.read"),
+    CapabilityDefinition("x.posts", "Posts", "Read, draft, and publish X posts when approved.", "publish", "tweet.read tweet.write"),
+    CapabilityDefinition("x.replies", "Replies", "Monitor and coordinate reply workflows.", "read", "tweet.read"),
+    CapabilityDefinition("x.mentions", "Mentions", "Track brand mentions and activity.", "read", "tweet.read"),
+)
+
+DISCORD_CAPABILITIES = (
+    CapabilityDefinition("discord.identity", "Identity", "Read Discord user identity.", "read", "identify"),
+    CapabilityDefinition("discord.email", "Email", "Read Discord account email when granted.", "read", "email"),
+    CapabilityDefinition("discord.guilds", "Servers", "List accessible Discord servers.", "read", "guilds"),
+    CapabilityDefinition("discord.messages", "Messages", "Coordinate Discord announcement workflows.", "write", "identify"),
+)
+
+SLACK_CAPABILITIES = (
+    CapabilityDefinition("slack.channels", "Channels", "Read Slack channel metadata.", "read", "channels:read"),
+    CapabilityDefinition("slack.messages", "Messages", "Send approved Slack messages.", "send", "chat:write"),
+    CapabilityDefinition("slack.users", "Users", "Read Slack user profile details.", "read", "users:read"),
+    CapabilityDefinition("slack.threads", "Threads", "Coordinate Slack thread handoffs.", "write", "chat:write"),
+)
+
+NOTION_CAPABILITIES = (
+    CapabilityDefinition("notion.workspace", "Workspace", "Connect a Notion workspace.", "read"),
+    CapabilityDefinition("notion.pages", "Pages", "Read and update Notion pages.", "write"),
+    CapabilityDefinition("notion.databases", "Databases", "Read and update Notion databases.", "write"),
+    CapabilityDefinition("notion.tasks", "Tasks", "Coordinate task databases and briefs.", "write"),
+)
+
+GITHUB_CAPABILITIES = (
+    CapabilityDefinition("github.profile", "Profile", "Read GitHub profile details.", "read", "read:user"),
+    CapabilityDefinition("github.email", "Email", "Read GitHub account email.", "read", "user:email"),
+    CapabilityDefinition("github.repos", "Repositories", "Inspect repositories and activity.", "read", "repo"),
+    CapabilityDefinition("github.issues", "Issues", "Read and coordinate issue workflows.", "write", "repo"),
+    CapabilityDefinition("github.pull_requests", "Pull Requests", "Review pull request metadata.", "read", "repo"),
+)
+
+DROPBOX_CAPABILITIES = (
+    CapabilityDefinition("dropbox.account", "Account", "Read Dropbox account details.", "read", "account_info.read"),
+    CapabilityDefinition("dropbox.files", "Files", "Read Dropbox file metadata and content.", "read", "files.metadata.read files.content.read"),
+    CapabilityDefinition("dropbox.sharing", "Sharing", "Coordinate shared asset workflows.", "read", "sharing.read"),
+)
+
+ONEDRIVE_CAPABILITIES = (
+    CapabilityDefinition("onedrive.profile", "Profile", "Read Microsoft profile details.", "read", "User.Read"),
+    CapabilityDefinition("onedrive.files", "Files", "Read and update OneDrive files.", "write", "Files.ReadWrite.All"),
+    CapabilityDefinition("onedrive.offline", "Offline Access", "Refresh OneDrive access when allowed.", "read", "offline_access"),
+)
+
+STRIPE_CAPABILITIES = (
+    CapabilityDefinition("stripe.account", "Account", "Connect a Stripe account.", "read", "read_write"),
+    CapabilityDefinition("stripe.payments", "Payments", "Review payments and balance signals.", "read", "read_write"),
+    CapabilityDefinition("stripe.customers", "Customers", "Review customer and subscription data.", "read", "read_write"),
+    CapabilityDefinition("stripe.invoices", "Invoices", "Coordinate invoice and revenue workflows.", "read", "read_write"),
+)
+
+OPENAI_CAPABILITIES = (
+    CapabilityDefinition("openai.models", "Models", "Use OpenAI models in approved automation workflows.", "write"),
+    CapabilityDefinition("openai.prompts", "Prompts", "Coordinate prompt and tool workflows.", "write"),
+    CapabilityDefinition("openai.responses", "Responses", "Run model-powered response generation.", "write"),
+)
+
+CLAUDE_CAPABILITIES = (
+    CapabilityDefinition("claude.models", "Models", "Use Claude models in approved automation workflows.", "write"),
+    CapabilityDefinition("claude.writing", "Writing", "Coordinate writing and reasoning workflows.", "write"),
+    CapabilityDefinition("claude.research", "Research", "Run research assistant workflows.", "write"),
+)
+
+ZAPIER_CAPABILITIES = (
+    CapabilityDefinition("zapier.webhooks", "Webhooks", "Trigger Zapier webhook automations.", "send"),
+    CapabilityDefinition("zapier.zaps", "Zaps", "Coordinate cross-app Zap workflows.", "write"),
+    CapabilityDefinition("zapier.tasks", "Tasks", "Send approved tasks to Zapier.", "send"),
+)
+
 PROVIDERS: dict[str, ProviderDefinition] = {
     "google": ProviderDefinition(
         "google",
@@ -181,5 +270,109 @@ PROVIDERS: dict[str, ProviderDefinition] = {
         "/images/providers/youtube.svg",
         "https://developers.google.com/youtube/v3/docs/videos/insert",
         YOUTUBE_CAPABILITIES,
+    ),
+    "shopify": ProviderDefinition(
+        "shopify",
+        "Shopify",
+        "oauth2",
+        "/images/providers/shopify.svg",
+        "https://shopify.dev/docs/api/admin-rest",
+        SHOPIFY_CAPABILITIES,
+    ),
+    "tiktok": ProviderDefinition(
+        "tiktok",
+        "TikTok",
+        "oauth2",
+        "/images/providers/tiktok.svg",
+        "https://developers.tiktok.com/doc/oauth-user-access-token-management",
+        TIKTOK_CAPABILITIES,
+    ),
+    "x": ProviderDefinition(
+        "x",
+        "X",
+        "oauth2",
+        "/images/providers/x.svg",
+        "https://developer.x.com/en/docs/authentication/oauth-2-0/authorization-code",
+        X_CAPABILITIES,
+    ),
+    "discord": ProviderDefinition(
+        "discord",
+        "Discord",
+        "oauth2",
+        "/images/providers/discord.svg",
+        "https://discord.com/developers/docs/topics/oauth2",
+        DISCORD_CAPABILITIES,
+    ),
+    "slack": ProviderDefinition(
+        "slack",
+        "Slack",
+        "oauth2",
+        "/images/providers/slack.svg",
+        "https://api.slack.com/authentication/oauth-v2",
+        SLACK_CAPABILITIES,
+    ),
+    "notion": ProviderDefinition(
+        "notion",
+        "Notion",
+        "oauth2",
+        "/images/providers/notion.svg",
+        "https://developers.notion.com/docs/authorization",
+        NOTION_CAPABILITIES,
+    ),
+    "github": ProviderDefinition(
+        "github",
+        "GitHub",
+        "oauth2",
+        "/images/providers/github.svg",
+        "https://docs.github.com/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps",
+        GITHUB_CAPABILITIES,
+    ),
+    "dropbox": ProviderDefinition(
+        "dropbox",
+        "Dropbox",
+        "oauth2",
+        "/images/providers/dropbox.svg",
+        "https://developers.dropbox.com/oauth-guide",
+        DROPBOX_CAPABILITIES,
+    ),
+    "onedrive": ProviderDefinition(
+        "onedrive",
+        "OneDrive",
+        "oauth2",
+        "/images/providers/microsoftonedrive.svg",
+        "https://learn.microsoft.com/en-us/graph/auth-v2-user",
+        ONEDRIVE_CAPABILITIES,
+    ),
+    "stripe": ProviderDefinition(
+        "stripe",
+        "Stripe",
+        "oauth2",
+        "/images/providers/stripe.svg",
+        "https://docs.stripe.com/connect/oauth-reference",
+        STRIPE_CAPABILITIES,
+    ),
+    "openai": ProviderDefinition(
+        "openai",
+        "OpenAI",
+        "api_key",
+        "/images/providers/openai.svg",
+        "https://platform.openai.com/docs",
+        OPENAI_CAPABILITIES,
+    ),
+    "claude": ProviderDefinition(
+        "claude",
+        "Claude",
+        "api_key",
+        "/images/providers/claude.svg",
+        "https://docs.anthropic.com",
+        CLAUDE_CAPABILITIES,
+    ),
+    "zapier": ProviderDefinition(
+        "zapier",
+        "Zapier",
+        "webhook",
+        "/images/providers/zapier.svg",
+        "https://platform.zapier.com/docs",
+        ZAPIER_CAPABILITIES,
     ),
 }
