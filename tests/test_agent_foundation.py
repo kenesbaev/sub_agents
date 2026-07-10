@@ -104,6 +104,33 @@ class AgentFoundationTest(unittest.TestCase):
         self.assertEqual(("gpt-5.4", True), attempts[0])
         self.assertIn((None, False), attempts)
 
+    def test_run_codex_uses_utf8_for_unicode_prompt(self) -> None:
+        popen_kwargs: dict[str, object] = {}
+
+        class FakeProcess:
+            returncode = 0
+
+            def communicate(self, input: str | None, timeout: float) -> tuple[str, str]:
+                self.input = input
+                return "ok", ""
+
+        def fake_popen(*_args: object, **kwargs: object) -> FakeProcess:
+            popen_kwargs.update(kwargs)
+            return FakeProcess()
+
+        with patch("agent_server.shutil.which", return_value="codex"):
+            with patch("agent_server.subprocess.Popen", side_effect=fake_popen):
+                self.assertEqual("ok", agent_server.run_codex("Я лечу в Китай 🚀", agent_id="mika"))
+
+        self.assertEqual("utf-8", popen_kwargs.get("encoding"))
+        self.assertEqual("replace", popen_kwargs.get("errors"))
+
+    def test_run_ai_preserves_agent_run_cancelled(self) -> None:
+        with patch("agent_server.run_openrouter", side_effect=RuntimeError("primary failed")):
+            with patch("agent_server.run_codex", side_effect=agent_server.AgentRunCancelled("cancel-me")):
+                with self.assertRaises(agent_server.AgentRunCancelled):
+                    agent_server.run_ai("hello", run_id="cancel-me")
+
 
 if __name__ == "__main__":
     unittest.main()

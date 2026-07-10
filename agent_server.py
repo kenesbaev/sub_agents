@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from email import policy
 from email.parser import BytesParser
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -47,6 +49,12 @@ from kaliya.text_safety import redact_sensitive_text  # noqa: E402
 
 DATA_DIR = ROOT / "data"
 MEMORY_ROOT = DATA_DIR / "agent-memory"
+
+logging.basicConfig(
+    level=os.environ.get("AGENT_SERVER_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+LOGGER = logging.getLogger("rebly.agent_server")
 
 
 def load_local_env(path: Path) -> None:
@@ -205,6 +213,52 @@ class AgentRunCancelled(RuntimeError):
     def __init__(self, run_id: str) -> None:
         super().__init__("Task stopped by user.")
         self.run_id = run_id
+
+
+def elapsed_seconds(start: float) -> float:
+    return round(time.perf_counter() - start, 3)
+
+
+def log_social_phase(
+    run_id: str,
+    phase: str,
+    *,
+    task_id: int | None = None,
+    agent: str = "",
+    elapsed: float | None = None,
+    status: str = "ok",
+    extra: dict[str, Any] | None = None,
+) -> None:
+    payload = {
+        "runId": run_id,
+        "taskId": task_id,
+        "phase": phase,
+        "agent": agent,
+        "status": status,
+    }
+    if elapsed is not None:
+        payload["elapsedSec"] = elapsed
+    if extra:
+        payload.update(extra)
+    LOGGER.info("social_posting_phase %s", json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def log_social_exception(
+    run_id: str,
+    phase: str,
+    exc: BaseException,
+    *,
+    task_id: int | None = None,
+    agent: str = "",
+) -> None:
+    LOGGER.exception(
+        "social_posting_exception runId=%s taskId=%s phase=%s agent=%s exceptionType=%s",
+        run_id,
+        task_id,
+        phase,
+        agent,
+        exc.__class__.__name__,
+    )
 
 
 def normalize_run_id(value: object | None = None) -> str:
@@ -894,6 +948,12 @@ class AgentHandler(SimpleHTTPRequestHandler):
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:
+            LOGGER.exception(
+                "agent_chat_exception runId=%s agentId=%s exceptionType=%s",
+                run_id,
+                locals().get("agent_id", ""),
+                exc.__class__.__name__,
+            )
             self._send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
         finally:
             if turn_context is not None:
@@ -919,7 +979,7 @@ class AgentHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             pass
 
 
@@ -1423,8 +1483,23 @@ def run_social_posting_team_chat(
     team_id: str,
     team_name: str,
 ) -> dict[str, Any]:
+    total_start = time.perf_counter()
+    timings: dict[str, float] = {}
+    current_phase = "task_creation"
+    current_agent = "Atlas"
     bridge = SocialTaskBridge(account_id, session_id, run_id, effective_message, team_id)
+    phase_start = time.perf_counter()
     task_payload = bridge.create_task()
+    timings["taskCreation"] = elapsed_seconds(phase_start)
+    log_social_phase(
+        run_id,
+        "task_creation",
+        task_id=bridge.task_id,
+        agent="Atlas",
+        elapsed=timings["taskCreation"],
+        status="created" if task_payload else "skipped",
+        extra={"bridgeEnabled": bridge.enabled},
+    )
     statuses = SocialAgentStatusTracker(bridge if bridge.enabled else None)
     messages: list[dict[str, Any]] = []
     reports: list[dict[str, str]] = []
@@ -1449,14 +1524,25 @@ def run_social_posting_team_chat(
         },
     )
     try:
+        current_phase = "atlas_planning"
+        current_agent = "Atlas"
         statuses.set("coordinator", "planning", db_slug="atlas", name="Atlas")
         task_payload = bridge.update_task("planning", progress=10) or task_payload
+        phase_start = time.perf_counter()
         decision = safe_social_coordinator_decision(
             turn_context,
             run_id,
             account_id=account_id,
             effective_message=effective_message,
             history=team_history,
+        )
+        timings["atlasPlanning"] = elapsed_seconds(phase_start)
+        log_social_phase(
+            run_id,
+            "atlas_planning",
+            task_id=bridge.task_id,
+            agent="Atlas",
+            elapsed=timings["atlasPlanning"],
         )
         check_agent_run_cancelled(run_id)
         assignments = social_posting_assignments(decision, effective_message)
@@ -1494,6 +1580,8 @@ def run_social_posting_team_chat(
         for index, assignment in enumerate(assignments):
             check_agent_run_cancelled(run_id)
             runtime_id = assignment["agentId"]
+            current_phase = f"agent_{runtime_id}"
+            current_agent = assignment.get("displayName", display_agent_name(runtime_id))
             working_status = statuses.set(
                 runtime_id,
                 "working",
@@ -1505,6 +1593,7 @@ def run_social_posting_team_chat(
                 **assignment,
                 "task": build_social_assignment_task(assignment, effective_message, reports),
             }
+            phase_start = time.perf_counter()
             item = run_social_assignment_report_safe(
                 contextual_assignment,
                 effective_message,
@@ -1513,6 +1602,14 @@ def run_social_posting_team_chat(
                 session_id,
                 account_id,
                 history,
+            )
+            timings[runtime_id] = elapsed_seconds(phase_start)
+            log_social_phase(
+                run_id,
+                current_phase,
+                task_id=bridge.task_id,
+                agent=current_agent,
+                elapsed=timings[runtime_id],
             )
             report = item["report"]
             report["agent"] = assignment.get("displayName", report.get("agent", "Agent"))
@@ -1529,6 +1626,9 @@ def run_social_posting_team_chat(
             message["taskId"] = bridge.task_id
             messages.append(message)
 
+        current_phase = "atlas_final"
+        current_agent = "Atlas"
+        phase_start = time.perf_counter()
         final_reply = run_social_final_reply_safe(
             effective_message,
             team_history,
@@ -1537,6 +1637,14 @@ def run_social_posting_team_chat(
             turn_context,
             account_id,
             run_id,
+        )
+        timings["atlasFinal"] = elapsed_seconds(phase_start)
+        log_social_phase(
+            run_id,
+            "atlas_final",
+            task_id=bridge.task_id,
+            agent="Atlas",
+            elapsed=timings["atlasFinal"],
         )
         check_agent_run_cancelled(run_id)
         final_reply, publish_text = split_publish_text(final_reply)
@@ -1562,6 +1670,15 @@ def run_social_posting_team_chat(
             },
         ) or task_payload
         final_status = statuses.set("coordinator", "completed", db_slug="atlas", name="Atlas")
+        timings["total"] = elapsed_seconds(total_start)
+        log_social_phase(
+            run_id,
+            "total",
+            task_id=bridge.task_id,
+            agent="Atlas",
+            elapsed=timings["total"],
+            status="completed",
+        )
         coordinator_final_id = coordinator.add_message(
             role="assistant",
             author="Atlas",
@@ -1599,14 +1716,25 @@ def run_social_posting_team_chat(
             "pendingPublish": pending_publish,
             "task": task_payload,
             "agentStatuses": statuses.payload(),
+            "timings": timings,
         }
     except Exception as exc:
+        log_social_exception(run_id, current_phase, exc, task_id=bridge.task_id, agent=current_agent)
         for item in SOCIAL_POSTING_AGENT_CHAIN:
             current = statuses.statuses.get(item["runtimeId"], {})
             if current.get("status") == "working":
                 statuses.set(item["runtimeId"], "failed", db_slug=item["dbSlug"], name=item["name"])
         statuses.set("coordinator", "failed", db_slug="atlas", name="Atlas")
         bridge.update_task("failed", progress=0, error=str(exc), result_json={"runId": run_id})
+        timings["total"] = elapsed_seconds(total_start)
+        log_social_phase(
+            run_id,
+            "total",
+            task_id=bridge.task_id,
+            agent=current_agent,
+            elapsed=timings["total"],
+            status="failed",
+        )
         raise
 
 
@@ -2982,6 +3110,8 @@ def run_ai(
                 search_enabled=search_enabled,
                 run_id=run_id,
             )
+        except AgentRunCancelled:
+            raise
         except RuntimeError as codex_error:
             openrouter_detail = str(openrouter_error)[-500:]
             codex_detail = str(codex_error)[-500:]
@@ -3169,6 +3299,8 @@ def _run_codex_once(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env=codex_environment(),
         )
         register_agent_process(run_id, process)
@@ -3201,6 +3333,8 @@ def _run_codex_once(
 
 def codex_environment() -> dict[str, str]:
     env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
     if hasattr(os, "getuid"):
         uid = os.getuid()
         env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
