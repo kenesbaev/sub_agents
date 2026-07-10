@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.connected_apps.service import create_scheduled_post, upsert_connected_account, write_activity
+from app.core_domain.service import set_task_completion_fields
 from app.db.session import get_db
 from app.models import InstagramIntegration, SocialPost, Task, TelegramBotIntegration, User
 from app.schemas import (
@@ -413,12 +414,30 @@ def update_publish_task_status(
     payload: PublishSocialRequest,
     results: list[PublishTargetResult],
 ) -> None:
-    task = find_publish_task(db, user, task_id=payload.task_id, run_id=payload.run_id)
+    update_publish_task_from_results(
+        db,
+        user,
+        task_id=payload.task_id,
+        run_id=payload.run_id,
+        results=results,
+    )
+
+
+def update_publish_task_from_results(
+    db: Session,
+    user: User,
+    *,
+    task_id: int | None,
+    run_id: str | None,
+    results: list[PublishTargetResult],
+) -> None:
+    task = find_publish_task(db, user, task_id=task_id, run_id=run_id)
     if not task:
         return
     ok = all(result.ok for result in results)
     task.status = "completed" if ok else "failed"
     task.progress = 100 if ok else task.progress
+    set_task_completion_fields(task)
     errors = [f"{result.platform}: {result.error}" for result in results if not result.ok and result.error]
     if errors:
         task.error = " | ".join(errors)
@@ -613,6 +632,13 @@ def publish_telegram(
         run_id=payload.run_id,
         status_value="published",
         external_id=result.get("message_id"),
+    )
+    update_publish_task_from_results(
+        db,
+        user,
+        task_id=payload.task_id,
+        run_id=payload.run_id,
+        results=[PublishTargetResult(platform="telegram", ok=True, external_id=result.get("message_id"))],
     )
     db.commit()
     chat = result.get("chat") if isinstance(result.get("chat"), dict) else {}

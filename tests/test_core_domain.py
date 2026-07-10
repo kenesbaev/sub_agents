@@ -206,6 +206,9 @@ class CoreDomainTest(unittest.TestCase):
             user = db.scalar(select(User).where(User.email == "owner@example.com"))
             self.assertIsNotNone(user)
 
+        self.assertTrue(agent_server.wants_telegram_publish("Я лечу в Китай. Сделай пост и опубликуй его."))
+        self.assertEqual(["telegram"], agent_server.publish_platforms("Опубликуй это в Telegram канал."))
+
         def fake_run_ai(prompt: str, **_kwargs: object) -> str:
             if "Format JSON" in prompt or "Формат JSON" in prompt:
                 return (
@@ -280,6 +283,49 @@ class CoreDomainTest(unittest.TestCase):
             self.assertIsNotNone(task)
             self.assertEqual("completed", task.status)
             self.assertEqual(100, task.progress)
+            self.assertTrue(task.result_json["published"])
+            self.assertIsNotNone(task.completed_at)
+
+    def test_legacy_telegram_publish_updates_task_by_run_id(self) -> None:
+        client = self.register()
+        teams = client.get("/api/teams").json()
+        workspace_id = teams[0]["workspace_id"]
+        team_id = teams[0]["id"]
+        create_response = client.post(
+            "/api/tasks",
+            json={
+                "workspace_id": workspace_id,
+                "team_id": team_id,
+                "title": "Legacy Telegram publish",
+                "status": "in_progress",
+                "progress": 90,
+                "input_json": {"runId": "legacy-telegram-run"},
+            },
+        )
+        self.assertEqual(create_response.status_code, 201, create_response.text)
+        task_id = create_response.json()["id"]
+
+        with (
+            patch("app.integrations.telegram_credentials", return_value=("bot-token", "chat-id")),
+            patch("app.integrations.get_telegram_integration", return_value=None),
+            patch("app.integrations.send_telegram_message", return_value={"message_id": 321, "chat": {"id": "chat-id"}}),
+        ):
+            response = client.post(
+                "/api/publish/telegram",
+                json={
+                    "text": "Ready post",
+                    "run_id": "legacy-telegram-run",
+                    "source": "team",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        with SessionLocal() as db:
+            task = db.get(Task, task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual("completed", task.status)
+            self.assertEqual(100, task.progress)
+            self.assertIsNotNone(task.completed_at)
             self.assertTrue(task.result_json["published"])
 
 def tearDownModule() -> None:

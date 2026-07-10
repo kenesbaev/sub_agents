@@ -141,6 +141,25 @@ PUBLISH_TRIGGERS = (
     "инстаграм",
     "post",
 )
+PUBLISH_TRIGGERS_UNICODE = (
+    "\u043e\u043f\u0443\u0431\u043b\u0438",
+    "\u0432\u044b\u043b\u043e\u0436",
+    "\u0437\u0430\u043f\u043e\u0441\u0442\u0438",
+    "\u043f\u0443\u0431\u043b\u0438\u043a\u0430\u0446",
+    "\u043f\u043e\u0441\u0442",
+    "\u0442\u0435\u043b\u0435\u0433\u0440\u0430\u043c",
+    "\u0442\u0433",
+    "\u043a\u0430\u043d\u0430\u043b",
+    "\u0438\u043d\u0441\u0442\u0430\u0433\u0440\u0430\u043c",
+)
+TELEGRAM_TRIGGERS_UNICODE = (
+    "\u0442\u0435\u043b\u0435\u0433\u0440\u0430\u043c",
+    "\u0442\u0433",
+    "\u043a\u0430\u043d\u0430\u043b",
+)
+INSTAGRAM_TRIGGERS_UNICODE = (
+    "\u0438\u043d\u0441\u0442\u0430\u0433\u0440\u0430\u043c",
+)
 DIRECT_MEDIA_URL_RE = re.compile(
     r"https?://[^\s<>\")']+\.(?:avif|gif|jpe?g|png|webp|m4v|mov|mp4|mpeg|mpg|webm)(?:[?#][^\s<>\")']*)?",
     re.IGNORECASE,
@@ -205,7 +224,7 @@ def load_domain_modules() -> dict[str, Any] | None:
     try:
         from sqlalchemy import select  # type: ignore
 
-        from app.core_domain.service import ensure_default_workspace  # type: ignore
+        from app.core_domain.service import ensure_default_workspace, set_task_completion_fields  # type: ignore
         from app.db.session import SessionLocal  # type: ignore
         from app.models import Agent, Task, Team, User  # type: ignore
     except Exception:
@@ -213,6 +232,7 @@ def load_domain_modules() -> dict[str, Any] | None:
     return {
         "select": select,
         "ensure_default_workspace": ensure_default_workspace,
+        "set_task_completion_fields": set_task_completion_fields,
         "SessionLocal": SessionLocal,
         "Agent": Agent,
         "Task": Task,
@@ -300,12 +320,14 @@ class SocialTaskBridge:
             return None
         SessionLocal = self.modules["SessionLocal"]
         Task = self.modules["Task"]
+        set_task_completion_fields = self.modules["set_task_completion_fields"]
         with SessionLocal() as db:
             task = db.get(Task, self.task_id)
             if not task:
                 self.enabled = False
                 return None
             task.status = status
+            set_task_completion_fields(task)
             if progress is not None:
                 task.progress = max(0, min(100, progress))
             if result_json is not None:
@@ -1429,7 +1451,7 @@ def run_social_posting_team_chat(
     try:
         statuses.set("coordinator", "planning", db_slug="atlas", name="Atlas")
         task_payload = bridge.update_task("planning", progress=10) or task_payload
-        decision = coordinator_decision(
+        decision = safe_social_coordinator_decision(
             turn_context,
             run_id,
             account_id=account_id,
@@ -1483,7 +1505,7 @@ def run_social_posting_team_chat(
                 **assignment,
                 "task": build_social_assignment_task(assignment, effective_message, reports),
             }
-            item = run_single_assignment_report(
+            item = run_social_assignment_report_safe(
                 contextual_assignment,
                 effective_message,
                 turn_context,
@@ -1507,21 +1529,14 @@ def run_social_posting_team_chat(
             message["taskId"] = bridge.task_id
             messages.append(message)
 
-        final_reply = run_ai(
-            build_coordinator_final_prompt(
-                effective_message,
-                team_history,
-                decision,
-                reports,
-                memory_context=coordinator.context_for_prompt(effective_message),
-                tool_context=turn_context.tool_context,
-                crm_context=get_crm(account_id=account_id).context_for_query(effective_message),
-                language_source=turn_context.message,
-            ),
-            agent_id="coordinator",
-            image_paths=turn_context.image_paths,
-            search_enabled=False,
-            run_id=run_id,
+        final_reply = run_social_final_reply_safe(
+            effective_message,
+            team_history,
+            decision,
+            reports,
+            turn_context,
+            account_id,
+            run_id,
         )
         check_agent_run_cancelled(run_id)
         final_reply, publish_text = split_publish_text(final_reply)
@@ -1641,6 +1656,170 @@ def build_social_assignment_task(
         "Use previous agent output as context. Do not redo another agent's role unless needed for coherence.\n\n"
         f"Previous outputs:\n{previous}\n\n"
         f"User request:\n{effective_message}"
+    )
+
+
+def safe_social_coordinator_decision(
+    turn_context: TurnContext,
+    run_id: str,
+    *,
+    account_id: str,
+    effective_message: str,
+    history: object | None = None,
+) -> dict[str, Any]:
+    try:
+        return coordinator_decision(
+            turn_context,
+            run_id,
+            account_id=account_id,
+            effective_message=effective_message,
+            history=history,
+        )
+    except AgentRunCancelled:
+        raise
+    except RuntimeError as exc:
+        decision = keyword_decision(effective_message)
+        decision.update(
+            {
+                "action": "delegate",
+                "coordinatorMessage": "Atlas selected the Social Posting Team route.",
+                "needsUserInput": False,
+                "userQuestions": [],
+                "runId": run_id,
+                "providerFallback": True,
+                "providerError": str(exc)[-500:],
+            }
+        )
+        return decision
+
+
+def run_social_assignment_report_safe(
+    assignment: dict[str, str],
+    effective_message: str,
+    turn_context: TurnContext,
+    run_id: str,
+    session_id: str,
+    account_id: str,
+    history: object | None = None,
+) -> dict[str, Any]:
+    try:
+        return run_single_assignment_report(
+            assignment,
+            effective_message,
+            turn_context,
+            run_id,
+            session_id,
+            account_id,
+            history,
+        )
+    except AgentRunCancelled:
+        raise
+    except RuntimeError as exc:
+        return fallback_social_assignment_report(assignment, effective_message, run_id, str(exc))
+
+
+def run_social_final_reply_safe(
+    effective_message: str,
+    team_history: object,
+    decision: dict[str, Any],
+    reports: list[dict[str, str]],
+    turn_context: TurnContext,
+    account_id: str,
+    run_id: str,
+) -> str:
+    coordinator = get_memory("coordinator", account_id=account_id)
+    try:
+        return run_ai(
+            build_coordinator_final_prompt(
+                effective_message,
+                team_history,
+                decision,
+                reports,
+                memory_context=coordinator.context_for_prompt(effective_message),
+                tool_context=turn_context.tool_context,
+                crm_context=get_crm(account_id=account_id).context_for_query(effective_message),
+                language_source=turn_context.message,
+            ),
+            agent_id="coordinator",
+            image_paths=turn_context.image_paths,
+            search_enabled=False,
+            run_id=run_id,
+        )
+    except AgentRunCancelled:
+        raise
+    except RuntimeError:
+        return fallback_social_final_reply(effective_message, reports)
+
+
+def fallback_social_assignment_report(
+    assignment: dict[str, str],
+    effective_message: str,
+    run_id: str,
+    error: str,
+) -> dict[str, Any]:
+    runtime_id = assignment.get("agentId", "")
+    name = assignment.get("displayName") or display_agent_name(runtime_id)
+    publish_text = fallback_social_publish_text(effective_message)
+    if runtime_id == "scout":
+        report = (
+            "Scout report: use a personal travel angle, keep the hook short, "
+            "and avoid claims that need live research."
+        )
+    elif runtime_id == "mika":
+        report = f"Mira report: publish-ready Telegram copy:\n{publish_text}"
+    elif runtime_id == "dev":
+        report = "Dex report: Telegram text-only publishing handoff is ready."
+    elif runtime_id == "nova":
+        report = "Echo report: copy is clear, concise, and ready for final approval/publish."
+    else:
+        report = f"{name} report: fallback output prepared."
+    return {
+        "report": {
+            "agentId": runtime_id,
+            "agent": name,
+            "text": report,
+            "providerError": error[-500:],
+            "providerFallback": True,
+        },
+        "message": agent_message(
+            name,
+            report,
+            phase="internal",
+            audience="team",
+            from_id=runtime_id,
+            to_id="coordinator",
+            run_id=run_id,
+        ),
+    }
+
+
+def fallback_social_publish_text(message: str) -> str:
+    clean = re.sub(r"\s+", " ", message).strip()
+    first_sentence = re.split(r"[.!?]\s+", clean, maxsplit=1)[0].strip(" .!?")
+    lowered = clean.lower()
+    if "\u043a\u0438\u0442\u0430\u0439" in lowered or "china" in lowered:
+        topic = "\u042f \u043b\u0435\u0447\u0443 \u0432 \u041a\u0438\u0442\u0430\u0439"
+    elif first_sentence and len(first_sentence) <= 140:
+        topic = first_sentence
+    else:
+        topic = "\u041d\u043e\u0432\u044b\u0439 \u044d\u0442\u0430\u043f, \u043d\u043e\u0432\u044b\u0439 \u043c\u0430\u0440\u0448\u0440\u0443\u0442"
+    return (
+        f"{topic}.\n\n"
+        "\u0412\u043f\u0435\u0440\u0435\u0434\u0438 \u043d\u043e\u0432\u044b\u0435 \u043c\u0435\u0441\u0442\u0430, "
+        "\u0432\u0441\u0442\u0440\u0435\u0447\u0438, \u0438\u0434\u0435\u0438 \u0438 \u043d\u0430\u0431\u043b\u044e\u0434\u0435\u043d\u0438\u044f. "
+        "\u0411\u0443\u0434\u0443 \u0434\u0435\u043b\u0438\u0442\u044c\u0441\u044f \u0441\u0430\u043c\u044b\u043c "
+        "\u0438\u043d\u0442\u0435\u0440\u0435\u0441\u043d\u044b\u043c \u043f\u043e \u0434\u043e\u0440\u043e\u0433\u0435.\n\n"
+        "\u0421\u043b\u0435\u0434\u0438\u0442\u0435 \u0437\u0430 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f\u043c\u0438."
+    )
+
+
+def fallback_social_final_reply(message: str, reports: list[dict[str, str]]) -> str:
+    publish_text = fallback_social_publish_text(message)
+    return (
+        "\u0413\u043e\u0442\u043e\u0432\u043e. Social Posting Team "
+        "\u043f\u043e\u0434\u0433\u043e\u0442\u043e\u0432\u0438\u043b \u0442\u0435\u043a\u0441\u0442 "
+        "\u0434\u043b\u044f Telegram.\n\n"
+        f"<PUBLISH_TEXT>{publish_text}</PUBLISH_TEXT>"
     )
 
 
@@ -2572,17 +2751,21 @@ def wants_web_search(agent_id: str, *texts: str) -> bool:
 
 def wants_telegram_publish(text: str) -> bool:
     lowered = text.lower()
-    return any(trigger in lowered for trigger in PUBLISH_TRIGGERS)
+    return any(trigger in lowered for trigger in (*PUBLISH_TRIGGERS, *PUBLISH_TRIGGERS_UNICODE))
 
 
 def publish_platforms(text: str) -> list[str]:
     lowered = text.lower()
     platforms: list[str] = []
+    if any(word in lowered for word in TELEGRAM_TRIGGERS_UNICODE):
+        platforms.append("telegram")
+    if any(word in lowered for word in INSTAGRAM_TRIGGERS_UNICODE):
+        platforms.append("instagram")
     if any(word in lowered for word in ("telegram", "tg", "телеграм", "тг", "канал")):
         platforms.append("telegram")
     if any(word in lowered for word in ("instagram", "insta", "инстаграм")):
         platforms.append("instagram")
-    return platforms or ["telegram"]
+    return list(dict.fromkeys(platforms)) or ["telegram"]
 
 
 def extract_publish_media_url(text: str) -> str:

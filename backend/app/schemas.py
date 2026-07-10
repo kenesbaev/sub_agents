@@ -70,6 +70,7 @@ class InstagramConnectRequest(BaseModel):
 class PublishTelegramRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4096)
     run_id: str | None = Field(default=None, max_length=80)
+    task_id: int | None = None
     source: str | None = Field(default=None, max_length=80)
 
 
