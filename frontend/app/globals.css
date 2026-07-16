@@ -5353,6 +5353,15 @@ a {
   margin-top: 10px;
 }
 
+.shopify-domain-help {
+  display: block;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-top: 10px;
+}
+
 .api-key-actions {
   display: flex;
   justify-content: flex-end;
@@ -5756,6 +5765,10 @@ a {
 
 [data-theme="dark"] .api-key-status {
   color: #ff9b9b;
+}
+
+[data-theme="dark"] .shopify-domain-help {
+  color: #a7b0c0;
 }
 
 [data-theme="dark"] .connected-account {

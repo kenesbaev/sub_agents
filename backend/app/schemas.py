@@ -70,6 +70,7 @@ class InstagramConnectRequest(BaseModel):
 class PublishTelegramRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4096)
     run_id: str | None = Field(default=None, max_length=80)
+    task_id: int | None = None
     source: str | None = Field(default=None, max_length=80)
 
 
@@ -94,6 +95,7 @@ class PublishSocialRequest(BaseModel):
     timezone: str = Field(default="UTC", max_length=80)
     repeat_rule: str | None = Field(default=None, max_length=160)
     run_id: str | None = Field(default=None, max_length=80)
+    task_id: int | None = None
     source: str | None = Field(default=None, max_length=80)
 
 
@@ -101,6 +103,7 @@ class PublishTargetResult(BaseModel):
     platform: PublishPlatform
     ok: bool
     external_id: str | int | None = None
+    url: str | None = Field(default=None, max_length=2048)
     error: str | None = None
 
 

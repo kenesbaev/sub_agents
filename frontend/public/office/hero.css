@@ -1,0 +1,28 @@
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+.hero-office,
+#heroOfficeCanvas {
+  width: 100%;
+  height: 100%;
+}
+
+html,
+body {
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.hero-office {
+  position: relative;
+  overflow: hidden;
+}
+
+#heroOfficeCanvas {
+  display: block;
+  outline: 0;
+}

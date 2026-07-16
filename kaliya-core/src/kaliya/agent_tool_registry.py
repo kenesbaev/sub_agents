@@ -153,6 +153,15 @@ TOOLS: dict[str, ToolDefinition] = {
         connected_apps=("telegram", "instagram", "facebook", "linkedin", "youtube"),
         requires_approval=True,
     ),
+    "upload_youtube_video": ToolDefinition(
+        "upload_youtube_video",
+        "Upload YouTube video",
+        "publishing",
+        "publish",
+        "Upload an approved public video URL to a connected YouTube channel with title, description, and privacy settings.",
+        connected_apps=("youtube",),
+        requires_approval=True,
+    ),
     "get_social_comments": ToolDefinition(
         "get_social_comments",
         "Get social comments",
@@ -201,6 +210,7 @@ TOOLS: dict[str, ToolDefinition] = {
         "draft",
         "Create an email draft for review.",
         connected_apps=("google", "gmail"),
+        requires_approval=True,
     ),
     "send_gmail": ToolDefinition(
         "send_gmail",
@@ -253,6 +263,14 @@ TOOLS: dict[str, ToolDefinition] = {
         "calendar",
         "read",
         "Find available meeting windows.",
+        connected_apps=("google", "calendar"),
+    ),
+    "list_calendar_events": ToolDefinition(
+        "list_calendar_events",
+        "List calendar events",
+        "calendar",
+        "read",
+        "Read upcoming events from a connected Google Calendar.",
         connected_apps=("google", "calendar"),
     ),
     "search_drive_files": ToolDefinition(
@@ -456,6 +474,7 @@ AGENT_TOOL_PROFILES: dict[str, AgentToolProfile] = {
             "create_gmail_draft",
             "send_gmail",
             "reply_gmail",
+            "list_calendar_events",
             "find_free_time",
             "create_calendar_event",
             "reschedule_calendar_event",
@@ -472,6 +491,7 @@ AGENT_TOOL_PROFILES: dict[str, AgentToolProfile] = {
         "Publisher, operations, and growth engineer. Executes approved publishing and operational writes.",
         (
             "publish_social_post",
+            "upload_youtube_video",
             "schedule_social_post",
             "get_social_analytics",
             "read_google_sheet",

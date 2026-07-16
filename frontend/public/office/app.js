@@ -6,6 +6,21 @@ const officeParams = new URLSearchParams(window.location.search);
 const isDashboardEmbed = officeParams.get("embed") === "dashboard";
 document.body.classList.toggle("embedded-dashboard", isDashboardEmbed);
 
+function configuredAuthApi() {
+  const configured = officeParams.get("apiUrl");
+  if (configured) {
+    try {
+      const url = new URL(configured, window.location.origin);
+      if (url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) {
+        return url.origin;
+      }
+    } catch {
+      // Fall back to the existing local development endpoint below.
+    }
+  }
+  return window.location.hostname === "localhost" ? "http://localhost:8000" : "http://127.0.0.1:8000";
+}
+
 const workspace = document.querySelector(".workspace");
 const canvas = document.querySelector("#officeCanvas");
 const bubbleLayer = document.querySelector("#bubbleLayer");
@@ -16,6 +31,7 @@ const focusName = document.querySelector("#focusName");
 const queueCount = document.querySelector("#queueCount");
 const clock = document.querySelector("#clock");
 const teamStatus = document.querySelector("#teamStatus");
+const officeTitle = document.querySelector("#officeTitle");
 const viewBtn = document.querySelector("#viewBtn");
 const chatTab = document.querySelector("#chatTab");
 const activityTab = document.querySelector("#activityTab");
@@ -34,8 +50,22 @@ const chatResizeHandle = document.querySelector("#chatResizeHandle");
 const AGENT_CHAT_API_PATH = "/api/agents/chat";
 const AGENT_CHAT_TIMEOUT_MS = 240000;
 const AGENT_CHAT_API_CANDIDATES = buildAgentChatApiCandidates();
-const AUTH_API =
-  window.location.hostname === "localhost" ? "http://localhost:8000" : "http://127.0.0.1:8000";
+const AUTH_API = configuredAuthApi();
+const GOOGLE_ACTION_LABELS = {
+  search_gmail: "Search Gmail",
+  create_gmail_draft: "Create Gmail draft",
+  send_gmail: "Send Gmail message",
+  list_calendar_events: "View calendar events",
+  create_calendar_event: "Create calendar event",
+  read_google_sheet: "Read Google Sheet",
+  append_google_sheet_row: "Append Google Sheets row",
+};
+const GOOGLE_WRITE_ACTION_TOOLS = new Set([
+  "create_gmail_draft",
+  "send_gmail",
+  "create_calendar_event",
+  "append_google_sheet_row",
+]);
 const CHAT_STORAGE_VERSION = 2;
 const CHAT_WIDTH_STORAGE_KEY = "rebly-office-chat-width";
 const CHAT_WIDTH_MIN = 280;
@@ -44,7 +74,7 @@ const MAIN_WIDTH_MIN = 520;
 
 let officeConversationId = "default";
 let officeConversationTeamId = "default-team";
-let officeConversationTeamName = "Agent Office";
+let officeConversationTeamName = "Teamora AI Office";
 let officeConversationSource = "ready";
 let accountKey = getGuestAccountKey();
 let chatSessionId = getOrCreateChatSessionId(accountKey);
@@ -79,7 +109,7 @@ const teamProfile = {
   active: true,
 };
 
-const rooms = {
+const DEFAULT_ROOMS = {
   open: {
     name: "Open Space",
     center: new THREE.Vector3(0, 0, -2.45),
@@ -100,7 +130,7 @@ const rooms = {
   },
 };
 
-const workStations = [
+const DEFAULT_WORK_STATIONS = [
   {
     point: new THREE.Vector3(-5.05, 0, -2.15),
     desk: new THREE.Vector3(-4.65, 0, -2.85),
@@ -138,15 +168,13 @@ const workStations = [
   },
 ];
 
-const slots = workStations.map((station) => station.point.clone());
-
-const roomGateways = {
+const DEFAULT_ROOM_GATEWAYS = {
   open: new THREE.Vector3(0, 0, 0.15),
   kitchen: new THREE.Vector3(-2.7, 0, 0.95),
   relax: new THREE.Vector3(2.7, 0, 0.95),
 };
 
-const idleDestinations = [
+const DEFAULT_IDLE_DESTINATIONS = [
   {
     id: "kitchen-coffee",
     room: "kitchen",
@@ -284,6 +312,167 @@ const DEFAULT_AGENTS = [
   },
 ];
 
+let rooms = DEFAULT_ROOMS;
+let workStations = DEFAULT_WORK_STATIONS;
+let slots = workStations.map((station) => station.point.clone());
+let roomGateways = DEFAULT_ROOM_GATEWAYS;
+let idleDestinations = DEFAULT_IDLE_DESTINATIONS;
+
+const TEAM_HOUSE_TEAM_IDS = new Set(["sales-team", "marketing-team"]);
+const TEAM_HOUSE_SIZE = Object.freeze({
+  width: 32,
+  depth: 23,
+  minX: -16,
+  maxX: 16,
+  minZ: -11.5,
+  maxZ: 11.5,
+  minY: -0.4,
+  maxY: 4.15,
+});
+
+const TEAM_HOUSE_TEAM_SEAT_SLOTS = {
+  "sales-team": [0, 1, 2, 3, 8],
+  "marketing-team": [4, 5, 6, 7, 12],
+};
+
+const TEAM_HOUSE_ROOMS = {
+  open: {
+    name: "Central Open Workspace",
+    center: new THREE.Vector3(-0.7, 0, -0.8),
+    size: { x: 13.8, z: 9.1 },
+    bounds: { minX: -7.6, maxX: 6.2, minZ: -5.35, maxZ: 3.75 },
+  },
+  reception: {
+    name: "Reception",
+    center: new THREE.Vector3(-12.0, 0, 6.7),
+    size: { x: 7.7, z: 8.3 },
+    bounds: { minX: -15.85, maxX: -8.15, minZ: 2.65, maxZ: 10.95 },
+  },
+  sales: {
+    name: "Sales and CRM",
+    center: new THREE.Vector3(-12.0, 0, -4.15),
+    size: { x: 7.7, z: 13.5 },
+    bounds: { minX: -15.85, maxX: -8.15, minZ: -10.95, maxZ: 2.55 },
+  },
+  coordinator: {
+    name: "Coordinator Room",
+    center: new THREE.Vector3(-4.45, 0, -8.35),
+    size: { x: 6.3, z: 5.15 },
+    bounds: { minX: -7.6, maxX: -1.3, minZ: -10.95, maxZ: -5.8 },
+  },
+  research: {
+    name: "Research and Analytics",
+    center: new THREE.Vector3(2.55, 0, -8.35),
+    size: { x: 6.9, z: 5.15 },
+    bounds: { minX: -0.9, maxX: 6.0, minZ: -10.95, maxZ: -5.8 },
+  },
+  automation: {
+    name: "Automation and Integrations",
+    center: new THREE.Vector3(11.1, 0, -8.35),
+    size: { x: 9.5, z: 5.15 },
+    bounds: { minX: 6.35, maxX: 15.85, minZ: -10.95, maxZ: -5.8 },
+  },
+  marketing: {
+    name: "Marketing and Content Studio",
+    center: new THREE.Vector3(11.1, 0, -1.75),
+    size: { x: 9.5, z: 7.3 },
+    bounds: { minX: 6.35, maxX: 15.85, minZ: -5.4, maxZ: 1.9 },
+  },
+  support: {
+    name: "Customer Support",
+    center: new THREE.Vector3(11.1, 0, 4.0),
+    size: { x: 9.5, z: 3.5 },
+    bounds: { minX: 6.35, maxX: 15.85, minZ: 2.25, maxZ: 5.75 },
+  },
+  meeting: {
+    name: "Meeting Room",
+    center: new THREE.Vector3(-4.45, 0, 7.55),
+    size: { x: 6.3, z: 6.8 },
+    bounds: { minX: -7.6, maxX: -1.3, minZ: 4.15, maxZ: 10.95 },
+  },
+  cafe: {
+    name: "AI Cafe",
+    center: new THREE.Vector3(1.72, 0, 7.55),
+    size: { x: 5.25, z: 6.8 },
+    bounds: { minX: -0.9, maxX: 4.35, minZ: 4.15, maxZ: 10.95 },
+  },
+  lounge: {
+    name: "Lounge",
+    center: new THREE.Vector3(7.4, 0, 8.55),
+    size: { x: 5.2, z: 4.8 },
+    bounds: { minX: 4.8, maxX: 10.0, minZ: 6.15, maxZ: 10.95 },
+  },
+  recreation: {
+    name: "Recreation Corner",
+    center: new THREE.Vector3(13.05, 0, 8.55),
+    size: { x: 5.6, z: 4.8 },
+    bounds: { minX: 10.25, maxX: 15.85, minZ: 6.15, maxZ: 10.95 },
+  },
+};
+
+const TEAM_HOUSE_WORK_STATIONS = [
+  { point: new THREE.Vector3(-13.5, 0, -5.1), desk: new THREE.Vector3(-13.35, 0, -5.85), rotation: 0, color: "#4f78e8", activity: "Client pipeline", room: "sales" },
+  { point: new THREE.Vector3(-10.25, 0, -5.1), desk: new THREE.Vector3(-10.1, 0, -5.85), rotation: 0, color: "#2563eb", activity: "Deal review", room: "sales" },
+  { point: new THREE.Vector3(-13.5, 0, -1.25), desk: new THREE.Vector3(-13.35, 0, -2.0), rotation: 0, color: "#60a5fa", activity: "CRM update", room: "sales" },
+  { point: new THREE.Vector3(-10.25, 0, -1.25), desk: new THREE.Vector3(-10.1, 0, -2.0), rotation: 0, color: "#1d4ed8", activity: "Follow up", room: "sales" },
+  { point: new THREE.Vector3(8.35, 0, -3.65), desk: new THREE.Vector3(8.5, 0, -4.4), rotation: 0, color: "#8b5cf6", activity: "Campaign studio", room: "marketing" },
+  { point: new THREE.Vector3(11.5, 0, -3.65), desk: new THREE.Vector3(11.65, 0, -4.4), rotation: 0, color: "#a855f7", activity: "Content calendar", room: "marketing" },
+  { point: new THREE.Vector3(8.35, 0, -0.4), desk: new THREE.Vector3(8.5, 0, -1.15), rotation: 0, color: "#7c3aed", activity: "Creative review", room: "marketing" },
+  { point: new THREE.Vector3(11.5, 0, -0.4), desk: new THREE.Vector3(11.65, 0, -1.15), rotation: 0, color: "#c084fc", activity: "Performance report", room: "marketing" },
+  { point: new THREE.Vector3(-5.45, 0, -2.45), desk: new THREE.Vector3(-5.3, 0, -3.2), rotation: 0, color: "#4f5bd5", activity: "Open workspace", room: "open" },
+  { point: new THREE.Vector3(-2.55, 0, -2.45), desk: new THREE.Vector3(-2.4, 0, -3.2), rotation: 0, color: "#0ea5e9", activity: "Open workspace", room: "open" },
+  { point: new THREE.Vector3(-5.45, 0, 1.2), desk: new THREE.Vector3(-5.3, 0, 0.45), rotation: 0, color: "#2563eb", activity: "Open workspace", room: "open" },
+  { point: new THREE.Vector3(-2.55, 0, 1.2), desk: new THREE.Vector3(-2.4, 0, 0.45), rotation: 0, color: "#14b8a6", activity: "Open workspace", room: "open" },
+  { point: new THREE.Vector3(0.8, 0, -2.45), desk: new THREE.Vector3(0.95, 0, -3.2), rotation: 0, color: "#8b5cf6", activity: "Open workspace", room: "open" },
+  { point: new THREE.Vector3(3.7, 0, -2.45), desk: new THREE.Vector3(3.85, 0, -3.2), rotation: 0, color: "#06b6d4", activity: "Open workspace", room: "open" },
+  { point: new THREE.Vector3(0.8, 0, 1.2), desk: new THREE.Vector3(0.95, 0, 0.45), rotation: 0, color: "#6366f1", activity: "Open workspace", room: "open" },
+  { point: new THREE.Vector3(3.7, 0, 1.2), desk: new THREE.Vector3(3.85, 0, 0.45), rotation: 0, color: "#2dd4bf", activity: "Open workspace", room: "open" },
+  { point: new THREE.Vector3(-5.55, 0, -8.1), desk: new THREE.Vector3(-5.4, 0, -8.85), rotation: 0, color: "#6d5ce7", activity: "Team coordination", room: "coordinator" },
+  { point: new THREE.Vector3(0.55, 0, -8.1), desk: new THREE.Vector3(0.7, 0, -8.85), rotation: 0, color: "#0ea5e9", activity: "Research analysis", room: "research" },
+  { point: new THREE.Vector3(3.5, 0, -8.1), desk: new THREE.Vector3(3.65, 0, -8.85), rotation: 0, color: "#38bdf8", activity: "Insight report", room: "research" },
+  { point: new THREE.Vector3(12.2, 0, -8.1), desk: new THREE.Vector3(12.35, 0, -8.85), rotation: 0, color: "#1e3a8a", activity: "Integration monitor", room: "automation" },
+  { point: new THREE.Vector3(8.6, 0, 3.55), desk: new THREE.Vector3(8.75, 0, 2.8), rotation: 0, color: "#10b981", activity: "Customer queue", room: "support" },
+  { point: new THREE.Vector3(11.85, 0, 3.55), desk: new THREE.Vector3(12.0, 0, 2.8), rotation: 0, color: "#22c55e", activity: "Support reply", room: "support" },
+];
+
+const TEAM_HOUSE_ROOM_GATEWAYS = {
+  open: new THREE.Vector3(-0.6, 0, 0.15),
+  reception: new THREE.Vector3(-7.85, 0, 4.85),
+  sales: new THREE.Vector3(-7.85, 0, -1.05),
+  coordinator: new THREE.Vector3(-4.45, 0, -5.55),
+  research: new THREE.Vector3(2.55, 0, -5.55),
+  automation: new THREE.Vector3(6.15, 0, -5.55),
+  marketing: new THREE.Vector3(6.15, 0, -1.65),
+  support: new THREE.Vector3(6.15, 0, 3.85),
+  meeting: new THREE.Vector3(-4.45, 0, 3.95),
+  cafe: new THREE.Vector3(1.7, 0, 3.95),
+  lounge: new THREE.Vector3(5.2, 0, 5.95),
+  recreation: new THREE.Vector3(10.05, 0, 5.95),
+};
+
+const TEAM_HOUSE_IDLE_DESTINATIONS = [
+  { id: "sales-crm-wall", room: "sales", kind: "screen", point: new THREE.Vector3(-14.25, 0, -8.2), face: new THREE.Vector3(-14.25, 0, -10.8), bubbles: ["Reviewing pipeline", "Checking leads"], teams: ["sales-team"] },
+  { id: "sales-huddle", room: "sales", kind: "talk", point: new THREE.Vector3(-11.7, 0, 1.15), face: new THREE.Vector3(-13.0, 0, 1.15), bubbles: ["Sales huddle", "Closing plan"], teams: ["sales-team"] },
+  { id: "sales-window", room: "sales", kind: "focused", point: new THREE.Vector3(-9.0, 0, -8.15), face: new THREE.Vector3(-8.25, 0, -8.15), bubbles: ["Forecasting", "Planning next"], teams: ["sales-team"] },
+  { id: "marketing-screen", room: "marketing", kind: "screen", point: new THREE.Vector3(14.15, 0, -3.8), face: new THREE.Vector3(14.15, 0, -5.1), bubbles: ["Watching metrics", "Campaign check"], teams: ["marketing-team"] },
+  { id: "marketing-studio", room: "marketing", kind: "talk", point: new THREE.Vector3(12.0, 0, 1.1), face: new THREE.Vector3(10.55, 0, 1.1), bubbles: ["Creative sync", "Reviewing content"], teams: ["marketing-team"] },
+  { id: "marketing-board", room: "marketing", kind: "focused", point: new THREE.Vector3(7.2, 0, -0.15), face: new THREE.Vector3(6.45, 0, -0.15), bubbles: ["Researching", "Building a brief"], teams: ["marketing-team"] },
+  { id: "central-team-pulse", room: "open", kind: "screen", point: new THREE.Vector3(-0.45, 0, -4.25), face: new THREE.Vector3(-0.45, 0, -5.05), bubbles: ["Reviewing team pulse", "Checking priorities"], teams: ["sales-team", "marketing-team"] },
+  { id: "central-whiteboard", room: "open", kind: "talk", point: new THREE.Vector3(4.85, 0, 1.45), face: new THREE.Vector3(5.7, 0, 1.45), bubbles: ["Planning together", "Board check"], teams: ["sales-team", "marketing-team"] },
+  { id: "coordinator-table", room: "coordinator", kind: "talk", point: new THREE.Vector3(-3.55, 0, -8.1), face: new THREE.Vector3(-4.45, 0, -8.1), bubbles: ["Quick sync", "Team alignment"], teams: ["sales-team", "marketing-team"] },
+  { id: "research-wall", room: "research", kind: "screen", point: new THREE.Vector3(4.75, 0, -7.1), face: new THREE.Vector3(5.65, 0, -7.1), bubbles: ["Reading signals", "Exploring insights"], teams: ["sales-team", "marketing-team"] },
+  { id: "support-queue", room: "support", kind: "focused", point: new THREE.Vector3(14.1, 0, 4.0), face: new THREE.Vector3(14.1, 0, 2.45), bubbles: ["Checking support", "Resolving queue"], teams: ["sales-team", "marketing-team"] },
+  { id: "automation-rack", room: "automation", kind: "screen", point: new THREE.Vector3(14.3, 0, -8.0), face: new THREE.Vector3(14.3, 0, -10.5), bubbles: ["Monitoring automations", "Checking integrations"], teams: ["sales-team", "marketing-team"] },
+  { id: "team-house-meeting", room: "meeting", kind: "talk", point: new THREE.Vector3(-3.65, 0, 7.35), face: new THREE.Vector3(-4.45, 0, 7.35), bubbles: ["Meeting room", "Sharing an update"], teams: ["sales-team", "marketing-team"] },
+  { id: "team-house-cafe", room: "cafe", kind: "coffee", point: new THREE.Vector3(0.15, 0, 7.4), face: new THREE.Vector3(-0.65, 0, 7.4), bubbles: ["Coffee break", "Recharging"], teams: ["sales-team", "marketing-team"] },
+  { id: "team-house-lounge", room: "lounge", kind: "rest", point: new THREE.Vector3(6.5, 0, 8.55), face: new THREE.Vector3(8.25, 0, 8.55), bubbles: ["Thinking", "Taking a reset"], teams: ["sales-team", "marketing-team"] },
+  { id: "team-house-recreation", room: "recreation", kind: "talk", point: new THREE.Vector3(12.45, 0, 8.55), face: new THREE.Vector3(13.35, 0, 8.55), bubbles: ["Quick game", "Taking a break"], teams: ["sales-team", "marketing-team"] },
+  { id: "team-house-reception", room: "reception", kind: "talk", point: new THREE.Vector3(-13.0, 0, 7.25), face: new THREE.Vector3(-12.0, 0, 7.25), bubbles: ["Welcoming a task", "Checking in"], teams: ["sales-team", "marketing-team"] },
+];
+
+let activeOfficeLayout = "classic";
+let activeOfficeTeamId = "default-team";
+
 let agents = DEFAULT_AGENTS.map(cloneAgent);
 
 const legacyAuthorToAgentId = {
@@ -304,15 +493,18 @@ function cloneAgent(agent) {
 
 function normalizeTeamAgent(rawAgent, index) {
   const base = DEFAULT_AGENTS[index % DEFAULT_AGENTS.length];
+  const requestedId = String(rawAgent?.id || "").trim();
+  const allowedId = DEFAULT_AGENTS.some((agent) => agent.id === requestedId) ? requestedId : base.id;
+  const runtimeBase = DEFAULT_AGENTS.find((agent) => agent.id === allowedId) || base;
   const name = String(rawAgent?.name || base.name || `Agent ${index + 1}`).trim();
   const role = String(rawAgent?.role || base.role || "AI agent").trim();
   return {
-    id: base.id,
+    id: allowedId,
     name,
     role,
-    kind: "human",
-    color: String(rawAgent?.color || rawAgent?.accent || base.color || "#4f5bd5"),
-    avatar: String(rawAgent?.avatar || base.avatar || "/images/agents/coordinator.png"),
+    kind: runtimeBase.kind || "human",
+    color: String(rawAgent?.color || rawAgent?.accent || runtimeBase.color || "#4f5bd5"),
+    avatar: String(rawAgent?.avatar || runtimeBase.avatar || "/images/agents/coordinator.png"),
     slot: index % slots.length,
     state: index === 0 ? "focused" : "idle",
     bubble: index === 0 ? "Team ready" : "Ready",
@@ -385,6 +577,11 @@ const agentStyles = [
 let selectedIndex = 0;
 let queued = 3;
 const bubbles = new Map();
+const bubblePresentation = new Map();
+const MAX_FULL_AGENT_CARDS = 3;
+const BUBBLE_EDGE_PADDING = 10;
+let hoveredAgentIndex = -1;
+let cameraTransition = null;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color("#f4f6f8");
@@ -417,6 +614,9 @@ try {
   controls.maxZoom = 2.05;
   controls.minPolarAngle = Math.PI * 0.18;
   controls.maxPolarAngle = Math.PI * 0.5;
+  controls.addEventListener("start", () => {
+    cameraTransition = null;
+  });
   controls.update();
 } catch (error) {
   canvas.dataset.webgl = "unavailable";
@@ -546,6 +746,665 @@ function addOffice() {
   addKitchenRoom();
   addRelaxRoom();
   addRoomLights();
+}
+
+function shouldUseTeamHouse(teamId) {
+  return TEAM_HOUSE_TEAM_IDS.has(String(teamId || "").trim().toLowerCase());
+}
+
+function assignOfficeSeats(teamId) {
+  const teamSeats = TEAM_HOUSE_TEAM_SEAT_SLOTS[String(teamId || "").trim().toLowerCase()];
+  agents.forEach((agent, index) => {
+    const nextSlot = teamSeats?.[index] ?? index;
+    agent.slot = ((nextSlot % slots.length) + slots.length) % slots.length;
+  });
+}
+
+function setOfficeLayout(teamId) {
+  const nextTeamId = String(teamId || "default-team").trim().toLowerCase();
+  const nextLayout = shouldUseTeamHouse(nextTeamId) ? "team-house" : "classic";
+  const needsRebuild = activeOfficeLayout !== nextLayout || root.children.length === 0;
+
+  activeOfficeTeamId = nextTeamId;
+  activeOfficeLayout = nextLayout;
+  rooms = nextLayout === "team-house" ? TEAM_HOUSE_ROOMS : DEFAULT_ROOMS;
+  workStations = nextLayout === "team-house" ? TEAM_HOUSE_WORK_STATIONS : DEFAULT_WORK_STATIONS;
+  slots = workStations.map((station) => station.point.clone());
+  roomGateways = nextLayout === "team-house" ? TEAM_HOUSE_ROOM_GATEWAYS : DEFAULT_ROOM_GATEWAYS;
+  idleDestinations =
+    nextLayout === "team-house" ? TEAM_HOUSE_IDLE_DESTINATIONS : DEFAULT_IDLE_DESTINATIONS;
+
+  if (renderer && needsRebuild) {
+    root.clear();
+    if (nextLayout === "team-house") {
+      addTeamHouse();
+    } else {
+      addOffice();
+    }
+
+    const shadowExtent = nextLayout === "team-house" ? 19 : 10;
+    sun.shadow.camera.left = -shadowExtent;
+    sun.shadow.camera.right = shadowExtent;
+    sun.shadow.camera.top = shadowExtent;
+    sun.shadow.camera.bottom = -shadowExtent;
+    sun.shadow.camera.updateProjectionMatrix();
+  }
+
+  if (controls) resetView();
+  if (window.agentOfficeDebug) {
+    Object.assign(window.agentOfficeDebug, {
+      activeOfficeLayout,
+      activeOfficeTeamId,
+      rooms,
+      workStations,
+      idleDestinations,
+    });
+  }
+}
+
+function addTeamHouse() {
+  const { width, depth } = TEAM_HOUSE_SIZE;
+  const foundation = new THREE.Mesh(
+    new THREE.BoxGeometry(width + 0.6, 0.42, depth + 0.6),
+    new THREE.MeshStandardMaterial({ color: "#d6e5ff", roughness: 0.72 }),
+  );
+  foundation.position.set(0, -0.32, 0);
+  foundation.receiveShadow = true;
+  root.add(foundation);
+
+  addTeamHouseZoneFloor(0, 0, width - 0.2, depth - 0.2, "#f4d9ae", "#d7af78", "rgba(255,255,255,0.18)");
+  addTeamHouseZoneFloor(-12, -4.15, 7.65, 13.45, "#e9f2ff", "#c9dcff", "rgba(37,99,235,0.08)");
+  addTeamHouseZoneFloor(-12, 6.8, 7.65, 8.05, "#f6f8ff", "#d8e2fb", "rgba(79,91,213,0.07)");
+  addTeamHouseZoneFloor(-4.45, -8.35, 6.2, 5.0, "#ede8ff", "#d8cdfa", "rgba(109,92,231,0.12)");
+  addTeamHouseZoneFloor(2.55, -8.35, 6.8, 5.0, "#e2f7ff", "#bce8fb", "rgba(14,165,233,0.1)");
+  addTeamHouseZoneFloor(11.1, -8.35, 9.4, 5.0, "#dae7f7", "#b7c8e2", "rgba(30,58,138,0.13)");
+  addTeamHouseZoneFloor(-0.7, -0.8, 13.65, 8.95, "#f6e1be", "#dfbd8a", "rgba(99,102,241,0.05)");
+  addTeamHouseZoneFloor(11.1, -1.75, 9.4, 7.15, "#f4ecff", "#ddcdfa", "rgba(139,92,246,0.1)");
+  addTeamHouseZoneFloor(11.1, 4.0, 9.4, 3.35, "#e6f8ef", "#c0ead3", "rgba(16,185,129,0.1)");
+  addTeamHouseZoneFloor(-4.45, 7.55, 6.2, 6.65, "#eff3ff", "#d5def4", "rgba(79,91,213,0.07)");
+  addTeamHouseZoneFloor(1.72, 7.55, 5.1, 6.65, "#fff0d8", "#f1c88e", "rgba(245,158,11,0.11)");
+  addTeamHouseZoneFloor(7.4, 8.55, 5.05, 4.65, "#e7f6f1", "#c5e7dd", "rgba(16,185,129,0.08)");
+  addTeamHouseZoneFloor(13.05, 8.55, 5.45, 4.65, "#e6efff", "#cbd9f2", "rgba(59,130,246,0.08)");
+
+  const wallColor = "#e5edff";
+  const wallTrim = "#c8d8f4";
+  addBox(root, width + 0.6, 2.9, 0.3, wallColor, new THREE.Vector3(0, 1.15, -11.65), {
+    roughness: 0.82,
+  });
+  addBox(root, 0.3, 2.9, depth + 0.6, wallColor, new THREE.Vector3(-16.3, 1.15, 0), {
+    roughness: 0.82,
+  });
+  addBox(root, width + 0.6, 0.36, 0.22, wallTrim, new THREE.Vector3(0, 0.08, 11.5), {
+    roughness: 0.65,
+  });
+  addBox(root, 0.22, 0.36, depth + 0.6, wallTrim, new THREE.Vector3(16.2, 0.08, 0), {
+    roughness: 0.65,
+  });
+
+  addTeamHouseLowDivider(-7.92, -6.95, 7.1, Math.PI / 2, "#cbdcff");
+  addTeamHouseLowDivider(-7.92, 8.05, 4.95, Math.PI / 2, "#d4def4");
+  addTeamHouseLowDivider(6.18, -8.35, 5.0, Math.PI / 2, "#c1d2ee");
+  addTeamHouseLowDivider(6.18, 4.0, 3.35, Math.PI / 2, "#b9ead2");
+  addTeamHouseLowDivider(10.1, 6.0, 5.65, Math.PI / 2, "#c6d8ef");
+  addTeamHouseLowDivider(-1.1, 4.0, 5.1, Math.PI / 2, "#d5def4");
+  addTeamHouseLowDivider(4.55, 7.55, 6.65, Math.PI / 2, "#f4d4a0");
+  addTeamHouseGlassDivider(6.18, -1.7, 5.05, Math.PI / 2, 1.34);
+  addTeamHouseGlassDivider(-1.1, -8.35, 5.0, Math.PI / 2, 1.3);
+  addTeamHouseGlassDivider(6.18, 8.55, 4.55, Math.PI / 2, 1.3);
+
+  addTeamHouseRug(-4.45, -8.35, 5.2, 3.45, "#d9d0ff");
+  addTeamHouseRug(-4.45, 7.55, 4.8, 4.2, "#dce7ff");
+  addTeamHouseRug(1.72, 7.55, 3.95, 4.2, "#ffe0aa");
+  addTeamHouseRug(7.4, 8.55, 3.8, 3.05, "#d7f0e6");
+  addTeamHouseRug(13.05, 8.55, 4.25, 3.2, "#dbeafe");
+  addTeamHouseWalkway(-0.78, -0.75, 1.45, 8.6);
+
+  TEAM_HOUSE_WORK_STATIONS.forEach((station, index) => {
+    addTeamHouseDesk(station, index);
+    addPad(station.point, station.color);
+  });
+
+  addTeamHouseSign("SALES and CRM", "pipeline / clients / close", "#2563eb", 3.7, 0.62, -12.0, 2.25, -11.46);
+  addTeamHouseSign("COORDINATOR", "alignment / decisions", "#6d5ce7", 3.0, 0.58, -4.45, 2.25, -11.46);
+  addTeamHouseSign("RESEARCH", "signals / insights", "#0ea5e9", 3.05, 0.58, 2.55, 2.25, -11.46);
+  addTeamHouseSign("AUTOMATION", "integrations / runs", "#1e3a8a", 3.55, 0.62, 11.1, 2.25, -11.46);
+  addTeamHouseScreen("CRM PULSE", "LEADS  24   WIN RATE  68%", "#2563eb", -12.0, 1.25, -11.42, 3.7, 1.08);
+  addTeamHouseScreen("TEAM PULSE", "FOCUS  92%   TASKS  08", "#6d5ce7", -4.45, 1.25, -11.42, 3.0, 1.08);
+  addTeamHouseScreen("RESEARCH LAB", "SIGNALS  07   INSIGHTS  16", "#0ea5e9", 2.55, 1.25, -11.42, 3.05, 1.08);
+  addTeamHouseScreen("AUTOMATION OPS", "RUNS  14   HEALTH  99%", "#1e3a8a", 11.1, 1.25, -11.42, 3.55, 1.08);
+
+  addTeamHouseSign("MARKETING STUDIO", "content / campaigns / reach", "#8b5cf6", 3.85, 0.58, 11.1, 2.05, 1.98);
+  addTeamHouseScreen("CAMPAIGN LAB", "REACH  +38%   CONTENT  12", "#8b5cf6", 11.1, 1.1, 1.94, 3.85, 0.98);
+  addTeamHouseSign("CUSTOMER SUPPORT", "queue / care / resolve", "#10b981", 3.8, 0.55, 11.1, 1.82, 5.86);
+  addTeamHouseScreen("SUPPORT QUEUE", "OPEN  03   SLA  98%", "#10b981", 11.1, 1.02, 5.82, 3.35, 0.88);
+
+  addTeamHouseCentralWorkspace();
+  addTeamHouseSalesZone(-12.0, -4.15);
+  addTeamHouseMeetingTable(-4.45, -8.35);
+  addTeamHouseResearchPod(2.55, -8.35);
+  addTeamHouseAutomationLab(11.1, -8.35);
+  addTeamHouseMarketingStudio(11.1, -1.75);
+  addTeamHouseSupportZone(11.1, 4.0);
+  addTeamHouseReception(-12.0, 6.8);
+  addTeamHouseMeetingRoom(-4.45, 7.55);
+  addTeamHouseCafe(1.72, 7.55);
+  addTeamHouseLounge(7.4, 8.55);
+  addTeamHouseRecreationCorner(13.05, 8.55);
+
+  [
+    [-15.1, -10.2, 0.7],
+    [-8.75, -10.2, 0.65],
+    [-0.2, -10.2, 0.7],
+    [7.05, -10.2, 0.65],
+    [15.05, -10.2, 0.7],
+    [-15.1, 10.2, 0.72],
+    [-8.6, 10.2, 0.65],
+    [4.9, 10.2, 0.62],
+    [15.05, 10.2, 0.72],
+  ].forEach(([x, z, scale]) => addFloorPlant(x, z, scale));
+
+  [
+    [-12.0, -7.25, "#dbeafe"],
+    [-4.45, -7.25, "#ede9fe"],
+    [2.55, -7.25, "#dff6ff"],
+    [11.1, -7.25, "#d8e7ff"],
+    [-4.45, -0.3, "#fff7e6"],
+    [2.4, -0.3, "#e8edff"],
+    [11.1, -1.35, "#f4e8ff"],
+    [-12.0, 7.3, "#edf2ff"],
+    [1.72, 7.35, "#fff0d3"],
+    [11.1, 4.0, "#e4f8ee"],
+  ].forEach(([x, z, color]) => addTeamHousePendant(x, z, color));
+}
+
+function addTeamHouseGlassDivider(x, z, length, rotation = 0, height = 1.58) {
+  const divider = new THREE.Group();
+  divider.position.set(x, 0, z);
+  divider.rotation.y = rotation;
+  root.add(divider);
+
+  const glass = new THREE.Mesh(
+    new THREE.BoxGeometry(length, height, 0.05),
+    new THREE.MeshStandardMaterial({
+      color: "#d9efff",
+      transparent: true,
+      opacity: 0.38,
+      roughness: 0.15,
+      metalness: 0.04,
+    }),
+  );
+  glass.position.y = height / 2 + 0.06;
+  glass.castShadow = true;
+  divider.add(glass);
+  addBox(divider, length + 0.08, 0.1, 0.1, "#c7d7ef", new THREE.Vector3(0, 0.12, 0));
+  addBox(divider, length + 0.08, 0.08, 0.1, "#c7d7ef", new THREE.Vector3(0, height + 0.08, 0));
+  for (let offset = -length / 2 + 0.65; offset < length / 2; offset += 1.35) {
+    addBox(divider, 0.06, height + 0.08, 0.08, "#c7d7ef", new THREE.Vector3(offset, height / 2 + 0.08, 0));
+  }
+}
+
+function addTeamHouseRug(x, z, width, depth, color) {
+  const rug = new THREE.Mesh(
+    new THREE.BoxGeometry(width, 0.055, depth),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.9 }),
+  );
+  rug.position.set(x, 0.035, z);
+  rug.receiveShadow = true;
+  root.add(rug);
+}
+
+function addTeamHouseZoneFloor(x, z, width, depth, base, line, accent) {
+  const texture = createCanvasTexture(
+    base,
+    line,
+    [
+      { color: accent, x: 0, y: 64, w: 512, h: 72 },
+      { color: accent, x: 260, y: 256, w: 96, h: 256 },
+    ],
+    { x: Math.max(1.2, width / 5.5), y: Math.max(1.1, depth / 5.5) },
+  );
+  const floor = new THREE.Mesh(
+    new THREE.BoxGeometry(width, 0.09, depth),
+    new THREE.MeshStandardMaterial({ map: texture, roughness: 0.86, metalness: 0.01 }),
+  );
+  floor.position.set(x, -0.005, z);
+  floor.receiveShadow = true;
+  root.add(floor);
+  return floor;
+}
+
+function addTeamHouseWalkway(x, z, width, depth) {
+  addBox(root, width, 0.065, depth, "#f8fafc", new THREE.Vector3(x, 0.04, z), { roughness: 0.92 });
+  addBox(root, 0.08, 0.074, depth, "#cbd5e1", new THREE.Vector3(x - width / 2, 0.075, z), { roughness: 0.58 });
+  addBox(root, 0.08, 0.074, depth, "#cbd5e1", new THREE.Vector3(x + width / 2, 0.075, z), { roughness: 0.58 });
+}
+
+function addTeamHouseLowDivider(x, z, length, rotation = 0, accent = "#cbd5e1") {
+  const divider = new THREE.Group();
+  divider.position.set(x, 0, z);
+  divider.rotation.y = rotation;
+  root.add(divider);
+  addBox(divider, length, 0.46, 0.42, "#eff5ff", new THREE.Vector3(0, 0.24, 0), { roughness: 0.78 });
+  addBox(divider, length + 0.08, 0.08, 0.5, accent, new THREE.Vector3(0, 0.52, 0), { roughness: 0.62 });
+  for (let offset = -length / 2 + 0.48; offset < length / 2 - 0.2; offset += 0.78) {
+    const leaf = new THREE.Mesh(
+      new THREE.ConeGeometry(0.08, 0.34, 7),
+      new THREE.MeshStandardMaterial({ color: offset % 1.56 > 0.7 ? "#16a34a" : "#65a30d", roughness: 0.72 }),
+    );
+    leaf.position.set(offset, 0.74, (offset % 1.56 > 0.7 ? 0.1 : -0.1));
+    leaf.rotation.z = offset % 1.56 > 0.7 ? 0.35 : -0.35;
+    leaf.castShadow = true;
+    divider.add(leaf);
+  }
+}
+
+function addTeamHouseCentralWorkspace() {
+  addTeamHouseSign("CENTRAL WORKSPACE", "build / collaborate / ship", "#4f5bd5", 3.85, 0.56, -0.6, 1.92, -5.22);
+  addTeamHouseScreen("TEAM STATUS", "FOCUS  92%   TASKS  08   READY  05", "#4f5bd5", -0.6, 1.0, -5.18, 4.15, 1.02);
+  addTeamHouseWhiteboard("SPRINT BOARD", ["PLAN", "CREATE", "REVIEW", "SHIP"], "#0ea5e9", 5.82, 1.45, 1.55, 1.7, 1.05);
+  addTeamHousePlanterDivider(-0.75, -2.8, 2.7, "#c7d2fe");
+  addTeamHousePlanterDivider(-0.75, 1.0, 2.7, "#c7d2fe");
+  addTeamHousePlanterDivider(-6.9, -0.7, 2.5, "#dbeafe", Math.PI / 2);
+  addShelf(-7.0, -4.3, 0.72, Math.PI / 2);
+  addShelf(5.5, -4.3, 0.68, -Math.PI / 2);
+  addFloorPlant(-6.75, 2.75, 0.56);
+  addFloorPlant(5.4, 2.75, 0.56);
+}
+
+function addTeamHouseSalesZone(x, z) {
+  addTeamHouseScreen("CRM DASHBOARD", "LEADS / DEALS / FORECAST", "#2563eb", x, 1.35, -10.98, 3.55, 1.0);
+  addTeamHouseWhiteboard("SALES PLAY", ["QUALIFY", "DEMO", "CLOSE"], "#2563eb", -8.42, 1.35, -2.75, 1.42, 0.98);
+  const huddle = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.12, 1.12, 0.13, 28),
+    new THREE.MeshStandardMaterial({ color: "#f8fbff", roughness: 0.5 }),
+  );
+  huddle.position.set(-12.0, 0.72, 1.08);
+  huddle.castShadow = true;
+  root.add(huddle);
+  addBox(root, 0.24, 0.72, 0.24, "#64748b", new THREE.Vector3(-12.0, 0.35, 1.08), { roughness: 0.5 });
+  [-1.35, 1.35].forEach((offset, index) => {
+    const chair = new THREE.Group();
+    chair.position.set(-12.0 + offset, 0, 1.08);
+    chair.rotation.y = index ? -Math.PI / 2 : Math.PI / 2;
+    root.add(chair);
+    addOfficeChair(chair, 0, 0, index);
+  });
+  addShelf(-15.1, -1.0, 0.7, Math.PI / 2);
+  addFloorPlant(-15.0, 1.8, 0.58);
+}
+
+function addTeamHousePlanterDivider(x, z, width, accent, rotation = 0) {
+  const group = new THREE.Group();
+  group.position.set(x, 0, z);
+  group.rotation.y = rotation;
+  root.add(group);
+  addBox(group, width, 0.44, 0.42, "#e5e7eb", new THREE.Vector3(0, 0.23, 0), { roughness: 0.78 });
+  addBox(group, width + 0.04, 0.06, 0.46, accent, new THREE.Vector3(0, 0.48, 0), { roughness: 0.65 });
+  for (let offset = -width / 2 + 0.25; offset < width / 2; offset += 0.45) {
+    const leaf = new THREE.Mesh(
+      new THREE.ConeGeometry(0.095, 0.45, 7),
+      new THREE.MeshStandardMaterial({ color: offset % 0.9 > 0.42 ? "#22c55e" : "#15803d", roughness: 0.7 }),
+    );
+    leaf.position.set(offset, 0.77, 0);
+    leaf.rotation.z = offset % 0.9 > 0.42 ? 0.28 : -0.28;
+    leaf.castShadow = true;
+    group.add(leaf);
+  }
+}
+
+function createTeamHouseWhiteboardTexture(title, lines, accent) {
+  const textureCanvas = document.createElement("canvas");
+  textureCanvas.width = 760;
+  textureCanvas.height = 420;
+  const ctx = textureCanvas.getContext("2d");
+  ctx.fillStyle = "#fbfdff";
+  ctx.fillRect(0, 0, 760, 420);
+  ctx.strokeStyle = "#cbd5e1";
+  ctx.lineWidth = 10;
+  ctx.strokeRect(18, 18, 724, 384);
+  ctx.fillStyle = "#0f172a";
+  ctx.font = "800 48px ui-sans-serif, system-ui";
+  ctx.fillText(title, 48, 86);
+  lines.forEach((line, index) => {
+    ctx.fillStyle = index % 2 ? "#475569" : accent;
+    ctx.fillRect(54, 124 + index * 64, 22, 22);
+    ctx.fillStyle = "#334155";
+    ctx.font = "700 31px ui-sans-serif, system-ui";
+    ctx.fillText(line, 98, 145 + index * 64);
+  });
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  ctx.moveTo(478, 316);
+  ctx.lineTo(548, 246);
+  ctx.lineTo(628, 278);
+  ctx.lineTo(696, 190);
+  ctx.stroke();
+  const texture = new THREE.CanvasTexture(textureCanvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function addTeamHouseWhiteboard(title, lines, accent, x, y, z, width, height) {
+  addBox(root, width + 0.13, height + 0.13, 0.06, "#cbd5e1", new THREE.Vector3(x, y, z - 0.04), { roughness: 0.6 });
+  const board = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, height),
+    new THREE.MeshBasicMaterial({ map: createTeamHouseWhiteboardTexture(title, lines, accent) }),
+  );
+  board.position.set(x, y, z);
+  root.add(board);
+}
+
+function addTeamHouseDesk(station, index) {
+  const group = new THREE.Group();
+  group.position.copy(station.desk);
+  group.rotation.y = station.rotation || 0;
+  root.add(group);
+
+  addBox(group, 1.72, 0.18, 0.92, "#997652", new THREE.Vector3(0, 0.56, 0), { roughness: 0.67 });
+  addBox(group, 1.84, 0.075, 1.02, "#6e5745", new THREE.Vector3(0, 0.71, 0), { roughness: 0.6 });
+  [-0.69, 0.69].forEach((legX) => {
+    [-0.35, 0.35].forEach((legZ) => {
+      addBox(group, 0.09, 0.56, 0.09, "#293546", new THREE.Vector3(legX, 0.28, legZ), {
+        roughness: 0.55,
+      });
+    });
+  });
+  addMonitor(group, -0.2, -0.2, station.color);
+  addBox(group, 0.55, 0.035, 0.2, "#1f2937", new THREE.Vector3(0.3, 0.76, 0.24), { roughness: 0.42 });
+  addBox(group, 0.2, 0.04, 0.18, "#fbfdff", new THREE.Vector3(-0.57, 0.76, 0.21), { roughness: 0.78 });
+  addOfficeChair(group, -0.14, 0.77, index);
+  addDeskLamp(group, 0.68, -0.25, station.color);
+}
+
+function addTeamHouseSign(title, subtitle, accent, width, height, x, y, z) {
+  addBox(root, width + 0.18, height + 0.14, 0.06, "#edf4ff", new THREE.Vector3(x, y, z - 0.035), {
+    roughness: 0.65,
+  });
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, height),
+    new THREE.MeshBasicMaterial({ map: createSignTexture(title, subtitle, accent), transparent: true }),
+  );
+  sign.position.set(x, y, z);
+  root.add(sign);
+}
+
+function createTeamHouseScreenTexture(title, detail, accent) {
+  const textureCanvas = document.createElement("canvas");
+  textureCanvas.width = 960;
+  textureCanvas.height = 360;
+  const ctx = textureCanvas.getContext("2d");
+  ctx.fillStyle = "#101827";
+  ctx.fillRect(0, 0, 960, 360);
+  ctx.fillStyle = accent;
+  ctx.fillRect(0, 0, 960, 10);
+  ctx.fillStyle = "#eaf3ff";
+  ctx.font = "800 54px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.fillText(title, 44, 90);
+  ctx.fillStyle = "#9edfff";
+  ctx.font = "700 27px ui-sans-serif, system-ui";
+  ctx.fillText(detail, 46, 145);
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  ctx.moveTo(48, 294);
+  ctx.lineTo(205, 242);
+  ctx.lineTo(345, 270);
+  ctx.lineTo(505, 185);
+  ctx.lineTo(664, 220);
+  ctx.lineTo(886, 112);
+  ctx.stroke();
+  for (let index = 0; index < 5; index += 1) {
+    ctx.fillStyle = index % 2 ? "#67e8f9" : accent;
+    ctx.fillRect(48 + index * 164, 184, 92, 18 + index * 15);
+  }
+  const texture = new THREE.CanvasTexture(textureCanvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function addTeamHouseScreen(title, detail, accent, x, y, z, width, height) {
+  addBox(root, width + 0.14, height + 0.14, 0.07, "#1e293b", new THREE.Vector3(x, y, z - 0.04), {
+    roughness: 0.45,
+    emissive: accent,
+    emissiveIntensity: 0.12,
+  });
+  const screen = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, height),
+    new THREE.MeshBasicMaterial({ map: createTeamHouseScreenTexture(title, detail, accent) }),
+  );
+  screen.position.set(x, y, z);
+  root.add(screen);
+}
+
+function addTeamHouseMeetingTable(x, z) {
+  const tableTop = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.55, 1.55, 0.14, 42),
+    new THREE.MeshStandardMaterial({ color: "#fbfdff", roughness: 0.48 }),
+  );
+  tableTop.position.set(x, 0.8, z);
+  tableTop.castShadow = true;
+  tableTop.receiveShadow = true;
+  root.add(tableTop);
+  addBox(root, 0.36, 0.78, 0.36, "#64748b", new THREE.Vector3(x, 0.38, z), { roughness: 0.5 });
+  for (let index = 0; index < 5; index += 1) {
+    const angle = (index / 5) * Math.PI * 2 + 0.3;
+    const chair = new THREE.Group();
+    chair.position.set(x + Math.cos(angle) * 2.05, 0, z + Math.sin(angle) * 2.05);
+    chair.rotation.y = -angle;
+    root.add(chair);
+    addOfficeChair(chair, 0, 0, index);
+  }
+  addBox(root, 0.38, 0.08, 0.3, "#6d5ce7", new THREE.Vector3(x, 0.92, z - 0.18), {
+    emissive: "#6d5ce7",
+    emissiveIntensity: 0.22,
+  });
+}
+
+function addTeamHouseResearchPod(x, z) {
+  addTeamHouseScreen("SIGNAL MAP", "TRENDS  07   INSIGHTS  16", "#0ea5e9", x, 1.22, -5.73, 3.25, 0.96);
+  addTeamHouseWhiteboard("INSIGHT LOOP", ["COLLECT", "COMPARE", "DECIDE"], "#0ea5e9", 5.65, 1.35, -7.5, 1.18, 0.92);
+  addBox(root, 0.9, 0.72, 0.74, "#8da4bd", new THREE.Vector3(x - 2.2, 0.36, z + 0.85), { roughness: 0.58 });
+  addBox(root, 1.02, 0.08, 0.86, "#f8fafc", new THREE.Vector3(x - 2.2, 0.76, z + 0.85), { roughness: 0.45 });
+  addMonitor(root, x - 2.3, z + 0.65, "#0ea5e9");
+  addFloorPlant(x + 2.85, z + 1.3, 0.58);
+  addShelf(-0.25, -9.7, 0.58, 0);
+}
+
+function addTeamHouseAutomationLab(x, z) {
+  addTeamHouseScreen("FLOW CONTROL", "WEBHOOKS  11   SYNC  99%", "#1e3a8a", x, 1.2, -5.73, 3.7, 0.96);
+  addTeamHouseWhiteboard("AUTOMATE", ["TRIGGER", "ROUTE", "VERIFY"], "#1e3a8a", 7.0, 1.35, -8.0, 1.18, 0.92);
+  [-2.9, -2.1, -1.3, 2.1, 2.9].forEach((offset, index) => {
+    addTeamHouseServerRack(x + offset, z + (index % 2 ? 0.6 : -0.5), index % 2 ? "#2563eb" : "#1e3a8a");
+  });
+  addBox(root, 2.2, 0.18, 0.9, "#0f172a", new THREE.Vector3(x - 0.7, 0.62, z + 1.05), {
+    roughness: 0.48,
+    emissive: "#10234f",
+    emissiveIntensity: 0.18,
+  });
+  addMonitor(root, x - 1.1, z + 0.83, "#2563eb");
+  addMonitor(root, x - 0.2, z + 0.83, "#38bdf8");
+}
+
+function addTeamHouseSalesHuddle(x, z) {
+  const table = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.9, 0.9, 0.13, 32),
+    new THREE.MeshStandardMaterial({ color: "#f8fafc", roughness: 0.5 }),
+  );
+  table.position.set(x, 0.72, z);
+  table.castShadow = true;
+  root.add(table);
+  addBox(root, 0.26, 0.7, 0.26, "#64748b", new THREE.Vector3(x, 0.35, z), { roughness: 0.48 });
+  [-1.15, 1.15].forEach((offset, index) => {
+    const chair = new THREE.Group();
+    chair.position.set(x + offset, 0, z);
+    chair.rotation.y = index ? -Math.PI / 2 : Math.PI / 2;
+    root.add(chair);
+    addOfficeChair(chair, 0, 0, index);
+  });
+  addTeamHouseScreen("SALES BOARD", "PIPELINE / DEALS / FORECAST", "#4f78e8", x, 1.3, 5.18, 3.0, 1.0);
+}
+
+function addTeamHouseMarketingStudio(x, z) {
+  addTeamHouseWhiteboard("CONTENT BOARD", ["IDEATE", "CREATE", "MEASURE"], "#8b5cf6", 7.05, 1.34, -2.2, 1.2, 0.9);
+  addBox(root, 1.45, 0.72, 0.78, "#8da4bd", new THREE.Vector3(x + 1.7, 0.36, z + 1.0), { roughness: 0.58 });
+  addBox(root, 1.55, 0.08, 0.88, "#f8fafc", new THREE.Vector3(x + 1.7, 0.76, z + 1.0), { roughness: 0.45 });
+  addMonitor(root, x + 1.58, z + 0.82, "#8b5cf6");
+  const tripod = new THREE.Group();
+  tripod.position.set(x + 3.1, 0, z + 1.05);
+  root.add(tripod);
+  addBox(tripod, 0.09, 1.1, 0.09, "#334155", new THREE.Vector3(0, 0.55, 0));
+  [-0.42, 0, 0.42].forEach((offset) => {
+    const leg = addBox(tripod, 0.055, 0.7, 0.055, "#334155", new THREE.Vector3(0, 0.32, 0));
+    leg.rotation.z = offset;
+  });
+  addBox(tripod, 0.42, 0.25, 0.28, "#1e293b", new THREE.Vector3(0, 1.12, 0), { roughness: 0.4 });
+  addBox(tripod, 0.18, 0.12, 0.04, "#67e8f9", new THREE.Vector3(0, 1.12, -0.16), {
+    emissive: "#0ea5e9",
+    emissiveIntensity: 0.35,
+  });
+  addShelf(15.0, -0.8, 0.66, Math.PI / 2);
+  addFloorPlant(14.95, 1.1, 0.58);
+}
+
+function addTeamHouseSupportZone(x, z) {
+  addTeamHouseWhiteboard("CARE LOOP", ["LISTEN", "SOLVE", "FOLLOW UP"], "#10b981", 7.05, 1.33, 4.1, 1.2, 0.9);
+  addBox(root, 1.5, 1.35, 0.5, "#dcefe5", new THREE.Vector3(x + 3.25, 0.68, z + 0.8), { roughness: 0.72 });
+  for (let row = 0; row < 3; row += 1) {
+    addBox(root, 1.2, 0.1, 0.04, "#8dd3b2", new THREE.Vector3(x + 3.25, 0.35 + row * 0.35, z + 0.53), {
+      emissive: "#10b981",
+      emissiveIntensity: 0.15,
+    });
+  }
+  addTeamHouseWaterCooler(x - 3.15, z + 0.75);
+  addFloorPlant(x + 3.8, z - 0.85, 0.58);
+}
+
+function addTeamHouseReception(x, z) {
+  addTeamHouseSign("TEAMORA AI", "reception / command center", "#4f5bd5", 3.2, 0.55, x, 1.88, 3.1);
+  addBox(root, 4.2, 0.82, 1.0, "#eaf1ff", new THREE.Vector3(x, 0.41, z), { roughness: 0.58 });
+  addBox(root, 4.4, 0.1, 1.13, "#fbfdff", new THREE.Vector3(x, 0.86, z), { roughness: 0.42 });
+  addBox(root, 1.45, 0.34, 0.08, "#4f5bd5", new THREE.Vector3(x, 1.16, z - 0.53), {
+    emissive: "#4f5bd5",
+    emissiveIntensity: 0.24,
+  });
+  addBox(root, 0.58, 0.52, 0.18, "#1e293b", new THREE.Vector3(x - 1.35, 1.2, z), { roughness: 0.42 });
+  addBox(root, 0.42, 0.18, 0.08, "#67e8f9", new THREE.Vector3(x - 1.35, 1.25, z - 0.14), {
+    emissive: "#0ea5e9",
+    emissiveIntensity: 0.36,
+  });
+  addSofa(x - 1.25, z + 2.25, 0);
+  addCoffeeTable(x + 0.65, z + 2.05);
+  addFloorPlant(x - 2.55, z - 0.55, 0.62);
+  addFloorPlant(x + 2.4, z + 2.2, 0.52);
+}
+
+function addTeamHouseCafe(x, z) {
+  addTeamHouseSign("AI CAFE", "coffee / quick sync", "#f59e0b", 2.75, 0.5, x, 1.55, 4.12);
+  addBox(root, 3.45, 0.76, 0.86, "#a6794d", new THREE.Vector3(x, 0.38, z - 0.85), { roughness: 0.66 });
+  addBox(root, 3.58, 0.09, 0.98, "#fbfdff", new THREE.Vector3(x, 0.8, z - 0.85), { roughness: 0.45 });
+  addBox(root, 0.46, 0.46, 0.32, "#1f2937", new THREE.Vector3(x - 1.05, 1.05, z - 0.85), { roughness: 0.4 });
+  addBox(root, 0.24, 0.22, 0.34, "#334155", new THREE.Vector3(x - 1.05, 1.37, z - 0.85), { roughness: 0.4 });
+  [-0.78, 0.78].forEach((offset, index) => {
+    const stool = new THREE.Group();
+    stool.position.set(x + offset, 0, z - 2.05);
+    root.add(stool);
+    addBox(stool, 0.44, 0.11, 0.44, index ? "#f59e0b" : "#fb923c", new THREE.Vector3(0, 0.58, 0), { roughness: 0.52 });
+    addBox(stool, 0.08, 0.58, 0.08, "#475569", new THREE.Vector3(0, 0.29, 0), { roughness: 0.5 });
+  });
+  addTeamHouseWaterCooler(x + 2.1, z + 1.5);
+  addShelf(-0.35, 9.9, 0.58, 0);
+  addFloorPlant(x - 2.0, z + 1.85, 0.52);
+}
+
+function addTeamHouseLounge(x, z) {
+  addTeamHouseSign("LOUNGE", "reset / think / share", "#10b981", 2.55, 0.48, x, 1.48, 6.12);
+  addBox(root, 2.8, 0.42, 0.9, "#64748b", new THREE.Vector3(x - 0.9, 0.32, z + 0.1), { roughness: 0.7 });
+  addBox(root, 2.8, 0.55, 0.2, "#64748b", new THREE.Vector3(x - 0.9, 0.76, z + 0.47), { roughness: 0.7 });
+  addBox(root, 1.0, 0.42, 0.9, "#8b5cf6", new THREE.Vector3(x + 1.45, 0.32, z - 0.45), { roughness: 0.7 });
+  addBox(root, 0.96, 0.1, 0.74, "#f8fafc", new THREE.Vector3(x + 0.15, 0.48, z - 0.08), { roughness: 0.48 });
+  addBox(root, 0.14, 0.42, 0.14, "#475569", new THREE.Vector3(x + 0.15, 0.21, z - 0.08), { roughness: 0.5 });
+  addFloorLamp(x + 2.1, z + 1.35);
+  addFloorPlant(x - 2.0, z + 1.55, 0.5);
+}
+
+function addTeamHouseMeetingRoom(x, z) {
+  addTeamHouseSign("MEETING ROOM", "align / decide / move", "#4f5bd5", 3.0, 0.52, x, 1.52, 4.12);
+  const table = new THREE.Mesh(
+    new THREE.BoxGeometry(3.2, 0.13, 1.32),
+    new THREE.MeshStandardMaterial({ color: "#fbfdff", roughness: 0.48 }),
+  );
+  table.position.set(x, 0.78, z);
+  table.castShadow = true;
+  table.receiveShadow = true;
+  root.add(table);
+  [-1.22, 1.22].forEach((offset, index) => {
+    [-0.95, 0.95].forEach((side, sideIndex) => {
+      const chair = new THREE.Group();
+      chair.position.set(x + offset, 0, z + side);
+      chair.rotation.y = sideIndex ? Math.PI : 0;
+      root.add(chair);
+      addOfficeChair(chair, 0, 0, index + sideIndex);
+    });
+  });
+  addBox(root, 0.34, 0.68, 0.34, "#64748b", new THREE.Vector3(x, 0.36, z), { roughness: 0.5 });
+  addTeamHouseWhiteboard("MEETING NOTES", ["GOAL", "OWNER", "NEXT"], "#4f5bd5", -1.38, 1.35, 6.25, 1.15, 0.9);
+  addFloorPlant(x + 2.25, z + 1.85, 0.54);
+}
+
+function addTeamHouseRecreationCorner(x, z) {
+  addTeamHouseSign("RECREATION", "recharge / rally / return", "#0ea5e9", 2.95, 0.48, x, 1.48, 6.12);
+  addBox(root, 3.45, 0.78, 1.6, "#0f766e", new THREE.Vector3(x, 0.92, z), { roughness: 0.48 });
+  addBox(root, 3.56, 0.08, 1.7, "#10b981", new THREE.Vector3(x, 1.35, z), { roughness: 0.42 });
+  addBox(root, 0.07, 0.62, 1.76, "#f8fafc", new THREE.Vector3(x, 1.7, z), { roughness: 0.48 });
+  [-1.35, 1.35].forEach((offset) => {
+    [-0.57, 0.57].forEach((side) => {
+      addBox(root, 0.11, 0.82, 0.11, "#334155", new THREE.Vector3(x + offset, 0.42, z + side), { roughness: 0.52 });
+    });
+  });
+  const ball = new THREE.Mesh(
+    new THREE.SphereGeometry(0.1, 12, 12),
+    new THREE.MeshStandardMaterial({ color: "#f8fafc", roughness: 0.42 }),
+  );
+  ball.position.set(x + 0.38, 1.55, z - 0.26);
+  ball.castShadow = true;
+  root.add(ball);
+  addBox(root, 0.5, 0.08, 0.32, "#f59e0b", new THREE.Vector3(x - 2.1, 0.22, z - 1.1), { roughness: 0.48 });
+  addFloorPlant(x + 2.15, z + 1.45, 0.5);
+}
+
+function addTeamHouseWaterCooler(x, z) {
+  addBox(root, 0.34, 0.86, 0.34, "#dbeafe", new THREE.Vector3(x, 0.43, z), { roughness: 0.44 });
+  const bottle = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.18, 0.16, 0.45, 16),
+    new THREE.MeshStandardMaterial({ color: "#b9e6ff", transparent: true, opacity: 0.72, roughness: 0.18 }),
+  );
+  bottle.position.set(x, 1.1, z);
+  bottle.castShadow = true;
+  root.add(bottle);
+  addBox(root, 0.09, 0.08, 0.05, "#0ea5e9", new THREE.Vector3(x - 0.08, 0.62, z - 0.19), { emissive: "#0ea5e9", emissiveIntensity: 0.22 });
+  addBox(root, 0.09, 0.08, 0.05, "#ef4444", new THREE.Vector3(x + 0.08, 0.62, z - 0.19), { emissive: "#ef4444", emissiveIntensity: 0.18 });
+}
+
+function addTeamHouseServerRack(x, z, accent) {
+  addBox(root, 0.56, 1.5, 0.58, "#1e293b", new THREE.Vector3(x, 0.75, z), { roughness: 0.45 });
+  for (let index = 0; index < 5; index += 1) {
+    addBox(root, 0.38, 0.08, 0.04, accent, new THREE.Vector3(x, 0.28 + index * 0.23, z - 0.31), {
+      emissive: accent,
+      emissiveIntensity: 0.38,
+    });
+  }
+}
+
+function addTeamHousePendant(x, z, color) {
+  const light = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.24, 0.28, 0.16, 20),
+    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.25, roughness: 0.38 }),
+  );
+  light.position.set(x, 2.55, z);
+  light.castShadow = true;
+  root.add(light);
+  addBox(root, 0.035, 0.85, 0.035, "#cbd5e1", new THREE.Vector3(x, 2.95, z), { roughness: 0.42 });
 }
 
 function addRoomFloor(room, texture) {
@@ -1401,9 +2260,42 @@ function createAgentModel(agent) {
   holder.add(hit);
   clickTargets.push(hit);
 
+  const selectionAura = new THREE.Mesh(
+    new THREE.CircleGeometry(0.92, 32),
+    new THREE.MeshBasicMaterial({
+      color: agent.color,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  selectionAura.rotation.x = -Math.PI / 2;
+  selectionAura.position.y = 0.025;
+  selectionAura.renderOrder = 3;
+  holder.add(selectionAura);
+
+  const selectionRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.64, 0.82, 36),
+    new THREE.MeshBasicMaterial({
+      color: agent.color,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  selectionRing.rotation.x = -Math.PI / 2;
+  selectionRing.position.y = 0.045;
+  selectionRing.renderOrder = 4;
+  holder.add(selectionRing);
+
   const rig = createAgentRig(agent, index);
   holder.add(rig.root);
   holder.userData.rig = rig;
+  holder.userData.rigScale = rig.root.scale.x;
+  holder.userData.selectionAura = selectionAura;
+  holder.userData.selectionRing = selectionRing;
 }
 
 function clearAgentModels() {
@@ -1414,11 +2306,14 @@ function clearAgentModels() {
     }
   });
   clickTargets.length = 0;
+  hoveredAgentIndex = -1;
+  cameraTransition = null;
 }
 
 function clearSpeechBubbles() {
   bubbles.forEach((element) => element.remove());
   bubbles.clear();
+  bubblePresentation.clear();
 }
 
 function applyOfficeTeam(rawTeam) {
@@ -1431,7 +2326,9 @@ function applyOfficeTeam(rawTeam) {
 
   clearAgentModels();
   clearSpeechBubbles();
+  setOfficeLayout(team.id);
   agents = team.agents;
+  assignOfficeSeats(team.id);
   if (officeConversationTeamId === "default-team") {
     officeConversationTeamId = team.id;
   }
@@ -1445,6 +2342,10 @@ function applyOfficeTeam(rawTeam) {
   teamProfile.color = agents[0]?.color || "#1f2933";
   teamProfile.bubble = "Ready";
   teamStatus.textContent = `${agents.length} agents online`;
+  if (officeTitle) {
+    officeTitle.textContent = activeOfficeLayout === "team-house" ? `${team.name} House` : "Teamora AI Office";
+    document.title = officeTitle.textContent;
+  }
 
   if (renderer) {
     agents.forEach(createAgentModel);
@@ -1455,7 +2356,11 @@ function applyOfficeTeam(rawTeam) {
   renderRoster();
   renderChatTargets();
   renderChatMessages();
-  addActivity(agents[0], "team loaded", `${team.name} is now in the 3D office.`);
+  addActivity(
+    agents[0],
+    "team loaded",
+    `${team.name} is now in the ${activeOfficeLayout === "team-house" ? "Team House" : "3D office"}.`,
+  );
 
   if (window.agentOfficeDebug) {
     window.agentOfficeDebug.agents = agents;
@@ -1699,6 +2604,12 @@ function serializeChatThreads() {
           pendingPublish: message.pendingPublish
             ? { ...message.pendingPublish, mediaDataUrl: "" }
             : message.pendingPublish,
+          // Gmail and Sheets results can contain private workspace data. Keep a
+          // completed card visible for this session, but never write its result
+          // into local storage.
+          pendingGoogleAction: message.pendingGoogleAction
+            ? { ...message.pendingGoogleAction, result: null }
+            : message.pendingGoogleAction,
         })),
     ]),
   );
@@ -1725,30 +2636,157 @@ function hydrateChatThreads(value) {
           to: String(message.to || ""),
           isFinal: Boolean(message.isFinal),
           runId: String(message.runId || ""),
+          taskId: String(message.taskId || ""),
+          agentStatus: message.agentStatus || null,
           animate: false,
           pendingPublish: normalizePendingPublish(message.pendingPublish),
+          pendingGoogleAction: normalizePendingGoogleAction(message.pendingGoogleAction),
         })),
     );
   });
   return next;
 }
 
-function normalizePendingPublish(value) {
+function explicitPublishPlatformHints(value) {
+  const text = String(value || "").toLowerCase();
+  const platforms = [];
+  if (/(?:youtube|youtu\.be|youtube\.com|you\s+tube|yuotube|yotube|\u044e\u0442\u0443\u0431|\u044e\u0442\u044c\u044e\u0431)/i.test(text)) {
+    platforms.push("youtube");
+  }
+  if (/(?:telegram|(?:^|\W)tg(?:$|\W)|\u0442\u0435\u043b\u0435\u0433\u0440\u0430\u043c|(?:^|\W)\u0442\u0433(?:$|\W))/i.test(text)) {
+    platforms.push("telegram");
+  }
+  if (/(?:instagram|insta|\u0438\u043d\u0441\u0442\u0430\u0433\u0440\u0430\u043c)/i.test(text)) {
+    platforms.push("instagram");
+  }
+  return [...new Set(platforms)];
+}
+
+function reconcilePendingPublishWithContext(pending, contextText = "") {
+  if (!pending) return pending;
+  const contextPlatforms = explicitPublishPlatformHints(contextText);
+  const wasTelegramAutoRoute = pending.platforms.length === 1
+    && pending.platforms[0] === "telegram"
+    && (pending.autoPublish || pending.status === "auto_publish_pending" || pending.status === "error");
+  const contextIsYoutubeOnly = contextPlatforms.includes("youtube") && !contextPlatforms.includes("telegram");
+  if (!wasTelegramAutoRoute || !contextIsYoutubeOnly) return pending;
+  return {
+    ...pending,
+    platform: "youtube",
+    platforms: ["youtube"],
+    status: "approval_required",
+    autoPublish: false,
+    mediaDataUrl: "",
+    error: "",
+    notice: pending.notice || (
+      "YouTube API cannot publish text-only Community posts automatically. "
+      + "Add a public HTTPS video URL, or copy this text into YouTube Studio manually."
+    ),
+  };
+}
+
+function normalizePendingPublish(value, contextText = "") {
   if (!value || typeof value !== "object" || typeof value.text !== "string") return null;
   const platforms = normalizePublishPlatforms(value.platforms || value.platform);
-  return {
+  const isYoutube = platforms.includes("youtube");
+  const pending = {
     platform: platforms[0] || "telegram",
     platforms,
-    status: String(value.status || "approval_required"),
+    status: isYoutube && value.status === "auto_publish_pending" ? "approval_required" : String(value.status || "approval_required"),
     text: String(value.text || ""),
     mediaUrl: String(value.mediaUrl || value.media_url || ""),
-    mediaDataUrl: String(value.mediaDataUrl || value.media_data_url || ""),
+    mediaDataUrl: isYoutube ? "" : String(value.mediaDataUrl || value.media_data_url || ""),
     mediaType: String(value.mediaType || value.media_type || ""),
     mediaName: String(value.mediaName || value.media_name || ""),
+    youtubeTitle: String(value.youtubeTitle || value.youtube_title || defaultYoutubeTitle(value.text)).slice(0, 100),
+    youtubeDescription: String(value.youtubeDescription || value.youtube_description || value.text || "").slice(0, 5000),
+    privacyStatus: normalizeYoutubePrivacyStatus(value.privacyStatus || value.privacy_status),
+    resultUrl: safeExternalHttpsUrl(value.resultUrl || value.result_url || value.publishedUrl || value.published_url),
     runId: String(value.runId || ""),
+    taskId: value.taskId || value.task_id || null,
     source: String(value.source || "team"),
-    autoPublish: Boolean(value.autoPublish),
+    autoPublish: isYoutube ? false : Boolean(value.autoPublish),
+    separateActionRequired: Boolean(value.separateActionRequired || value.separate_action_required),
+    separatePlatforms: [...new Set(
+      (Array.isArray(value.separatePlatforms || value.separate_platforms)
+        ? (value.separatePlatforms || value.separate_platforms)
+        : [])
+        .map((platform) => String(platform || "").toLowerCase())
+        .filter((platform) => platform === "telegram" || platform === "instagram"),
+    )],
+    notice: String(value.notice || "").slice(0, 500),
     error: String(value.error || ""),
+  };
+  return reconcilePendingPublishWithContext(pending, contextText);
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function limitedGoogleActionText(value, maxLength = 20_000) {
+  return typeof value === "string" ? value.slice(0, maxLength) : "";
+}
+
+function normalizePendingGoogleAction(value) {
+  if (!isPlainObject(value)) return null;
+  const tool = String(value.tool || "");
+  if (!GOOGLE_ACTION_LABELS[tool]) return null;
+
+  const rawArguments = isPlainObject(value.arguments) ? value.arguments : {};
+  const rawRecipients = rawArguments.to ?? rawArguments.recipients ?? "";
+  const recipients = Array.isArray(rawRecipients)
+    ? rawRecipients.filter((item) => typeof item === "string").join(", ")
+    : limitedGoogleActionText(rawRecipients, 5_000);
+  const rawResult = isPlainObject(value.result) || Array.isArray(value.result) ? value.result : null;
+  const argumentsByTool = {
+    search_gmail: {
+      query: limitedGoogleActionText(rawArguments.query ?? rawArguments.q, 1_000),
+    },
+    create_gmail_draft: {
+      to: recipients,
+      subject: limitedGoogleActionText(rawArguments.subject, 255),
+      body: limitedGoogleActionText(rawArguments.body ?? rawArguments.text),
+    },
+    send_gmail: {
+      to: recipients,
+      subject: limitedGoogleActionText(rawArguments.subject, 255),
+      body: limitedGoogleActionText(rawArguments.body ?? rawArguments.text),
+    },
+    list_calendar_events: {
+      timeMin: limitedGoogleActionText(rawArguments.timeMin ?? rawArguments.time_min ?? rawArguments.start, 64),
+      timeMax: limitedGoogleActionText(rawArguments.timeMax ?? rawArguments.time_max ?? rawArguments.end, 64),
+    },
+    create_calendar_event: {
+      summary: limitedGoogleActionText(rawArguments.summary ?? rawArguments.title, 1_024),
+      start: limitedGoogleActionText(rawArguments.start ?? rawArguments.startAt ?? rawArguments.start_at, 64),
+      end: limitedGoogleActionText(rawArguments.end ?? rawArguments.endAt ?? rawArguments.end_at, 64),
+    },
+    read_google_sheet: {
+      spreadsheetId: limitedGoogleActionText(rawArguments.spreadsheetId ?? rawArguments.spreadsheet_id, 200),
+      range: limitedGoogleActionText(rawArguments.range ?? rawArguments.sheetRange ?? rawArguments.sheet_range, 500),
+    },
+    append_google_sheet_row: {
+      spreadsheetId: limitedGoogleActionText(rawArguments.spreadsheetId ?? rawArguments.spreadsheet_id, 200),
+      range: limitedGoogleActionText(rawArguments.range ?? rawArguments.sheetRange ?? rawArguments.sheet_range, 500),
+      valuesText: limitedGoogleActionText(rawArguments.valuesText),
+    },
+  };
+
+  return {
+    tool,
+    arguments: argumentsByTool[tool],
+    requiresApproval: GOOGLE_WRITE_ACTION_TOOLS.has(tool),
+    status: ["ready", "approval_required", "running", "completed", "error"].includes(String(value.status))
+      ? String(value.status)
+      : (GOOGLE_WRITE_ACTION_TOOLS.has(tool) ? "approval_required" : "ready"),
+    title: limitedGoogleActionText(value.title, 160) || GOOGLE_ACTION_LABELS[tool],
+    detail: limitedGoogleActionText(value.detail, 500),
+    runId: limitedGoogleActionText(value.runId ?? value.run_id, 80),
+    source: limitedGoogleActionText(value.source, 80) || "office",
+    agent: limitedGoogleActionText(value.agent, 80) || "mika",
+    result: rawResult,
+    error: limitedGoogleActionText(value.error, 500),
   };
 }
 
@@ -1756,8 +2794,38 @@ function normalizePublishPlatforms(value) {
   const raw = Array.isArray(value) ? value : [value];
   const platforms = raw
     .map((item) => String(item || "").toLowerCase())
-    .filter((item) => item === "telegram" || item === "instagram");
-  return [...new Set(platforms.length ? platforms : ["telegram"])];
+    .filter((item) => item === "telegram" || item === "instagram" || item === "youtube");
+  const unique = [...new Set(platforms)];
+  return unique.includes("youtube") ? ["youtube"] : (unique.length ? unique : ["telegram"]);
+}
+
+function defaultYoutubeTitle(text) {
+  const firstLine = String(text || "").split(/\r?\n/).find((line) => line.trim()) || "";
+  const title = firstLine.replace(/https?:\/\/[^\s]+/gi, "").replace(/\s+/g, " ").trim();
+  return (title || "New video").slice(0, 100);
+}
+
+function normalizeYoutubePrivacyStatus(value) {
+  const privacy = String(value || "private").toLowerCase();
+  return ["private", "unlisted", "public"].includes(privacy) ? privacy : "private";
+}
+
+function safeExternalHttpsUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (url.protocol !== "https:" || !url.hostname || url.username || url.password) return "";
+    return url.href;
+  } catch {
+    return "";
+  }
+}
+
+function publicYoutubeVideoUrl(value) {
+  const url = safeExternalHttpsUrl(value);
+  if (!url) return "";
+  const hostname = new URL(url).hostname.toLowerCase();
+  if (hostname === "localhost" || hostname.endsWith(".local") || hostname === "127.0.0.1" || hostname === "::1") return "";
+  return url;
 }
 
 function extractPublishMediaFromText(text) {
@@ -1821,7 +2889,7 @@ function applyOfficeConversation(rawConversation) {
   const changed = nextId !== officeConversationId;
   officeConversationId = nextId;
   officeConversationTeamId = String(conversation.teamId || officeConversationTeamId || "default-team");
-  officeConversationTeamName = String(conversation.teamName || officeConversationTeamName || "Agent Office");
+  officeConversationTeamName = String(conversation.teamName || officeConversationTeamName || "Teamora AI Office");
   officeConversationSource = conversation.source === "mine" ? "mine" : "ready";
   if (changed) {
     loadChatState(accountKey);
@@ -1986,6 +3054,9 @@ function renderChatMessages() {
     if (message.pendingPublish) {
       body.append(createPublishCard(selectedChatId, message));
     }
+    if (message.pendingGoogleAction) {
+      body.append(createGoogleActionCard(selectedChatId, message));
+    }
     row.append(avatar, body);
     chatMessages.appendChild(row);
     if (message.animate) {
@@ -2126,17 +3197,31 @@ function stoppedAgentReply(runId = "") {
 }
 
 function createPublishCard(chatId, message) {
-  const pending = message.pendingPublish;
+  const runId = String(message.pendingPublish?.runId || "");
+  const contextText = (chatThreads.get(chatId) || [])
+    .filter((entry) => !runId || String(entry.runId || entry.pendingPublish?.runId || "") === runId)
+    .map((entry) => entry.text || "")
+    .join("\n");
+  const pending = reconcilePendingPublishWithContext(message.pendingPublish, contextText);
+  message.pendingPublish = pending;
   const card = document.createElement("div");
   card.className = `publish-card ${pending.status}`;
 
   const title = document.createElement("strong");
   const platforms = normalizePublishPlatforms(pending.platforms || pending.platform);
+  const isYoutube = platforms.includes("youtube");
   title.textContent = `Publish to ${platforms.map(platformLabel).join(" + ")}`;
   const preview = document.createElement("p");
   preview.textContent = pending.text;
 
   card.append(title, preview);
+
+  if (pending.notice) {
+    const notice = document.createElement("small");
+    notice.className = "publish-notice";
+    notice.textContent = pending.notice;
+    card.appendChild(notice);
+  }
 
   if (pending.mediaDataUrl || pending.mediaUrl) {
     const mediaChip = document.createElement("div");
@@ -2153,33 +3238,46 @@ function createPublishCard(chatId, message) {
     card.appendChild(mediaChip);
   }
 
-  const mediaField = document.createElement("label");
-  mediaField.className = "publish-media-field";
-  const mediaLabel = document.createElement("span");
-  mediaLabel.textContent = platforms.includes("instagram") ? "Photo/video URL for Instagram" : "Photo/video URL";
-  const mediaInput = document.createElement("input");
-  mediaInput.type = "url";
-  mediaInput.placeholder = "https://.../image.jpg or video.mp4";
-  mediaInput.value = pending.mediaUrl || "";
-  mediaInput.addEventListener("input", () => {
-    pending.mediaUrl = mediaInput.value;
-    const inferred = extractPublishMediaFromText(mediaInput.value);
-    if (inferred) {
-      pending.mediaType = inferred.mediaType;
-      pending.mediaName = inferred.mediaName;
-    }
-    saveChatState();
-  });
-  mediaField.append(mediaLabel, mediaInput);
-  card.appendChild(mediaField);
+  if (isYoutube) {
+    appendYoutubeApprovalFields(card, pending);
+  } else {
+    const mediaField = document.createElement("label");
+    mediaField.className = "publish-media-field";
+    const mediaLabel = document.createElement("span");
+    mediaLabel.textContent = platforms.includes("instagram") ? "Photo/video URL for Instagram" : "Photo/video URL";
+    const mediaInput = document.createElement("input");
+    mediaInput.type = "url";
+    mediaInput.placeholder = "https://.../image.jpg or video.mp4";
+    mediaInput.value = pending.mediaUrl || "";
+    mediaInput.addEventListener("input", () => {
+      pending.mediaUrl = mediaInput.value;
+      const inferred = extractPublishMediaFromText(mediaInput.value);
+      if (inferred) {
+        pending.mediaType = inferred.mediaType;
+        pending.mediaName = inferred.mediaName;
+      }
+      saveChatState();
+    });
+    mediaField.append(mediaLabel, mediaInput);
+    card.appendChild(mediaField);
+  }
 
   const action = document.createElement("button");
   action.type = "button";
-  action.textContent = publishButtonText(pending.status);
+  action.textContent = publishButtonText(pending.status, platforms[0]);
   action.disabled = pending.status === "auto_publish_pending" || pending.status === "publishing" || pending.status === "published";
   action.addEventListener("click", () => publishPendingMessage(chatId, message));
 
   card.appendChild(action);
+  const resultUrl = isYoutube ? safeExternalHttpsUrl(pending.resultUrl) : "";
+  if (resultUrl) {
+    const result = document.createElement("a");
+    result.href = resultUrl;
+    result.target = "_blank";
+    result.rel = "noreferrer noopener";
+    result.textContent = "Open published video";
+    card.appendChild(result);
+  }
   if (pending.error) {
     const error = document.createElement("small");
     error.textContent = pending.error;
@@ -2188,16 +3286,333 @@ function createPublishCard(chatId, message) {
   return card;
 }
 
+function createGoogleActionCard(chatId, message) {
+  const pending = message.pendingGoogleAction;
+  const card = document.createElement("div");
+  card.className = `google-action-card ${pending.status}`;
+
+  const title = document.createElement("strong");
+  title.textContent = pending.title || GOOGLE_ACTION_LABELS[pending.tool] || "Google action";
+  card.appendChild(title);
+
+  if (pending.detail) {
+    const detail = document.createElement("p");
+    detail.textContent = pending.detail;
+    card.appendChild(detail);
+  }
+
+  appendGoogleActionFields(card, pending);
+
+  const action = document.createElement("button");
+  action.type = "button";
+  action.textContent = googleActionButtonText(pending);
+  action.disabled = pending.status === "running" || pending.status === "completed";
+  action.addEventListener("click", () => executeGoogleAction(chatId, message));
+  card.appendChild(action);
+
+  if (pending.result !== null && pending.result !== undefined) {
+    const result = document.createElement("pre");
+    result.className = "google-action-result";
+    result.textContent = formatGoogleActionResult(pending.result);
+    card.appendChild(result);
+  }
+  if (pending.error) {
+    const error = document.createElement("small");
+    error.textContent = pending.error;
+    card.appendChild(error);
+  }
+  return card;
+}
+
+function appendGoogleActionFields(card, pending) {
+  const fields = {
+    search_gmail: [
+      { key: "query", label: "Gmail search", placeholder: "from:client@example.com newer_than:30d", maxLength: 1_000 },
+    ],
+    create_gmail_draft: [
+      { key: "to", label: "To", placeholder: "person@example.com", maxLength: 5_000, inputMode: "email" },
+      { key: "subject", label: "Subject", placeholder: "Project update", maxLength: 255 },
+      { key: "body", label: "Message", placeholder: "Write the email message...", maxLength: 20_000, textarea: true },
+    ],
+    send_gmail: [
+      { key: "to", label: "To", placeholder: "person@example.com", maxLength: 5_000, inputMode: "email" },
+      { key: "subject", label: "Subject", placeholder: "Project update", maxLength: 255 },
+      { key: "body", label: "Message", placeholder: "Write the email message...", maxLength: 20_000, textarea: true },
+    ],
+    list_calendar_events: [
+      { key: "timeMin", label: "From (optional RFC3339)", placeholder: "2026-07-13T09:00:00Z", maxLength: 64 },
+      { key: "timeMax", label: "To (optional RFC3339)", placeholder: "2026-07-13T18:00:00Z", maxLength: 64 },
+    ],
+    create_calendar_event: [
+      { key: "summary", label: "Event title", placeholder: "Planning meeting", maxLength: 1_024 },
+      { key: "start", label: "Start (RFC3339)", placeholder: "2026-07-13T09:00:00Z", maxLength: 64 },
+      { key: "end", label: "End (RFC3339)", placeholder: "2026-07-13T10:00:00Z", maxLength: 64 },
+    ],
+    read_google_sheet: [
+      { key: "spreadsheetId", label: "Spreadsheet ID", placeholder: "From the Google Sheets URL", maxLength: 200 },
+      { key: "range", label: "Range", placeholder: "Leads!A1:F50", maxLength: 500 },
+    ],
+    append_google_sheet_row: [
+      { key: "spreadsheetId", label: "Spreadsheet ID", placeholder: "From the Google Sheets URL", maxLength: 200 },
+      { key: "range", label: "Range", placeholder: "Leads!A:B", maxLength: 500 },
+      { key: "valuesText", label: "Row values", placeholder: "Ada Lovelace, ada@example.com", maxLength: 20_000, textarea: true },
+    ],
+  };
+  (fields[pending.tool] || []).forEach((field) => appendGoogleActionField(card, pending, field));
+}
+
+function appendGoogleActionField(card, pending, field) {
+  const container = document.createElement("label");
+  container.className = "google-action-field";
+  const label = document.createElement("span");
+  label.textContent = field.label;
+  const input = document.createElement(field.textarea ? "textarea" : "input");
+  if (!field.textarea) input.type = "text";
+  if (field.textarea) input.rows = 3;
+  input.placeholder = field.placeholder || "";
+  input.maxLength = field.maxLength || 20_000;
+  input.value = String(pending.arguments?.[field.key] || "");
+  if (field.inputMode) input.inputMode = field.inputMode;
+  input.disabled = pending.status === "running" || pending.status === "completed";
+  input.addEventListener("input", () => {
+    pending.arguments[field.key] = input.value.slice(0, field.maxLength || 20_000);
+    pending.error = "";
+    if (pending.status === "error") pending.status = pending.requiresApproval ? "approval_required" : "ready";
+    saveChatState();
+  });
+  container.append(label, input);
+  card.appendChild(container);
+}
+
+function googleActionButtonText(pending) {
+  if (pending.status === "running") return "Running...";
+  if (pending.status === "completed") return "Completed";
+  if (pending.status === "error") return pending.requiresApproval ? "Review and confirm again" : "Retry action";
+  if (!pending.requiresApproval) return "Run action";
+  return {
+    create_gmail_draft: "Confirm and create draft",
+    send_gmail: "Confirm and send email",
+    create_calendar_event: "Confirm and create event",
+    append_google_sheet_row: "Confirm and append row",
+  }[pending.tool] || "Confirm action";
+}
+
+function requiredGoogleText(value, label) {
+  const text = String(value || "").trim();
+  if (!text) throw new Error(`${label} is required.`);
+  return text;
+}
+
+function googleSheetRowValues(value) {
+  const text = requiredGoogleText(value, "Row values");
+  if (text.startsWith("[")) {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("Row values must be a comma-separated list or a JSON array.");
+    }
+    if (!Array.isArray(parsed) || !parsed.length || parsed.some((cell) => Array.isArray(cell) || (typeof cell === "object" && cell !== null))) {
+      throw new Error("Row values must be a single non-empty JSON array.");
+    }
+    return parsed;
+  }
+  const cells = text.split(",").map((cell) => cell.trim());
+  if (!cells.length || cells.some((cell) => !cell)) {
+    throw new Error("Enter one or more comma-separated row values.");
+  }
+  return cells;
+}
+
+function buildGoogleActionArguments(pending) {
+  const values = pending.arguments || {};
+  const common = {
+    source: String(pending.source || "office").slice(0, 80),
+    runId: String(pending.runId || "").slice(0, 80) || undefined,
+    agent: String(pending.agent || "mika").slice(0, 80),
+  };
+  let toolArguments;
+
+  switch (pending.tool) {
+    case "search_gmail":
+      toolArguments = { query: requiredGoogleText(values.query, "Gmail search") };
+      break;
+    case "create_gmail_draft":
+    case "send_gmail": {
+      const recipients = requiredGoogleText(values.to, "Recipient")
+        .split(/[;,]/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      toolArguments = {
+        to: recipients,
+        subject: requiredGoogleText(values.subject, "Subject"),
+        body: requiredGoogleText(values.body, "Message"),
+      };
+      break;
+    }
+    case "list_calendar_events": {
+      const timeMin = String(values.timeMin || "").trim();
+      const timeMax = String(values.timeMax || "").trim();
+      if (Boolean(timeMin) !== Boolean(timeMax)) {
+        throw new Error("Enter both calendar times or leave both empty for upcoming events.");
+      }
+      toolArguments = timeMin && timeMax ? { timeMin, timeMax } : {};
+      break;
+    }
+    case "create_calendar_event":
+      toolArguments = {
+        summary: requiredGoogleText(values.summary, "Event title"),
+        start: requiredGoogleText(values.start, "Start time"),
+        end: requiredGoogleText(values.end, "End time"),
+      };
+      break;
+    case "read_google_sheet":
+      toolArguments = {
+        spreadsheet_id: requiredGoogleText(values.spreadsheetId, "Spreadsheet ID"),
+        range: requiredGoogleText(values.range, "Range"),
+      };
+      break;
+    case "append_google_sheet_row":
+      toolArguments = {
+        spreadsheet_id: requiredGoogleText(values.spreadsheetId, "Spreadsheet ID"),
+        range: requiredGoogleText(values.range, "Range"),
+        row: googleSheetRowValues(values.valuesText),
+      };
+      break;
+    default:
+      throw new Error("This Google action is not supported by the Office client.");
+  }
+
+  if (pending.requiresApproval) toolArguments.approved = true;
+  return { ...toolArguments, ...common };
+}
+
+function formatGoogleActionResult(value) {
+  try {
+    const text = JSON.stringify(value, null, 2);
+    return text.length > 12_000 ? `${text.slice(0, 12_000)}\n…Result truncated in this view.` : text;
+  } catch {
+    return "Google completed the action.";
+  }
+}
+
+async function executeGoogleAction(chatId, message) {
+  const pending = message.pendingGoogleAction;
+  if (!pending || pending.status === "running" || pending.status === "completed") return;
+  try {
+    const toolArguments = buildGoogleActionArguments(pending);
+    if (pending.requiresApproval) {
+      const accepted = window.confirm(
+        `Confirm ${GOOGLE_ACTION_LABELS[pending.tool] || "Google action"}? This will make a change in your connected Google account.`,
+      );
+      if (!accepted) return;
+    }
+
+    pending.status = "running";
+    pending.error = "";
+    saveChatState();
+    renderChatMessages();
+
+    const response = await fetch(`${AUTH_API}/api/agent-tools/execute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ tool: pending.tool, arguments: toolArguments }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(safePublishError(payload, response.status));
+    }
+    pending.result = payload?.result ?? {};
+    pending.status = "completed";
+    saveChatState();
+    renderChatMessages();
+  } catch (error) {
+    pending.status = "error";
+    pending.error = safeClientPublishError(error, "Google action failed");
+    saveChatState();
+    renderChatMessages();
+  }
+}
+
+function appendYoutubeApprovalFields(card, pending) {
+  const mediaField = document.createElement("label");
+  mediaField.className = "publish-media-field";
+  const mediaLabel = document.createElement("span");
+  mediaLabel.textContent = "Public HTTPS video URL";
+  const mediaInput = document.createElement("input");
+  mediaInput.type = "url";
+  mediaInput.inputMode = "url";
+  mediaInput.placeholder = "https://cdn.example.com/video.mp4";
+  mediaInput.value = pending.mediaUrl || "";
+  mediaInput.addEventListener("input", () => {
+    pending.mediaUrl = mediaInput.value.trim();
+    pending.mediaType = "video/mp4";
+    pending.mediaName = pending.mediaUrl.split("/").pop()?.split(/[?#]/)[0] || "video";
+    saveChatState();
+  });
+  mediaField.append(mediaLabel, mediaInput);
+
+  const titleField = document.createElement("label");
+  titleField.className = "publish-media-field";
+  const titleLabel = document.createElement("span");
+  titleLabel.textContent = "Video title";
+  const titleInput = document.createElement("input");
+  titleInput.type = "text";
+  titleInput.maxLength = 100;
+  titleInput.value = pending.youtubeTitle || defaultYoutubeTitle(pending.text);
+  titleInput.addEventListener("input", () => {
+    pending.youtubeTitle = titleInput.value.slice(0, 100);
+    saveChatState();
+  });
+  titleField.append(titleLabel, titleInput);
+
+  const descriptionField = document.createElement("label");
+  descriptionField.className = "publish-media-field";
+  const descriptionLabel = document.createElement("span");
+  descriptionLabel.textContent = "Video description";
+  const descriptionInput = document.createElement("textarea");
+  descriptionInput.rows = 4;
+  descriptionInput.maxLength = 5000;
+  descriptionInput.value = pending.youtubeDescription || pending.text || "";
+  descriptionInput.addEventListener("input", () => {
+    pending.youtubeDescription = descriptionInput.value.slice(0, 5000);
+    saveChatState();
+  });
+  descriptionField.append(descriptionLabel, descriptionInput);
+
+  const privacyField = document.createElement("label");
+  privacyField.className = "publish-media-field";
+  const privacyLabel = document.createElement("span");
+  privacyLabel.textContent = "Privacy";
+  const privacyInput = document.createElement("select");
+  ["private", "unlisted", "public"].forEach((privacy) => {
+    const option = document.createElement("option");
+    option.value = privacy;
+    option.textContent = privacy[0].toUpperCase() + privacy.slice(1);
+    privacyInput.appendChild(option);
+  });
+  privacyInput.value = normalizeYoutubePrivacyStatus(pending.privacyStatus);
+  privacyInput.addEventListener("change", () => {
+    pending.privacyStatus = normalizeYoutubePrivacyStatus(privacyInput.value);
+    saveChatState();
+  });
+  privacyField.append(privacyLabel, privacyInput);
+  card.append(mediaField, titleField, descriptionField, privacyField);
+}
+
 function platformLabel(platform) {
   if (platform === "instagram") return "Instagram";
+  if (platform === "youtube") return "YouTube";
   return "Telegram";
 }
 
-function publishButtonText(status) {
+function publishButtonText(status, platform = "") {
   if (status === "auto_publish_pending") return "Auto publishing...";
   if (status === "publishing") return "Publishing...";
   if (status === "published") return "Published";
   if (status === "error") return "Retry publish";
+  if (platform === "youtube") return "Publish video";
   return "Publish";
 }
 
@@ -2244,7 +3659,10 @@ function normalizeAgentMessages(result, fallbackChatId) {
       to: message.to || "",
       isFinal: Boolean(message.isFinal),
       runId: message.runId || "",
+      taskId: message.taskId || result.task?.id || "",
+      agentStatus: message.agentStatus || null,
       pendingPublish: normalizePendingPublish(message.pendingPublish),
+      pendingGoogleAction: normalizePendingGoogleAction(message.pendingGoogleAction),
     }));
 }
 
@@ -2257,12 +3675,11 @@ function displayAuthor(author) {
   }[author] || author;
 }
 
-function agentErrorReply(error) {
-  const detail = error instanceof Error ? error.message : "AI backend error";
+function agentErrorReply(_error) {
   return {
     author: "System",
     from: "system",
-    text: `AI backend не ответил: ${detail}`,
+    text: "AI сервис временно недоступен. Попробуйте ещё раз через минуту.",
   };
 }
 
@@ -2293,6 +3710,8 @@ async function requestAgentChat(chatId, text, files = [], runId = createClientRu
     sessionId: chatSessionId,
     accountId: accountKey,
     runId,
+    teamId: officeConversationTeamId,
+    teamName: officeConversationTeamName,
   };
   let lastError = null;
   for (const [index, apiUrl] of AGENT_CHAT_API_CANDIDATES.entries()) {
@@ -2459,6 +3878,40 @@ function setAgentLiveState(agent, state, bubble) {
   renderRoster();
 }
 
+function officeStateForTaskStatus(status) {
+  const value = String(status || "").toLowerCase();
+  if (value === "working" || value === "planning" || value === "assigned") return "working";
+  if (value === "completed") return "happy";
+  if (value === "failed") return "focused";
+  if (value === "waiting") return "focused";
+  return "idle";
+}
+
+function bubbleForTaskStatus(status) {
+  const value = String(status || "").toLowerCase();
+  return {
+    ready: "Ready",
+    planning: "Planning",
+    assigned: "Waiting",
+    waiting: "Waiting",
+    working: "Working",
+    completed: "Completed",
+    failed: "Failed",
+  }[value] || "Ready";
+}
+
+function applyAgentStatus(status) {
+  if (!status?.id) return;
+  const agent = agentByChatId(status.id);
+  if (!agent) return;
+  setAgentLiveState(agent, officeStateForTaskStatus(status.status), bubbleForTaskStatus(status.status));
+}
+
+function applyAgentStatuses(statuses) {
+  if (!Array.isArray(statuses)) return;
+  statuses.forEach(applyAgentStatus);
+}
+
 function markTeamAccepted(chatId, text) {
   const lang = detectUserLanguage(text);
   const agent = chatId === "all" ? agentByChatId("coordinator") : agentByChatId(chatId);
@@ -2484,6 +3937,7 @@ async function playAgentMessages(chatId, loadingEntry, replies, run = null) {
   const first = replies[0] || agentErrorReply(new Error(uiText("empty", "ru")));
   const firstActivity = phaseActivity(first, chatId);
   setAgentLiveState(firstActivity.agent, firstActivity.state, firstActivity.bubble);
+  applyAgentStatus(first.agentStatus);
   addActivity(firstActivity.agent, firstActivity.action, firstActivity.detail);
   if (loadingEntry) {
     replaceChatMessage(chatId, loadingEntry, first);
@@ -2496,6 +3950,7 @@ async function playAgentMessages(chatId, loadingEntry, replies, run = null) {
     if (run?.cancelRequested) throw new Error("Task stopped by user.");
     const activity = phaseActivity(reply, chatId);
     setAgentLiveState(activity.agent, activity.state, activity.bubble);
+    applyAgentStatus(reply.agentStatus);
     addActivity(activity.agent, activity.action, activity.detail);
     appendChatMessage(chatId, reply);
     await sleep(reply.phase === "final" ? 220 : 680);
@@ -2551,15 +4006,17 @@ async function sendChatMessage(event) {
     }
     const replies = normalizeAgentMessages(result, chatId);
     await playAgentMessages(chatId, loading, replies, activeChatRun);
+    applyAgentStatuses(result.agentStatuses);
     if (result.pendingPublish?.text) {
-      const pendingPublish = normalizePendingPublish(result.pendingPublish);
+      const pendingContext = [messageText, result.reply, ...replies.map((reply) => reply.text || "")].join("\n");
+      const pendingPublish = normalizePendingPublish(result.pendingPublish, pendingContext);
       const linkedMedia = extractPublishMediaFromText(messageText);
       if (linkedMedia && !pendingPublish.mediaUrl) {
         pendingPublish.mediaUrl = linkedMedia.mediaUrl;
         pendingPublish.mediaType = linkedMedia.mediaType;
         pendingPublish.mediaName = linkedMedia.mediaName;
       }
-      if (selectedImages[0] && !pendingPublish.mediaUrl && !pendingPublish.mediaDataUrl) {
+      if (!pendingPublish.platforms.includes("youtube") && selectedImages[0] && !pendingPublish.mediaUrl && !pendingPublish.mediaDataUrl) {
         pendingPublish.mediaDataUrl = await fileToDataUrl(selectedImages[0].file);
         pendingPublish.mediaType = selectedImages[0].type || "image/jpeg";
         pendingPublish.mediaName = selectedImages[0].name || "uploaded-image.jpg";
@@ -2570,9 +4027,11 @@ async function sendChatMessage(event) {
         from: "nova",
         phase: "internal",
         to: "coordinator",
-        text: result.pendingPublish.autoPublish
-          ? "Публикация готова. Echo отправляет ее автоматически через подключенные apps."
-          : "Публикация готова. Проверь текст и нажми Publish, когда можно отправлять.",
+        text: pendingPublish.platforms.includes("youtube") && !pendingPublish.mediaUrl
+          ? "Текст для YouTube подготовлен. Автоматически можно загрузить только видео; Community-пост нужно вставить в YouTube Studio вручную."
+          : pendingPublish.autoPublish
+            ? "Публикация готова. Echo отправляет ее автоматически через подключенные apps."
+            : "Публикация готова. Проверь текст и нажми Publish, когда можно отправлять.",
         pendingPublish,
       };
       const activity = phaseActivity(publishMessage, chatId);
@@ -2587,6 +4046,33 @@ async function sendChatMessage(event) {
       const entry = appendChatMessage(chatId, publishMessage);
       if (pendingPublish.autoPublish) {
         await publishPendingMessage(chatId, entry);
+      }
+    }
+    if (result.pendingGoogleAction?.tool) {
+      const pendingGoogleAction = normalizePendingGoogleAction(result.pendingGoogleAction);
+      if (pendingGoogleAction) {
+        const agent = agentByChatId(pendingGoogleAction.agent) || agentByChatId("mika") || agents[0];
+        const actionMessage = {
+          author: agent?.name || "Atlas",
+          type: "agent",
+          from: pendingGoogleAction.agent || "mika",
+          phase: "internal",
+          to: "coordinator",
+          text: pendingGoogleAction.requiresApproval
+            ? `${pendingGoogleAction.title} is ready for your explicit approval.`
+            : `${pendingGoogleAction.title} is ready to run.`,
+          pendingGoogleAction,
+        };
+        const activity = phaseActivity(actionMessage, chatId);
+        setAgentLiveState(activity.agent, activity.state, "Google action ready");
+        addActivity(
+          activity.agent,
+          pendingGoogleAction.requiresApproval ? "google-approval" : "google-read",
+          pendingGoogleAction.requiresApproval
+            ? "Prepared a Google action that needs confirmation."
+            : "Prepared a read-only Google action.",
+        );
+        appendChatMessage(chatId, actionMessage);
       }
     }
   } catch (error) {
@@ -2609,15 +4095,92 @@ async function sendChatMessage(event) {
   }
 }
 
+function safePublishError(payload, status) {
+  const detail = typeof payload?.detail === "string" ? payload.detail : "";
+  return (detail || `HTTP ${status}`).replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+function safeClientPublishError(error, fallback) {
+  const detail = error instanceof Error ? error.message : "";
+  return (detail || fallback).replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+async function publishYoutubeVideo(pending) {
+  const mediaUrl = publicYoutubeVideoUrl(pending.mediaUrl);
+  if (!mediaUrl) {
+    throw new Error("Enter a public HTTPS video URL before publishing to YouTube.");
+  }
+  const title = String(pending.youtubeTitle || "").trim();
+  if (!title) {
+    throw new Error("Enter a video title before publishing to YouTube.");
+  }
+  if (title.length > 100) {
+    throw new Error("YouTube video titles can be at most 100 characters.");
+  }
+  const description = String(pending.youtubeDescription || "").trim();
+  if (description.length > 5000) {
+    throw new Error("YouTube video descriptions can be at most 5,000 characters.");
+  }
+  const response = await fetch(`${AUTH_API}/api/agent-tools/execute`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({
+      tool: "upload_youtube_video",
+      arguments: {
+        approved: true,
+        mediaUrl,
+        title,
+        description,
+        privacyStatus: normalizeYoutubePrivacyStatus(pending.privacyStatus),
+        source: pending.source || "team",
+        runId: pending.runId || undefined,
+        taskId: pending.taskId || undefined,
+      },
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(safePublishError(payload, response.status));
+  }
+  const result = payload?.result;
+  if (!result || result.platform !== "youtube" || !result.videoId) {
+    throw new Error("YouTube did not confirm the uploaded video.");
+  }
+  return {
+    url: safeExternalHttpsUrl(result.url),
+    privacyStatus: normalizeYoutubePrivacyStatus(result.privacyStatus || pending.privacyStatus),
+  };
+}
+
 async function publishPendingMessage(chatId, message) {
   const pending = message.pendingPublish;
   if (!pending?.text) return;
   pending.status = "publishing";
   pending.error = "";
+  pending.resultUrl = "";
   saveChatState();
   renderChatMessages();
   try {
     const platforms = normalizePublishPlatforms(pending.platforms || pending.platform);
+    if (platforms.includes("youtube")) {
+      if (platforms.length !== 1) {
+        throw new Error("Publish YouTube as a separate approved action.");
+      }
+      const result = await publishYoutubeVideo(pending);
+      pending.status = "published";
+      pending.privacyStatus = result.privacyStatus;
+      pending.resultUrl = result.url;
+      saveChatState();
+      appendChatMessage(chatId, {
+        author: "Echo",
+        type: "agent",
+        from: "nova",
+        text: result.url ? `Published to YouTube: ${result.url}` : "Published to YouTube.",
+      });
+      return;
+    }
+
     const response = await fetch(`${AUTH_API}/api/publish/social`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2630,12 +4193,13 @@ async function publishPendingMessage(chatId, message) {
         media_type: pending.mediaType || null,
         media_name: pending.mediaName || null,
         run_id: pending.runId,
+        task_id: pending.taskId || null,
         source: pending.source,
       }),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload.detail || `HTTP ${response.status}`);
+      throw new Error(safePublishError(payload, response.status));
     }
     if (Array.isArray(payload.results)) {
       const failed = payload.results.filter((result) => !result.ok);
@@ -2654,7 +4218,7 @@ async function publishPendingMessage(chatId, message) {
     });
   } catch (error) {
     pending.status = "error";
-    pending.error = error instanceof Error ? error.message : "Social publish failed";
+    pending.error = safeClientPublishError(error, "Social publish failed");
     saveChatState();
     renderChatMessages();
   }
@@ -2682,6 +4246,7 @@ function addActivity(agent, action, detail) {
 function selectTeam() {
   selectedChatId = "all";
   selectedIndex = 0;
+  cameraTransition = null;
   focusName.textContent = "Team";
   teamProfile.state = "focused";
   agents.forEach((agent) => {
@@ -2710,6 +4275,7 @@ function selectAgent(index) {
   renderChatTargets();
   renderChatMessages();
   notifyOfficeSelection(agentChatId(agent));
+  focusCameraOnAgent(agent);
 }
 
 function selectAgentById(agentId) {
@@ -2813,7 +4379,7 @@ function workDestination(slotIndex) {
   const station = workStations[normalizedIndex];
   return {
     id: `work-${normalizedIndex}`,
-    room: "open",
+    room: station.room || "open",
     kind: "typing",
     point: station.point,
     face: station.desk,
@@ -2832,13 +4398,25 @@ function setAgentTarget(agent, slotIndex, options = {}) {
 }
 
 function pickIdleDestination(agent, index, preferSpread = false) {
-  const spread = ["open-whiteboard", "kitchen-coffee", "relax-sofa", "open-plants", "kitchen-table"];
+  const destinationsForTeam = idleDestinations.filter(
+    (destination) => !destination.teams || destination.teams.includes(activeOfficeTeamId),
+  );
+  const destinations = destinationsForTeam.length ? destinationsForTeam : idleDestinations;
+  const classicSpread = ["open-whiteboard", "kitchen-coffee", "relax-sofa", "open-plants", "kitchen-table"];
+  const teamHouseSpread =
+    activeOfficeTeamId === "sales-team"
+      ? ["sales-crm-wall", "sales-huddle", "central-team-pulse", "coordinator-table", "research-wall", "support-queue", "automation-rack", "team-house-cafe", "team-house-recreation"]
+      : ["marketing-screen", "marketing-studio", "central-team-pulse", "coordinator-table", "research-wall", "support-queue", "automation-rack", "team-house-cafe", "team-house-recreation"];
+  const spread = activeOfficeLayout === "team-house" ? teamHouseSpread : classicSpread;
   if (preferSpread) {
-    return idleDestinations.find((destination) => destination.id === spread[index % spread.length]);
+    return (
+      destinations.find((destination) => destination.id === spread[index % spread.length]) ||
+      destinations[index % destinations.length]
+    );
   }
 
-  const candidates = idleDestinations.filter((destination) => destination.id !== agent.destinationId);
-  return candidates[Math.floor(Math.random() * candidates.length)] || idleDestinations[index % idleDestinations.length];
+  const candidates = destinations.filter((destination) => destination.id !== agent.destinationId);
+  return candidates[Math.floor(Math.random() * candidates.length)] || destinations[index % destinations.length];
 }
 
 function assignIdleDestination(agent, index = agents.indexOf(agent), instant = false) {
@@ -2854,7 +4432,7 @@ function initializeAgentDestinations() {
   agents.forEach((agent, index) => {
     if (!agent.active) return;
     if (agent.state === "working") {
-      setAgentTarget(agent, index, {
+      setAgentTarget(agent, agent.slot ?? index, {
         state: "working",
         bubble: agent.bubble || "Working",
         instant: true,
@@ -2876,7 +4454,7 @@ function assignTask(index = selectedIndex) {
   const supportBubbles = ["Joining", "Researching", "Building", "Checking", "Publishing"];
   agents.forEach((agent, agentIndex) => {
     if (!agent.active) return;
-    setAgentTarget(agent, agentIndex, {
+    setAgentTarget(agent, agent.slot ?? agentIndex, {
       state: "working",
       bubble: agentIndex === index ? task : supportBubbles[agentIndex % supportBubbles.length],
     });
@@ -2953,13 +4531,160 @@ function hireAgent() {
   renderRoster();
 }
 
+function setOrthographicViewHeight(viewHeight, aspect) {
+  camera.top = viewHeight / 2;
+  camera.bottom = -viewHeight / 2;
+  camera.left = (-viewHeight * aspect) / 2;
+  camera.right = (viewHeight * aspect) / 2;
+  camera.updateProjectionMatrix();
+}
+
+function teamHouseProjectedSpan() {
+  camera.updateMatrixWorld(true);
+  const corners = [];
+  [TEAM_HOUSE_SIZE.minX, TEAM_HOUSE_SIZE.maxX].forEach((x) => {
+    [TEAM_HOUSE_SIZE.minY, TEAM_HOUSE_SIZE.maxY].forEach((y) => {
+      [TEAM_HOUSE_SIZE.minZ, TEAM_HOUSE_SIZE.maxZ].forEach((z) => {
+        corners.push(new THREE.Vector3(x, y, z).applyMatrix4(camera.matrixWorldInverse));
+      });
+    });
+  });
+  const minX = Math.min(...corners.map((corner) => corner.x));
+  const maxX = Math.max(...corners.map((corner) => corner.x));
+  const minY = Math.min(...corners.map((corner) => corner.y));
+  const maxY = Math.max(...corners.map((corner) => corner.y));
+  return { width: maxX - minX, height: maxY - minY };
+}
+
+function updateTeamHouseCameraFrustum() {
+  if (!renderer) return;
+  const { clientWidth, clientHeight } = canvas.parentElement;
+  const aspect = clientWidth / Math.max(clientHeight, 1);
+  const projected = teamHouseProjectedSpan();
+  const coverage = 0.88;
+  const viewHeight = Math.max(
+    projected.height / coverage,
+    projected.width / Math.max(aspect * coverage, 0.34),
+  );
+  setOrthographicViewHeight(viewHeight, aspect);
+}
+
+function fitTeamHouseCamera() {
+  if (!controls) return;
+  cameraTransition = null;
+  camera.position.set(23.5, 20.5, 25.5);
+  camera.zoom = 1;
+  controls.target.set(0, 0.72, -0.15);
+  controls.minZoom = 0.58;
+  controls.maxZoom = 1.72;
+  controls.update();
+  updateTeamHouseCameraFrustum();
+}
+
+function focusCameraOnAgent(agent) {
+  if (!controls || !agent?.group) return;
+  const target = agent.group.position.clone();
+  target.y = 0.72;
+  const offset = camera.position.clone().sub(controls.target);
+  const maxZoom = activeOfficeLayout === "team-house" ? 1.34 : 1.22;
+  cameraTransition = {
+    target,
+    position: target.clone().add(offset),
+    zoom: Math.min(controls.maxZoom, maxZoom),
+  };
+}
+
+function updateCameraTransition(delta) {
+  if (!cameraTransition || !controls) return;
+  const amount = 1 - Math.exp(-delta * 5.2);
+  camera.position.lerp(cameraTransition.position, amount);
+  controls.target.lerp(cameraTransition.target, amount);
+  camera.zoom = THREE.MathUtils.lerp(camera.zoom, cameraTransition.zoom, amount);
+  camera.updateProjectionMatrix();
+  if (
+    camera.position.distanceTo(cameraTransition.position) < 0.02 &&
+    controls.target.distanceTo(cameraTransition.target) < 0.02 &&
+    Math.abs(camera.zoom - cameraTransition.zoom) < 0.005
+  ) {
+    camera.position.copy(cameraTransition.position);
+    controls.target.copy(cameraTransition.target);
+    camera.zoom = cameraTransition.zoom;
+    cameraTransition = null;
+  }
+}
+
 function resetView() {
   if (!controls) return;
+  const isTeamHouse = activeOfficeLayout === "team-house";
+  if (isTeamHouse) {
+    fitTeamHouseCamera();
+    return;
+  }
+  cameraTransition = null;
   camera.position.set(9.8, 8.1, 10.8);
   camera.zoom = 1;
   controls.target.set(0, 0.7, 0.2);
+  controls.minZoom = 0.5;
+  controls.maxZoom = 2.05;
   resize();
   controls.update();
+}
+
+function refreshBubblePresentation() {
+  const selectedAgentIndex = selectedChatId === "all" ? -1 : selectedIndex;
+  const candidates = agents
+    .map((agent, index) => ({
+      agent,
+      index,
+      selected: index === selectedAgentIndex,
+      working: agent.state === "working" || agent.state === "happy",
+    }))
+    .filter(({ agent, selected, working }) => agent.active && agent.group && (selected || working))
+    .sort((a, b) => Number(b.selected) - Number(a.selected) || Number(b.working) - Number(a.working) || a.index - b.index)
+    .slice(0, MAX_FULL_AGENT_CARDS);
+  const fullIndexes = new Set(candidates.map(({ index }) => index));
+
+  agents.forEach((agent, index) => {
+    const selected = index === selectedAgentIndex;
+    const working = agent.state === "working" || agent.state === "happy";
+    bubblePresentation.set(agent, {
+      full: fullIndexes.has(index),
+      selected,
+      working,
+      priority: selected ? 30 : working ? 20 : 10,
+    });
+  });
+}
+
+function renderBubbleContent(element, agent, presentation) {
+  const contentKey = `${presentation.full ? "full" : "compact"}|${agent.name}|${agent.bubble}`;
+  if (element.dataset.contentKey === contentKey) return;
+  element.dataset.contentKey = contentKey;
+  element.replaceChildren();
+  const name = document.createElement("strong");
+  name.textContent = agent.name;
+  element.appendChild(name);
+  if (presentation.full) {
+    const detail = document.createElement("span");
+    detail.textContent = agent.bubble;
+    element.appendChild(detail);
+  }
+}
+
+function clampBubbleToLayer(element, bounds) {
+  const rect = element.getBoundingClientRect();
+  let x = Number.parseFloat(element.style.left) || 0;
+  let y = Number.parseFloat(element.style.top) || 0;
+  if (rect.left < bounds.left + BUBBLE_EDGE_PADDING) x += bounds.left + BUBBLE_EDGE_PADDING - rect.left;
+  if (rect.right > bounds.right - BUBBLE_EDGE_PADDING) x -= rect.right - (bounds.right - BUBBLE_EDGE_PADDING);
+  if (rect.top < bounds.top + BUBBLE_EDGE_PADDING) y += bounds.top + BUBBLE_EDGE_PADDING - rect.top;
+  if (rect.bottom > bounds.bottom - BUBBLE_EDGE_PADDING) y -= rect.bottom - (bounds.bottom - BUBBLE_EDGE_PADDING);
+  element.style.left = `${x}px`;
+  element.style.top = `${y}px`;
+}
+
+function elementsOverlap(a, b) {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 }
 
 function updateBubble(agent) {
@@ -2976,56 +4701,67 @@ function updateBubble(agent) {
     return;
   }
 
+  const presentation = bubblePresentation.get(agent) || { full: false, priority: 10 };
+  renderBubbleContent(element, agent, presentation);
+  element.classList.toggle("full-card", presentation.full);
+  element.classList.toggle("compact", !presentation.full);
+  element.dataset.priority = String(presentation.priority);
+
   const point = agent.group.position.clone();
-  point.y += 2.25;
+  point.y += presentation.full ? 2.3 : 2.05;
   point.project(camera);
-  const x = (point.x * 0.5 + 0.5) * bubbleLayer.clientWidth;
-  const y = (-point.y * 0.5 + 0.5) * bubbleLayer.clientHeight;
+  const insideCanvas = point.z >= -1 && point.z <= 1 && point.x >= -1.08 && point.x <= 1.08 && point.y >= -1.08 && point.y <= 1.08;
+  if (!insideCanvas) {
+    element.classList.remove("visible");
+    return;
+  }
+
+  const width = Math.max(element.offsetWidth, presentation.full ? 126 : 58);
+  const height = Math.max(element.offsetHeight, presentation.full ? 44 : 18);
+  const rawX = (point.x * 0.5 + 0.5) * bubbleLayer.clientWidth;
+  const rawY = (-point.y * 0.5 + 0.5) * bubbleLayer.clientHeight;
+  const x = THREE.MathUtils.clamp(rawX, width / 2 + BUBBLE_EDGE_PADDING, bubbleLayer.clientWidth - width / 2 - BUBBLE_EDGE_PADDING);
+  const y = THREE.MathUtils.clamp(rawY, height + BUBBLE_EDGE_PADDING, bubbleLayer.clientHeight - BUBBLE_EDGE_PADDING);
 
   element.style.left = `${x}px`;
   element.style.top = `${y}px`;
-  element.style.setProperty("--bubble-lift", "8px");
-  element.innerHTML = `<strong>${agent.name}</strong>${agent.bubble}`;
-  const visibleActivity = ["coffee", "talk", "rest", "read", "screen", "typing", "celebrate"].includes(
-    agent.activity,
-  );
-  element.classList.toggle(
-    "visible",
-    agent.state === "working" || agent.state === "happy" || agent.state === "focused" || visibleActivity,
-  );
+  element.style.setProperty("--bubble-lift", `${presentation.full ? 12 : 5}px`);
+  element.classList.add("visible");
 }
 
 function resolveBubbleCollisions() {
-  const visible = [...bubbles.values()].filter((element) =>
-    element.classList.contains("visible"),
-  );
-  visible.forEach((element) => element.style.setProperty("--bubble-lift", "8px"));
+  const bounds = bubbleLayer.getBoundingClientRect();
+  const visible = [...bubbles.values()]
+    .filter((element) => element.classList.contains("visible"))
+    .sort((a, b) => Number(b.dataset.priority || 0) - Number(a.dataset.priority || 0));
 
-  for (let pass = 0; pass < 3; pass += 1) {
+  visible.forEach((element) => clampBubbleToLayer(element, bounds));
+  for (let pass = 0; pass < 4; pass += 1) {
     let changed = false;
-    const rects = visible.map((element) => ({
-      element,
-      rect: element.getBoundingClientRect(),
-    }));
+    for (let index = 1; index < visible.length; index += 1) {
+      const movable = visible[index];
+      for (let anchorIndex = 0; anchorIndex < index; anchorIndex += 1) {
+        const anchor = visible[anchorIndex];
+        const movableRect = movable.getBoundingClientRect();
+        const anchorRect = anchor.getBoundingClientRect();
+        if (!elementsOverlap(movableRect, anchorRect)) continue;
 
-    for (let i = 0; i < rects.length; i += 1) {
-      for (let j = i + 1; j < rects.length; j += 1) {
-        const a = rects[i];
-        const b = rects[j];
-        const overlapsX = a.rect.left < b.rect.right && a.rect.right > b.rect.left;
-        const overlapsY = a.rect.top < b.rect.bottom && a.rect.bottom > b.rect.top;
-        if (!overlapsX || !overlapsY) continue;
+        const overlapX = Math.min(movableRect.right, anchorRect.right) - Math.max(movableRect.left, anchorRect.left);
+        const overlapY = Math.min(movableRect.bottom, anchorRect.bottom) - Math.max(movableRect.top, anchorRect.top);
+        const direction = movableRect.left + movableRect.width / 2 < anchorRect.left + anchorRect.width / 2 ? -1 : 1;
+        const currentLeft = Number.parseFloat(movable.style.left) || 0;
+        movable.style.left = `${currentLeft + direction * (overlapX + 12)}px`;
+        clampBubbleToLayer(movable, bounds);
 
-        const topElement = a.rect.top <= b.rect.top ? a.element : b.element;
-        const overlap = Math.min(a.rect.bottom, b.rect.bottom) - Math.max(a.rect.top, b.rect.top);
-        const currentLift =
-          Number.parseFloat(topElement.style.getPropertyValue("--bubble-lift")) || 8;
-        topElement.style.setProperty("--bubble-lift", `${currentLift + overlap + 8}px`);
+        if (elementsOverlap(movable.getBoundingClientRect(), anchorRect)) {
+          const currentLift = Number.parseFloat(movable.style.getPropertyValue("--bubble-lift")) || 5;
+          movable.style.setProperty("--bubble-lift", `${currentLift + overlapY + 10}px`);
+          clampBubbleToLayer(movable, bounds);
+        }
         changed = true;
       }
     }
-
-    if (!changed) return;
+    if (!changed) break;
   }
 }
 
@@ -3112,7 +4848,36 @@ function animateRig(rig, agent, moving, elapsed, index) {
   }
 }
 
+function updateAgentSelectionVisual(agent, index, elapsed) {
+  const group = agent.group;
+  if (!group) return;
+  const selected = selectedChatId !== "all" && index === selectedIndex;
+  const hovered = index === hoveredAgentIndex;
+  const ring = group.userData.selectionRing;
+  const aura = group.userData.selectionAura;
+  const emphasis = selected ? 1 : hovered ? 0.68 : 0;
+  const pulse = 1 + Math.sin(elapsed * 4.4 + index) * 0.06;
+
+  if (ring) {
+    ring.visible = emphasis > 0;
+    ring.material.opacity = selected ? 0.82 : hovered ? 0.48 : 0;
+    ring.scale.setScalar((selected ? 1.12 : 1) * pulse);
+  }
+  if (aura) {
+    aura.visible = emphasis > 0;
+    aura.material.opacity = selected ? 0.18 : hovered ? 0.1 : 0;
+    aura.scale.setScalar((selected ? 1.26 : 1.12) * pulse);
+  }
+
+  const rig = group.userData.rig;
+  if (rig?.root) {
+    const baseScale = group.userData.rigScale || 1;
+    rig.root.scale.setScalar(baseScale * (selected ? 1.045 : hovered ? 1.025 : 1));
+  }
+}
+
 function updateAgents(delta, elapsed) {
+  refreshBubblePresentation();
   agents.forEach((agent, index) => {
     const group = agent.group;
     if (!group) return;
@@ -3158,21 +4923,39 @@ function updateAgents(delta, elapsed) {
 
     const rig = group.userData.rig;
     if (rig) animateRig(rig, agent, moving, elapsed, index);
+    updateAgentSelectionVisual(agent, index, elapsed);
 
     updateBubble(agent);
   });
   resolveBubbleCollisions();
 }
 
-function onCanvasClick(event) {
+function agentHitFromEvent(event) {
   if (!renderer) return;
   const rect = canvas.getBoundingClientRect();
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
   const hits = raycaster.intersectObjects(clickTargets, false);
-  if (hits.length) {
-    selectAgent(hits[0].object.userData.agentIndex);
+  return hits[0]?.object?.userData?.agentIndex;
+}
+
+function onCanvasPointerMove(event) {
+  const nextHoveredIndex = agentHitFromEvent(event);
+  if (hoveredAgentIndex === (Number.isInteger(nextHoveredIndex) ? nextHoveredIndex : -1)) return;
+  hoveredAgentIndex = Number.isInteger(nextHoveredIndex) ? nextHoveredIndex : -1;
+  canvas.style.cursor = hoveredAgentIndex >= 0 ? "pointer" : "grab";
+}
+
+function onCanvasPointerLeave() {
+  hoveredAgentIndex = -1;
+  canvas.style.cursor = "grab";
+}
+
+function onCanvasClick(event) {
+  const agentIndex = agentHitFromEvent(event);
+  if (Number.isInteger(agentIndex)) {
+    selectAgent(agentIndex);
   }
 }
 
@@ -3180,13 +4963,13 @@ function resize() {
   if (!renderer) return;
   const { clientWidth, clientHeight } = canvas.parentElement;
   renderer.setSize(clientWidth, clientHeight, false);
+  if (activeOfficeLayout === "team-house") {
+    updateTeamHouseCameraFrustum();
+    return;
+  }
   const aspect = clientWidth / Math.max(clientHeight, 1);
   const viewHeight = aspect < 0.9 ? 18.2 : clientWidth < 720 ? 15.8 : 13.4;
-  camera.top = viewHeight / 2;
-  camera.bottom = -viewHeight / 2;
-  camera.left = (-viewHeight * aspect) / 2;
-  camera.right = (viewHeight * aspect) / 2;
-  camera.updateProjectionMatrix();
+  setOrthographicViewHeight(viewHeight, aspect);
 }
 
 function updateClock() {
@@ -3220,6 +5003,7 @@ function animate() {
   if (!renderer || !controls) return;
   const delta = Math.min(clockTimer.getDelta(), 0.05);
   const elapsed = clockTimer.elapsedTime;
+  updateCameraTransition(delta);
   updateAgents(delta, elapsed);
   controls.update();
   renderer.render(scene, camera);
@@ -3257,6 +5041,8 @@ document.querySelector("#celebrateBtn")?.addEventListener("click", celebrateTeam
 document.querySelector("#hireBtn")?.addEventListener("click", hireAgent);
 viewBtn?.addEventListener("click", resetView);
 canvas.addEventListener("click", onCanvasClick);
+canvas.addEventListener("pointermove", onCanvasPointerMove);
+canvas.addEventListener("pointerleave", onCanvasPointerLeave);
 window.addEventListener("resize", resize);
 chatTab.addEventListener("click", () => setPanelTab("chat"));
 activityTab.addEventListener("click", () => setPanelTab("activity"));
@@ -3303,5 +5089,9 @@ window.agentOfficeDebug = {
   loadedAssetNames,
   assignTask,
   assignIdleDestination,
+  routeToDestination,
+  setAgentDestination,
+  selectAgent,
+  fitTeamHouseCamera,
   resetView,
 };

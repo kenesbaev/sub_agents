@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.connected_apps.service import create_scheduled_post, upsert_connected_account, write_activity
+from app.core_domain.service import set_task_completion_fields
 from app.db.session import get_db
-from app.models import InstagramIntegration, SocialPost, TelegramBotIntegration, User
+from app.models import InstagramIntegration, SocialPost, Task, TelegramBotIntegration, User
 from app.schemas import (
     InstagramConnectRequest,
     InstagramStatus,
@@ -383,6 +384,70 @@ def record_social_post(
     )
 
 
+def find_publish_task(db: Session, user: User, *, task_id: int | None, run_id: str | None) -> Task | None:
+    if task_id:
+        task = db.get(Task, task_id)
+        if task and task.created_by == user.id:
+            return task
+    if not run_id:
+        return None
+    try:
+        task = db.scalar(
+            select(Task)
+            .where(Task.created_by == user.id, Task.input_json["runId"].as_string() == run_id)
+            .order_by(Task.id.desc())
+        )
+        if task:
+            return task
+    except Exception:
+        pass
+    recent_tasks = db.scalars(select(Task).where(Task.created_by == user.id).order_by(Task.id.desc()).limit(50)).all()
+    for task in recent_tasks:
+        if isinstance(task.input_json, dict) and task.input_json.get("runId") == run_id:
+            return task
+    return None
+
+
+def update_publish_task_status(
+    db: Session,
+    user: User,
+    payload: PublishSocialRequest,
+    results: list[PublishTargetResult],
+) -> None:
+    update_publish_task_from_results(
+        db,
+        user,
+        task_id=payload.task_id,
+        run_id=payload.run_id,
+        results=results,
+    )
+
+
+def update_publish_task_from_results(
+    db: Session,
+    user: User,
+    *,
+    task_id: int | None,
+    run_id: str | None,
+    results: list[PublishTargetResult],
+) -> None:
+    task = find_publish_task(db, user, task_id=task_id, run_id=run_id)
+    if not task:
+        return
+    ok = all(result.ok for result in results)
+    task.status = "completed" if ok else "failed"
+    task.progress = 100 if ok else task.progress
+    set_task_completion_fields(task)
+    errors = [f"{result.platform}: {result.error}" for result in results if not result.ok and result.error]
+    if errors:
+        task.error = " | ".join(errors)
+    task.result_json = {
+        **(task.result_json or {}),
+        "publishResults": [result.model_dump() for result in results],
+        "published": ok,
+    }
+
+
 def publish_to_platform(
     db: Session,
     user: User,
@@ -568,6 +633,13 @@ def publish_telegram(
         status_value="published",
         external_id=result.get("message_id"),
     )
+    update_publish_task_from_results(
+        db,
+        user,
+        task_id=payload.task_id,
+        run_id=payload.run_id,
+        results=[PublishTargetResult(platform="telegram", ok=True, external_id=result.get("message_id"))],
+    )
     db.commit()
     chat = result.get("chat") if isinstance(result.get("chat"), dict) else {}
     return PublishTelegramResponse(
@@ -602,6 +674,7 @@ def publish_social(
                 run_id=payload.run_id,
             )
             results.append(PublishTargetResult(platform=platform, ok=True, external_id=f"scheduled:{post.id}"))
+        update_publish_task_status(db, user, payload, results)
         db.commit()
         return PublishSocialResponse(ok=True, results=results)
     results = [
@@ -619,5 +692,6 @@ def publish_social(
         )
         for platform in platforms
     ]
+    update_publish_task_status(db, user, payload, results)
     db.commit()
     return PublishSocialResponse(ok=all(result.ok for result in results), results=results)

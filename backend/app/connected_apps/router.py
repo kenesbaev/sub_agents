@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import os
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -22,7 +24,9 @@ from app.connected_apps.google_oauth import (
     google_connected_scopes,
     store_google_oauth_accounts,
 )
+from app.connected_apps.google_actions import execute_google_agent_tool, is_google_agent_tool
 from app.connected_apps.providers import OAuthUrlBuilder, PROVIDERS
+from app.connected_apps.youtube_integration import YouTubePublishError, publish_youtube_video
 from app.connected_apps.service import (
     create_scheduled_post,
     disconnect_provider,
@@ -34,14 +38,25 @@ from app.connected_apps.service import (
     write_activity,
 )
 from app.db.session import get_db
-from app.models import IntegrationProvider, IntegrationToken, InstagramIntegration, TelegramBotIntegration, User, UserIntegration
+from app.integrations import update_publish_task_from_results
+from app.models import (
+    IntegrationAccount,
+    IntegrationProvider,
+    IntegrationToken,
+    InstagramIntegration,
+    TelegramBotIntegration,
+    User,
+    UserIntegration,
+)
 from app.security import get_current_user
+from app.schemas import PublishTargetResult
 from app.token_crypto import decrypt_token, encrypt_token
 
 router = APIRouter(tags=["connected-apps"])
 
 INTEGRATION_STATE_COOKIE = "rebly_integration_oauth_state"
 INTEGRATION_PKCE_COOKIE = "rebly_integration_pkce_verifier"
+INTEGRATION_SHOPIFY_SHOP_COOKIE = "rebly_integration_shopify_shop"
 PUBLIC_OAUTH_SETUP_ERROR = "This integration is not available yet. Please contact your workspace admin."
 
 
@@ -56,6 +71,12 @@ class ManualSecretAccountConnectRequest(BaseModel):
     secret: str = Field(min_length=6, max_length=4096)
     label: str | None = Field(default=None, max_length=255)
     identifier: str | None = Field(default=None, max_length=255)
+
+
+class OAuthConnectRequest(BaseModel):
+    # A store domain is account data, not OAuth client configuration. It lets a
+    # merchant connect their own shop without exposing administrator credentials.
+    shop_domain: str | None = Field(default=None, alias="shopDomain", min_length=1, max_length=255)
 
 
 class ScheduledPostCreateRequest(BaseModel):
@@ -119,6 +140,14 @@ class GenericOAuthConfig:
     client_id_param: str = "client_id"
     token_auth: str = "body"
     extra_params: dict[str, str] | None = None
+    scope_delimiter: str = " "
+    authorization_code_extra_params: dict[str, str] | None = None
+    include_authorization_code_grant_type: bool = True
+    include_redirect_uri_in_token_exchange: bool = True
+    # Shopify OAuth endpoints are store-specific. Keep the selected store on the
+    # server-side config so token/account operations cannot fall back to a
+    # different default shop from the environment.
+    shop_domain: str | None = None
 
 
 GENERIC_OAUTH_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -127,6 +156,10 @@ GENERIC_OAUTH_DEFAULTS: dict[str, dict[str, Any]] = {
         "token_uri": "",
         "account_type": "shopify_store",
         "userinfo_uri": "",
+        "scope_delimiter": ",",
+        "authorization_code_extra_params": {"expiring": "1"},
+        "include_authorization_code_grant_type": False,
+        "include_redirect_uri_in_token_exchange": False,
     },
     "tiktok": {
         "auth_uri": "https://www.tiktok.com/v2/auth/authorize/",
@@ -134,12 +167,14 @@ GENERIC_OAUTH_DEFAULTS: dict[str, dict[str, Any]] = {
         "client_id_param": "client_key",
         "account_type": "tiktok_account",
         "userinfo_uri": "https://open.tiktokapis.com/v2/user/info/",
+        "scope_delimiter": ",",
     },
     "x": {
-        "auth_uri": "https://twitter.com/i/oauth2/authorize",
-        "token_uri": "https://api.twitter.com/2/oauth2/token",
+        "auth_uri": "https://x.com/i/oauth2/authorize",
+        "token_uri": "https://api.x.com/2/oauth2/token",
         "account_type": "x_account",
-        "userinfo_uri": "https://api.twitter.com/2/users/me?user.fields=username,name",
+        "userinfo_uri": "https://api.x.com/2/users/me?user.fields=username,name",
+        "token_auth": "basic",
     },
     "discord": {
         "auth_uri": "https://discord.com/oauth2/authorize",
@@ -186,6 +221,12 @@ GENERIC_OAUTH_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 MANUAL_SECRET_PROVIDER_KEYS = {"openai", "claude", "zapier"}
+REQUIRED_OAUTH_SCOPES: dict[str, tuple[str, ...]] = {
+    "x": ("offline.access",),
+}
+HTTPS_REDIRECT_PROVIDER_KEYS = {"linkedin", "tiktok"}
+SHOPIFY_SHOP_DOMAIN_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.myshopify\.com$")
+SHOPIFY_API_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 
 
 def oauth_redirect(provider_key: str) -> str:
@@ -203,6 +244,13 @@ def generic_oauth_redirect(provider_key: str) -> str:
     return f"{str(get_settings().backend_url).rstrip('/')}/api/connected-apps/{provider_key}/callback"
 
 
+def oauth_redirect_uri_is_valid(provider_key: str, redirect_uri: str) -> bool:
+    if provider_key not in HTTPS_REDIRECT_PROVIDER_KEYS:
+        return bool(redirect_uri)
+    parsed = urlparse(redirect_uri)
+    return parsed.scheme == "https" and bool(parsed.netloc)
+
+
 def provider_env_value(provider_key: str, *names: str, default: str = "") -> str:
     prefix = provider_key.upper().replace("-", "_")
     settings = get_settings()
@@ -217,22 +265,54 @@ def provider_env_value(provider_key: str, *names: str, default: str = "") -> str
     return default
 
 
+def parse_scopes(value: str) -> tuple[str, ...]:
+    return tuple(scope for scope in value.replace(",", " ").split() if scope)
+
+
 def provider_scopes(provider_key: str) -> tuple[str, ...]:
     configured = provider_env_value(provider_key, "SCOPES")
-    if configured:
-        return tuple(scope for scope in configured.replace(",", " ").split() if scope)
-    return PROVIDERS[provider_key].scopes
+    default_scopes = tuple(
+        scope
+        for capability_scope in PROVIDERS[provider_key].scopes
+        for scope in parse_scopes(capability_scope)
+    )
+    configured_scopes = parse_scopes(configured) if configured else default_scopes
+    return tuple(dict.fromkeys((*configured_scopes, *REQUIRED_OAUTH_SCOPES.get(provider_key, ()))))
 
 
-def shopify_store_domain() -> str:
-    raw_domain = provider_env_value("shopify", "SHOP_DOMAIN", "STORE_DOMAIN", "SHOPIFY_SHOP_DOMAIN")
-    domain = raw_domain.replace("https://", "").replace("http://", "").strip().strip("/")
+def normalize_shopify_shop_domain(value: str) -> str:
+    domain = value.strip().lower()
+    if domain.startswith("https://"):
+        domain = domain.removeprefix("https://")
+    elif domain.startswith("http://"):
+        domain = domain.removeprefix("http://")
+    domain = domain.strip().strip("/")
     if domain and "." not in domain:
         domain = f"{domain}.myshopify.com"
-    return domain
+    return domain if SHOPIFY_SHOP_DOMAIN_PATTERN.fullmatch(domain) else ""
 
 
-def generic_oauth_config(provider_key: str) -> GenericOAuthConfig:
+def shopify_store_domain(shop_domain: str | None = None) -> str:
+    raw_domain = (
+        shop_domain
+        if shop_domain is not None and shop_domain.strip()
+        else provider_env_value("shopify", "SHOP_DOMAIN", "STORE_DOMAIN", "SHOPIFY_SHOP_DOMAIN")
+    )
+    return normalize_shopify_shop_domain(raw_domain)
+
+
+def shopify_oauth_is_configured() -> bool:
+    redirect_uri = provider_env_value("shopify", "REDIRECT_URI", default=generic_oauth_redirect("shopify"))
+    api_version = provider_env_value("shopify", "API_VERSION", default="2026-07")
+    return bool(
+        provider_env_value("shopify", "CLIENT_ID", "APP_ID", "CLIENT_KEY")
+        and provider_env_value("shopify", "CLIENT_SECRET", "APP_SECRET", "SECRET")
+        and redirect_uri
+        and SHOPIFY_API_VERSION_PATTERN.fullmatch(api_version)
+    )
+
+
+def generic_oauth_config(provider_key: str, *, shop_domain: str | None = None) -> GenericOAuthConfig:
     if provider_key not in GENERIC_OAUTH_DEFAULTS or provider_key not in PROVIDERS:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown OAuth provider")
 
@@ -244,16 +324,29 @@ def generic_oauth_config(provider_key: str) -> GenericOAuthConfig:
     token_uri = provider_env_value(provider_key, "TOKEN_URI", default=str(defaults.get("token_uri") or ""))
     userinfo_uri = provider_env_value(provider_key, "USERINFO_URI", default=str(defaults.get("userinfo_uri") or ""))
 
+    if not oauth_redirect_uri_is_valid(provider_key, redirect_uri):
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=PUBLIC_OAUTH_SETUP_ERROR)
+
+    effective_shop_domain: str | None = None
     if provider_key == "shopify":
-        shop_domain = shopify_store_domain()
-        if not shop_domain:
+        requested_shop_domain = shop_domain.strip() if shop_domain else ""
+        effective_shop_domain = shopify_store_domain(requested_shop_domain or None)
+        if requested_shop_domain and not effective_shop_domain:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Enter a valid Shopify .myshopify.com store domain.",
+            )
+        if not effective_shop_domain:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=PUBLIC_OAUTH_SETUP_ERROR,
             )
-        auth_uri = auth_uri or f"https://{shop_domain}/admin/oauth/authorize"
-        token_uri = token_uri or f"https://{shop_domain}/admin/oauth/access_token"
-        userinfo_uri = userinfo_uri or f"https://{shop_domain}/admin/api/2025-01/shop.json"
+        auth_uri = auth_uri or f"https://{effective_shop_domain}/admin/oauth/authorize"
+        token_uri = token_uri or f"https://{effective_shop_domain}/admin/oauth/access_token"
+        api_version = provider_env_value("shopify", "API_VERSION", default="2026-07")
+        if not SHOPIFY_API_VERSION_PATTERN.fullmatch(api_version):
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=PUBLIC_OAUTH_SETUP_ERROR)
+        userinfo_uri = userinfo_uri or f"https://{effective_shop_domain}/admin/api/{api_version}/shop.json"
 
     if not client_id or not client_secret or not auth_uri or not token_uri:
         raise HTTPException(
@@ -274,6 +367,11 @@ def generic_oauth_config(provider_key: str) -> GenericOAuthConfig:
         client_id_param=str(defaults.get("client_id_param") or "client_id"),
         token_auth=str(defaults.get("token_auth") or "body"),
         extra_params=dict(defaults.get("extra_params") or {}),
+        scope_delimiter=str(defaults.get("scope_delimiter") or " "),
+        authorization_code_extra_params=dict(defaults.get("authorization_code_extra_params") or {}),
+        include_authorization_code_grant_type=bool(defaults.get("include_authorization_code_grant_type", True)),
+        include_redirect_uri_in_token_exchange=bool(defaults.get("include_redirect_uri_in_token_exchange", True)),
+        shop_domain=effective_shop_domain,
     )
 
 
@@ -285,7 +383,7 @@ def build_generic_oauth_url(config: GenericOAuthConfig, *, state: str, code_veri
         "state": state,
     }
     if config.scopes:
-        params["scope"] = " ".join(config.scopes)
+        params["scope"] = config.scope_delimiter.join(config.scopes)
     if config.extra_params:
         params.update(config.extra_params)
     if config.provider_key == "x":
@@ -324,15 +422,66 @@ def set_pkce_cookie(response: Response, code_verifier: str | None) -> None:
     )
 
 
+def set_shopify_shop_cookie(response: Response, shop_domain: str | None) -> None:
+    if not shop_domain:
+        return
+    settings = get_settings()
+    response.set_cookie(
+        INTEGRATION_SHOPIFY_SHOP_COOKIE,
+        shop_domain,
+        max_age=10 * 60,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/",
+    )
+
+
 def validate_state(request: Request, state: str) -> None:
     expected_state = request.cookies.get(INTEGRATION_STATE_COOKIE)
     if not expected_state or expected_state != state:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state")
 
 
+def validate_shopify_callback(
+    request: Request,
+    config: GenericOAuthConfig,
+    *,
+    expected_shop_domain: str | None = None,
+) -> None:
+    received_hmac_values = request.query_params.getlist("hmac")
+    received_hmac = received_hmac_values[0] if len(received_hmac_values) == 1 else ""
+    callback_shop = normalize_shopify_shop_domain(request.query_params.get("shop") or "")
+    timestamp = request.query_params.get("timestamp") or ""
+    if not received_hmac or not callback_shop or not timestamp:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid Shopify callback")
+
+    try:
+        callback_timestamp = int(timestamp)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid Shopify callback") from exc
+    if abs(int(datetime.now(UTC).timestamp()) - callback_timestamp) > 10 * 60:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Expired Shopify callback")
+
+    expected_shop = normalize_shopify_shop_domain(expected_shop_domain or "")
+    if not expected_shop or callback_shop != expected_shop:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid Shopify callback")
+
+    signed_pairs = sorted((key, value) for key, value in request.query_params.multi_items() if key != "hmac")
+    message = urlencode(signed_pairs)
+    expected_hmac = hmac.new(
+        config.client_secret.encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected_hmac, received_hmac):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid Shopify callback")
+
+
 def finish_redirect(response: RedirectResponse) -> RedirectResponse:
     response.delete_cookie(INTEGRATION_STATE_COOKIE, path="/", samesite="lax")
     response.delete_cookie(INTEGRATION_PKCE_COOKIE, path="/", samesite="lax")
+    response.delete_cookie(INTEGRATION_SHOPIFY_SHOP_COOKIE, path="/", samesite="lax")
     return response
 
 
@@ -415,7 +564,13 @@ def provider_oauth_is_configured(provider_key: str) -> bool:
     if provider_key in {"instagram", "facebook"}:
         return bool(settings.meta_app_id and settings.meta_app_secret and settings.meta_redirect_uri)
     if provider_key == "linkedin":
-        return bool(settings.linkedin_client_id and settings.linkedin_client_secret and settings.linkedin_redirect_uri)
+        return bool(
+            settings.linkedin_client_id
+            and settings.linkedin_client_secret
+            and oauth_redirect_uri_is_valid(provider_key, settings.linkedin_redirect_uri)
+        )
+    if provider_key == "shopify":
+        return shopify_oauth_is_configured()
     if provider_key in GENERIC_OAUTH_DEFAULTS:
         try:
             generic_oauth_config(provider_key)
@@ -461,7 +616,10 @@ def meta_oauth_scopes(provider_key: Literal["instagram", "facebook"]) -> tuple[s
 
 
 def linkedin_oauth_scopes() -> tuple[str, ...]:
-    return unique_scopes(("openid", "profile", "email"), PROVIDERS["linkedin"].scopes)
+    configured = provider_env_value("linkedin", "SCOPES")
+    if configured:
+        return parse_scopes(configured)
+    return ("openid", "profile", "email", "w_member_social")
 
 
 def provider_from_state(state: str, allowed: set[str], user_id: int) -> str:
@@ -744,7 +902,7 @@ def token_access_token(config: GenericOAuthConfig, token_data: dict[str, Any]) -
 
 
 def safe_token_metadata(token_data: dict[str, Any]) -> dict[str, Any]:
-    blocked = {"access_token", "refresh_token", "id_token"}
+    blocked = {"access_token", "refresh_token", "id_token", "webhook", "webhook_url"}
     metadata: dict[str, Any] = {}
     for key, value in token_data.items():
         if key in blocked:
@@ -766,24 +924,26 @@ async def exchange_generic_oauth_code(
     *,
     code_verifier: str | None = None,
 ) -> dict[str, Any]:
-    data: dict[str, str] = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": config.redirect_uri,
-    }
+    data: dict[str, str] = {"code": code}
+    if config.include_authorization_code_grant_type:
+        data["grant_type"] = "authorization_code"
+    if config.include_redirect_uri_in_token_exchange:
+        data["redirect_uri"] = config.redirect_uri
+    if config.authorization_code_extra_params:
+        data.update(config.authorization_code_extra_params)
     if config.provider_key == "x":
         if not code_verifier:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth session expired. Please try again.")
         data["code_verifier"] = code_verifier
-    if config.client_id_param == "client_key":
-        data["client_key"] = config.client_id
-    else:
-        data["client_id"] = config.client_id
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"}
     auth: tuple[str, str] | None = None
     if config.token_auth == "basic":
         auth = (config.client_id, config.client_secret)
     else:
+        if config.client_id_param == "client_key":
+            data["client_key"] = config.client_id
+        else:
+            data["client_id"] = config.client_id
         data["client_secret"] = config.client_secret
     async with httpx.AsyncClient(timeout=25) as client:
         response = await client.post(
@@ -837,7 +997,9 @@ def generic_account_identity(
     provider_key = config.provider_key
     if provider_key == "shopify":
         shop = userinfo.get("shop") if isinstance(userinfo.get("shop"), dict) else {}
-        domain = str(shop.get("domain") or shop.get("myshopify_domain") or shopify_store_domain() or "")
+        domain = normalize_shopify_shop_domain(
+            str(shop.get("myshopify_domain") or shop.get("domain") or config.shop_domain or shopify_store_domain() or "")
+        )
         name = str(shop.get("name") or domain or "Shopify Store")
         return domain or name, name
     if provider_key == "slack":
@@ -915,6 +1077,14 @@ async def store_generic_oauth_account(
         userinfo=userinfo,
         fallback_email=user.email,
     )
+    metadata_json: dict[str, Any] = {
+        "source": "generic_oauth",
+        "provider": config.provider_key,
+        "token": safe_token_metadata(token_data),
+        "account": safe_token_metadata(userinfo),
+    }
+    if config.provider_key == "shopify" and config.shop_domain:
+        metadata_json["shopDomain"] = config.shop_domain
     upsert_connected_account(
         db,
         user_id=user.id,
@@ -927,12 +1097,7 @@ async def store_generic_oauth_account(
         token_type=token_data.get("token_type") or "Bearer",
         expires_at=token_expires_at(token_data),
         scopes=token_data.get("scope") or " ".join(config.scopes),
-        metadata_json={
-            "source": "generic_oauth",
-            "provider": config.provider_key,
-            "token": safe_token_metadata(token_data),
-            "account": safe_token_metadata(userinfo),
-        },
+        metadata_json=metadata_json,
     )
 
 
@@ -944,7 +1109,27 @@ def normalized_datetime(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
-def refresh_config_for_provider(provider_key: str) -> GenericOAuthConfig | None:
+def shopify_shop_domain_for_account(account: IntegrationAccount | None) -> str:
+    if account is None:
+        return ""
+    metadata = account.metadata_json if isinstance(account.metadata_json, dict) else {}
+    stored_account = metadata.get("account") if isinstance(metadata.get("account"), dict) else {}
+    stored_shop = stored_account.get("shop") if isinstance(stored_account.get("shop"), dict) else {}
+    candidates = (
+        metadata.get("shopDomain"),
+        metadata.get("shop_domain"),
+        stored_shop.get("myshopify_domain"),
+        stored_shop.get("domain"),
+        account.account_identifier,
+    )
+    for candidate in candidates:
+        normalized = normalize_shopify_shop_domain(str(candidate or ""))
+        if normalized:
+            return normalized
+    return ""
+
+
+def refresh_config_for_provider(provider_key: str, *, shop_domain: str | None = None) -> GenericOAuthConfig | None:
     settings = get_settings()
     if provider_key in {"google", "youtube"}:
         if not settings.google_client_id or not settings.google_client_secret:
@@ -973,7 +1158,7 @@ def refresh_config_for_provider(provider_key: str) -> GenericOAuthConfig | None:
             account_type="linkedin_member",
         )
     if provider_key in GENERIC_OAUTH_DEFAULTS:
-        return generic_oauth_config(provider_key)
+        return generic_oauth_config(provider_key, shop_domain=shop_domain if provider_key == "shopify" else None)
     return None
 
 
@@ -982,15 +1167,15 @@ async def exchange_refresh_token(config: GenericOAuthConfig, refresh_token: str)
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
     }
-    if config.client_id_param == "client_key":
-        data["client_key"] = config.client_id
-    else:
-        data["client_id"] = config.client_id
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"}
     auth: tuple[str, str] | None = None
     if config.token_auth == "basic":
         auth = (config.client_id, config.client_secret)
     else:
+        if config.client_id_param == "client_key":
+            data["client_key"] = config.client_id
+        else:
+            data["client_id"] = config.client_id
         data["client_secret"] = config.client_secret
     async with httpx.AsyncClient(timeout=25) as client:
         response = await client.post(config.token_uri, data=data, headers=headers, auth=auth)
@@ -1028,7 +1213,11 @@ async def refresh_due_oauth_tokens(db: Session, user: User) -> None:
                     integration.last_error = "Authorization expired. Reconnect this app."
                 continue
             try:
-                config = refresh_config_for_provider(provider.key)
+                account = db.get(IntegrationAccount, token.integration_account_id)
+                config = refresh_config_for_provider(
+                    provider.key,
+                    shop_domain=shopify_shop_domain_for_account(account) if provider.key == "shopify" else None,
+                )
                 if config is None:
                     raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="OAuth refresh is not configured")
                 refreshed = await exchange_refresh_token(config, decrypt_token(token.encrypted_refresh_token))
@@ -1064,7 +1253,12 @@ async def connected_apps(
     return payload
 
 
-def oauth_authorization_url(provider_key: str, user: User) -> tuple[str, str, str | None]:
+def oauth_authorization_url(
+    provider_key: str,
+    user: User,
+    *,
+    shop_domain: str | None = None,
+) -> tuple[str, str, str | None, str | None]:
     if provider_key not in PROVIDERS:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown provider")
     if provider_key in MANUAL_SECRET_PROVIDER_KEYS or PROVIDERS[provider_key].auth_type in {"api_key", "webhook", "bot_token"}:
@@ -1097,7 +1291,11 @@ def oauth_authorization_url(provider_key: str, user: User) -> tuple[str, str, st
             extra_params={"auth_type": "rerequest"},
         )
     elif provider_key == "linkedin":
-        if not settings.linkedin_client_id or not settings.linkedin_client_secret:
+        if (
+            not settings.linkedin_client_id
+            or not settings.linkedin_client_secret
+            or not oauth_redirect_uri_is_valid(provider_key, settings.linkedin_redirect_uri)
+        ):
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=PUBLIC_OAUTH_SETUP_ERROR)
         builder = OAuthUrlBuilder(
             auth_uri=settings.linkedin_auth_uri,
@@ -1106,25 +1304,33 @@ def oauth_authorization_url(provider_key: str, user: User) -> tuple[str, str, st
             scopes=linkedin_oauth_scopes(),
         )
     else:
-        config = generic_oauth_config(provider_key)
+        config = generic_oauth_config(provider_key, shop_domain=shop_domain if provider_key == "shopify" else None)
         code_verifier = secrets.token_urlsafe(48) if provider_key == "x" else None
-        return build_generic_oauth_url(config, state=state, code_verifier=code_verifier), state, code_verifier
+        expected_shop_domain = shopify_store_domain(shop_domain) if provider_key == "shopify" else None
+        return build_generic_oauth_url(config, state=state, code_verifier=code_verifier), state, code_verifier, expected_shop_domain
 
-    return builder.get_connect_url(state=state), state, None
+    return builder.get_connect_url(state=state), state, None, None
 
 
 @router.post("/api/connected-apps/{provider_key}/connect")
 def connect_oauth_provider(
     provider_key: str,
+    payload: OAuthConnectRequest | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> JSONResponse:
-    authorization_url, state, code_verifier = oauth_authorization_url(provider_key, user)
+    requested_shop_domain = payload.shop_domain if provider_key == "shopify" and payload else None
+    authorization_url, state, code_verifier, expected_shop_domain = oauth_authorization_url(
+        provider_key,
+        user,
+        shop_domain=requested_shop_domain,
+    )
     mark_oauth_connection_status(db, user=user, provider_key=provider_key, connection_status="connecting")
     db.commit()
     response = JSONResponse({"authorizationUrl": authorization_url})
     set_state_cookie(response, state)
     set_pkce_cookie(response, code_verifier)
+    set_shopify_shop_cookie(response, expected_shop_domain)
     return response
 
 
@@ -1134,12 +1340,13 @@ def start_oauth_connection(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    authorization_url, state, code_verifier = oauth_authorization_url(provider_key, user)
+    authorization_url, state, code_verifier, expected_shop_domain = oauth_authorization_url(provider_key, user)
     mark_oauth_connection_status(db, user=user, provider_key=provider_key, connection_status="connecting")
     db.commit()
     response = RedirectResponse(authorization_url)
     set_state_cookie(response, state)
     set_pkce_cookie(response, code_verifier)
+    set_shopify_shop_cookie(response, expected_shop_domain)
     return response
 
 
@@ -1273,8 +1480,11 @@ async def generic_connected_callback(
     provider_from_state(state, {provider_key}, user.id)
     if error or not code:
         return oauth_error_redirect(db, user=user, provider_key=provider_key, detail=error_description or error)
+    expected_shop_domain = request.cookies.get(INTEGRATION_SHOPIFY_SHOP_COOKIE) if provider_key == "shopify" else None
+    config = generic_oauth_config(provider_key, shop_domain=expected_shop_domain)
+    if provider_key == "shopify":
+        validate_shopify_callback(request, config, expected_shop_domain=expected_shop_domain)
     try:
-        config = generic_oauth_config(provider_key)
         token_data = await exchange_generic_oauth_code(
             config,
             code,
@@ -1454,14 +1664,167 @@ def create_scheduler_post(
     return {"ok": True, "id": post.id, "status": post.status}
 
 
+def requested_social_platforms(arguments: dict[str, Any]) -> set[str]:
+    raw_platforms = arguments.get("platforms")
+    if raw_platforms is None:
+        raw_platforms = arguments.get("platform")
+    if raw_platforms is None:
+        return set()
+    values = raw_platforms if isinstance(raw_platforms, list) else [raw_platforms]
+    return {str(value).strip().lower() for value in values if str(value).strip()}
+
+
+def youtube_upload_failure_metadata(arguments: dict[str, Any]) -> dict[str, Any]:
+    account_id = arguments.get("account_id") or arguments.get("accountId")
+    metadata: dict[str, Any] = {"tool": "upload_youtube_video"}
+    if account_id is not None:
+        metadata["accountId"] = account_id
+    run_id = arguments.get("run_id") or arguments.get("runId")
+    if run_id:
+        metadata["runId"] = str(run_id)[:80]
+    task_id = youtube_publish_task_id(arguments)
+    if task_id is not None:
+        metadata["taskId"] = task_id
+    return metadata
+
+
+def youtube_publish_task_id(arguments: dict[str, Any]) -> int | None:
+    raw_task_id = arguments.get("task_id") or arguments.get("taskId")
+    if raw_task_id is None:
+        return None
+    try:
+        task_id = int(raw_task_id)
+    except (TypeError, ValueError):
+        return None
+    return task_id if task_id > 0 else None
+
+
 @router.post("/api/agent-tools/execute")
-def execute_agent_tool(
+async def execute_agent_tool(
     payload: AgentToolExecuteRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tool = payload.tool.strip()
     args = payload.arguments
+    requested_platforms = requested_social_platforms(args)
+    should_upload_youtube = tool == "upload_youtube_video" or (
+        tool == "publish_social_post" and "youtube" in requested_platforms
+    )
+    if should_upload_youtube:
+        if tool == "publish_social_post" and requested_platforms != {"youtube"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Publish a YouTube video as a separate agent action.",
+            )
+        await refresh_due_oauth_tokens(db, user)
+        try:
+            request, result = publish_youtube_video(db, user_id=user.id, arguments=args)
+        except YouTubePublishError as exc:
+            if exc.reconnect_required:
+                set_user_integration_status(
+                    db,
+                    user_id=user.id,
+                    provider_key="youtube",
+                    status="reconnect_required",
+                    last_error=exc.detail,
+                )
+            write_activity(
+                db,
+                user_id=user.id,
+                agent=str(args.get("agent") or args.get("source") or "dev")[:120],
+                service="youtube",
+                action="upload_video",
+                status="failed",
+                error=exc.detail[:500],
+                metadata_json=youtube_upload_failure_metadata(args),
+            )
+            update_publish_task_from_results(
+                db,
+                user,
+                task_id=youtube_publish_task_id(args),
+                run_id=str(args.get("run_id") or args.get("runId") or "")[:80] or None,
+                results=[PublishTargetResult(platform="youtube", ok=False, error=exc.detail)],
+            )
+            db.commit()
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        write_activity(
+            db,
+            user_id=user.id,
+            agent=str(request.source or args.get("agent") or "dev")[:120],
+            service="youtube",
+            action="upload_video",
+            status="published",
+            external_id=result.video_id,
+            metadata_json={
+                "accountId": result.account_id,
+                "channel": result.account_identifier,
+                "privacyStatus": result.privacy_status,
+                "mediaHost": result.media_host,
+                "mediaBytes": result.media_size,
+                "runId": request.run_id,
+                "taskId": youtube_publish_task_id(args),
+            },
+        )
+        update_publish_task_from_results(
+            db,
+            user,
+            task_id=youtube_publish_task_id(args),
+            run_id=request.run_id,
+            results=[
+                PublishTargetResult(
+                    platform="youtube",
+                    ok=True,
+                    external_id=result.video_id,
+                    url=result.url,
+                )
+            ],
+        )
+        db.commit()
+        return {
+            "ok": True,
+            "result": {
+                "platform": "youtube",
+                "videoId": result.video_id,
+                "url": result.url,
+                "privacyStatus": result.privacy_status,
+                "accountId": result.account_id,
+            },
+        }
+    if is_google_agent_tool(tool):
+        await refresh_due_oauth_tokens(db, user)
+        try:
+            execution = await execute_google_agent_tool(db, user_id=user.id, tool=tool, arguments=args)
+        except HTTPException as exc:
+            write_activity(
+                db,
+                user_id=user.id,
+                agent=str(args.get("agent") or "agent")[:120],
+                service="google",
+                action=tool,
+                status="failed",
+                error=str(exc.detail)[:500],
+            )
+            db.commit()
+            raise
+        external_id = (
+            execution.result.get("messageId")
+            or execution.result.get("draftId")
+            or execution.result.get("id")
+            or execution.result.get("updatedRange")
+        )
+        write_activity(
+            db,
+            user_id=user.id,
+            agent=str(args.get("agent") or "agent")[:120],
+            service="google",
+            action=tool,
+            status="completed",
+            external_id=external_id,
+            metadata_json={"accountId": execution.account_id},
+        )
+        db.commit()
+        return {"ok": True, "result": execution.result}
     if tool == "get_connected_apps_status":
         result = with_provider_setup_status(provider_status_payload(db, user))
         db.commit()

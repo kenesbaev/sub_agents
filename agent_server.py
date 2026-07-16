@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from email import policy
 from email.parser import BytesParser
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -26,6 +28,9 @@ ROOT = Path(__file__).resolve().parent
 KALIYA_CORE_SRC = ROOT / "kaliya-core" / "src"
 if KALIYA_CORE_SRC.exists() and str(KALIYA_CORE_SRC) not in sys.path:
     sys.path.insert(0, str(KALIYA_CORE_SRC))
+BACKEND_SRC = ROOT / "backend"
+if BACKEND_SRC.exists() and str(BACKEND_SRC) not in sys.path:
+    sys.path.insert(0, str(BACKEND_SRC))
 
 from kaliya.agent_memory import (  # noqa: E402
     DEFAULT_ACCOUNT_ID,
@@ -44,6 +49,12 @@ from kaliya.text_safety import redact_sensitive_text  # noqa: E402
 
 DATA_DIR = ROOT / "data"
 MEMORY_ROOT = DATA_DIR / "agent-memory"
+
+logging.basicConfig(
+    level=os.environ.get("AGENT_SERVER_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+LOGGER = logging.getLogger("rebly.agent_server")
 
 
 def load_local_env(path: Path) -> None:
@@ -79,6 +90,10 @@ CODEX_MODEL_OVERRIDES = {
     "nova": "gpt-5.4-mini",
 }
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MAX_TOKENS = 1024
+CODEX_REASONING_EFFORT = "xhigh"
+AI_BACKEND_UNAVAILABLE_MESSAGE = "AI service is temporarily unavailable. Please try again in a minute."
+AI_BACKEND_UNAVAILABLE_CODE = "agent_unavailable"
 AGENT_SEARCH_ENABLED = {
     "coordinator": True,
     "mika": True,
@@ -130,6 +145,8 @@ PUBLISH_TRIGGERS = (
     "пост",
     "telegram",
     "instagram",
+    "youtube",
+    "youtu.be",
     "insta",
     "телеграм",
     "тг",
@@ -138,14 +155,95 @@ PUBLISH_TRIGGERS = (
     "инстаграм",
     "post",
 )
+PUBLISH_TRIGGERS_UNICODE = (
+    "\u043e\u043f\u0443\u0431\u043b\u0438",
+    "\u0432\u044b\u043b\u043e\u0436",
+    "\u0437\u0430\u043f\u043e\u0441\u0442\u0438",
+    "\u043f\u0443\u0431\u043b\u0438\u043a\u0430\u0446",
+    "\u043f\u043e\u0441\u0442",
+    "\u0442\u0435\u043b\u0435\u0433\u0440\u0430\u043c",
+    "\u0442\u0433",
+    "\u043a\u0430\u043d\u0430\u043b",
+    "\u0438\u043d\u0441\u0442\u0430\u0433\u0440\u0430\u043c",
+    "\u044e\u0442\u0443\u0431",
+)
+TELEGRAM_TRIGGERS_UNICODE = (
+    "\u0442\u0435\u043b\u0435\u0433\u0440\u0430\u043c",
+    "\u0442\u0433",
+)
+INSTAGRAM_TRIGGERS_UNICODE = (
+    "\u0438\u043d\u0441\u0442\u0430\u0433\u0440\u0430\u043c",
+)
+YOUTUBE_TRIGGERS_UNICODE = (
+    "\u044e\u0442\u0443\u0431",
+    "\u044e\u0442\u044c\u044e\u0431",
+)
+YOUTUBE_TRIGGERS = (
+    "youtube",
+    "youtu.be",
+    "youtube.com",
+    "you tube",
+    "yuotube",
+    "yotube",
+)
 DIRECT_MEDIA_URL_RE = re.compile(
     r"https?://[^\s<>\")']+\.(?:avif|gif|jpe?g|png|webp|m4v|mov|mp4|mpeg|mpg|webm)(?:[?#][^\s<>\")']*)?",
     re.IGNORECASE,
 )
 EXPLICIT_PUBLISH_TEXT_RE = re.compile(r"[\"“”«»']([^\"“”«»']{1,4000})[\"“”«»']")
+GOOGLE_EMAIL_ADDRESS_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+GOOGLE_SHEET_URL_RE = re.compile(r"https?://docs\.google\.com/spreadsheets/d/([A-Za-z0-9_-]+)", re.IGNORECASE)
+GOOGLE_RFC3339_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})\b",
+    re.IGNORECASE,
+)
 PENDING_TEAM_RUNS: dict[str, dict[str, Any]] = {}
 ACTIVE_AGENT_RUNS: dict[str, dict[str, Any]] = {}
 ACTIVE_AGENT_RUNS_LOCK = threading.Lock()
+SOCIAL_POSTING_TEAM_SLUG = "social-posting-team"
+SOCIAL_POSTING_AGENT_CHAIN = (
+    {
+        "runtimeId": "scout",
+        "dbSlug": "scout",
+        "name": "Scout",
+        "role": "Research",
+        "task": (
+            "Research the context, audience angle, hook options, platform-specific format, "
+            "and any cultural sensitivities for the post or video."
+        ),
+    },
+    {
+        "runtimeId": "mika",
+        "dbSlug": "mira",
+        "name": "Mira",
+        "role": "Copy + creative",
+        "task": (
+            "Write publish-ready copy using Scout's context. For YouTube, provide a concise title "
+            "of at most 100 characters and a description of at most 5,000 characters; for Telegram "
+            "or Instagram, provide the platform-ready caption."
+        ),
+    },
+    {
+        "runtimeId": "dev",
+        "dbSlug": "dex",
+        "name": "Dex",
+        "role": "Publisher",
+        "task": (
+            "Check that the material is safe to publish, identify the target platform, and prepare the final publishing handoff. "
+            "For YouTube, require a connected channel, a public HTTPS video URL, explicit approval, and private visibility by default."
+        ),
+    },
+    {
+        "runtimeId": "nova",
+        "dbSlug": "echo",
+        "name": "Echo",
+        "role": "Analytics",
+        "task": (
+            "Review the final material for clarity and publish-readiness. Report only confirmed publishing results, including "
+            "the YouTube video URL/privacy or a safe actionable error when applicable."
+        ),
+    },
+)
 
 
 class AgentRunCancelled(RuntimeError):
@@ -154,10 +252,246 @@ class AgentRunCancelled(RuntimeError):
         self.run_id = run_id
 
 
+class AgentBackendUnavailable(RuntimeError):
+    """A safe public error for failures across all AI providers."""
+
+
+def elapsed_seconds(start: float) -> float:
+    return round(time.perf_counter() - start, 3)
+
+
+def log_social_phase(
+    run_id: str,
+    phase: str,
+    *,
+    task_id: int | None = None,
+    agent: str = "",
+    elapsed: float | None = None,
+    status: str = "ok",
+    extra: dict[str, Any] | None = None,
+) -> None:
+    payload = {
+        "runId": run_id,
+        "taskId": task_id,
+        "phase": phase,
+        "agent": agent,
+        "status": status,
+    }
+    if elapsed is not None:
+        payload["elapsedSec"] = elapsed
+    if extra:
+        payload.update(extra)
+    LOGGER.info("social_posting_phase %s", json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def log_social_exception(
+    run_id: str,
+    phase: str,
+    exc: BaseException,
+    *,
+    task_id: int | None = None,
+    agent: str = "",
+) -> None:
+    LOGGER.exception(
+        "social_posting_exception runId=%s taskId=%s phase=%s agent=%s exceptionType=%s",
+        run_id,
+        task_id,
+        phase,
+        agent,
+        exc.__class__.__name__,
+    )
+
+
 def normalize_run_id(value: object | None = None) -> str:
     raw = str(value or "").strip()
     clean = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw)[:80].strip(".-")
     return clean or f"run-{uuid.uuid4().hex[:12]}"
+
+
+def user_id_from_account_id(account_id: str) -> int | None:
+    match = re.fullmatch(r"user-(\d+)", str(account_id or "").strip())
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def load_domain_modules() -> dict[str, Any] | None:
+    try:
+        from sqlalchemy import select  # type: ignore
+
+        from app.core_domain.service import ensure_default_workspace, set_task_completion_fields  # type: ignore
+        from app.db.session import SessionLocal  # type: ignore
+        from app.models import Agent, Task, Team, User  # type: ignore
+    except Exception:
+        return None
+    return {
+        "select": select,
+        "ensure_default_workspace": ensure_default_workspace,
+        "set_task_completion_fields": set_task_completion_fields,
+        "SessionLocal": SessionLocal,
+        "Agent": Agent,
+        "Task": Task,
+        "Team": Team,
+        "User": User,
+    }
+
+
+class SocialTaskBridge:
+    def __init__(self, account_id: str, session_id: str, run_id: str, message: str, team_slug: str) -> None:
+        self.account_id = account_id
+        self.session_id = session_id
+        self.run_id = run_id
+        self.message = message
+        self.team_slug = team_slug
+        self.modules = load_domain_modules()
+        self.user_id = user_id_from_account_id(account_id)
+        self.task_id: int | None = None
+        self.workspace_id: int | None = None
+        self.team_id: int | None = None
+        self.enabled = bool(self.modules and self.user_id)
+
+    def create_task(self) -> dict[str, Any] | None:
+        if not self.enabled or not self.modules or not self.user_id:
+            return None
+        SessionLocal = self.modules["SessionLocal"]
+        User = self.modules["User"]
+        Team = self.modules["Team"]
+        Task = self.modules["Task"]
+        select = self.modules["select"]
+        ensure_default_workspace = self.modules["ensure_default_workspace"]
+        with SessionLocal() as db:
+            user = db.get(User, self.user_id)
+            if not user:
+                self.enabled = False
+                return None
+            workspace = ensure_default_workspace(db, user)
+            team = db.scalar(select(Team).where(Team.workspace_id == workspace.id, Team.slug == self.team_slug))
+            task = Task(
+                workspace_id=workspace.id,
+                team_id=team.id if team else None,
+                title=social_task_title(self.message),
+                description=self.message[:10000],
+                status="queued",
+                priority="normal",
+                progress=0,
+                input_json={
+                    "source": "office",
+                    "teamId": self.team_slug,
+                    "runId": self.run_id,
+                    "sessionId": self.session_id,
+                    "accountId": self.account_id,
+                    "message": self.message,
+                    "owner": "Atlas",
+                },
+                created_by=user.id,
+            )
+            db.add(task)
+            db.commit()
+            db.refresh(task)
+            self.task_id = task.id
+            self.workspace_id = workspace.id
+            self.team_id = team.id if team else None
+            return self.payload(status=task.status, progress=task.progress)
+
+    def payload(self, *, status: str, progress: int) -> dict[str, Any]:
+        return {
+            "id": self.task_id,
+            "workspaceId": self.workspace_id,
+            "teamId": self.team_id,
+            "status": status,
+            "progress": progress,
+            "runId": self.run_id,
+        }
+
+    def update_task(
+        self,
+        status: str,
+        *,
+        progress: int | None = None,
+        result_json: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not self.enabled or not self.modules or not self.task_id:
+            return None
+        SessionLocal = self.modules["SessionLocal"]
+        Task = self.modules["Task"]
+        set_task_completion_fields = self.modules["set_task_completion_fields"]
+        with SessionLocal() as db:
+            task = db.get(Task, self.task_id)
+            if not task:
+                self.enabled = False
+                return None
+            task.status = status
+            set_task_completion_fields(task)
+            if progress is not None:
+                task.progress = max(0, min(100, progress))
+            if result_json is not None:
+                task.result_json = {**(task.result_json or {}), **result_json}
+            if error is not None:
+                task.error = error
+            db.commit()
+            return self.payload(status=task.status, progress=task.progress)
+
+    def update_agent(self, db_slug: str, status: str) -> None:
+        if not self.enabled or not self.modules or not self.workspace_id:
+            return
+        SessionLocal = self.modules["SessionLocal"]
+        Agent = self.modules["Agent"]
+        select = self.modules["select"]
+        with SessionLocal() as db:
+            agent = db.scalar(select(Agent).where(Agent.workspace_id == self.workspace_id, Agent.slug == db_slug))
+            if not agent:
+                return
+            agent.status = status
+            db.commit()
+
+
+class SocialAgentStatusTracker:
+    def __init__(self, bridge: SocialTaskBridge | None = None) -> None:
+        self.bridge = bridge
+        self.statuses: dict[str, dict[str, str]] = {}
+        self.set("coordinator", "ready", db_slug="atlas", name="Atlas")
+        for item in SOCIAL_POSTING_AGENT_CHAIN:
+            self.set(item["runtimeId"], "ready", db_slug=item["dbSlug"], name=item["name"])
+
+    def set(self, runtime_id: str, status: str, *, db_slug: str = "", name: str = "") -> dict[str, str]:
+        payload = {
+            "id": runtime_id,
+            "name": name or display_agent_name(runtime_id),
+            "status": status,
+        }
+        self.statuses[runtime_id] = payload
+        if self.bridge and db_slug:
+            self.bridge.update_agent(db_slug, db_agent_status(status))
+        return payload
+
+    def payload(self) -> list[dict[str, str]]:
+        return list(self.statuses.values())
+
+
+def db_agent_status(status: str) -> str:
+    return {
+        "ready": "ready",
+        "planning": "planning",
+        "assigned": "waiting",
+        "working": "working",
+        "waiting": "waiting",
+        "completed": "completed",
+        "failed": "failed",
+    }.get(status, "ready")
+
+
+def display_agent_name(runtime_id: str) -> str:
+    return AGENTS.get(runtime_id, {}).get("name", runtime_id)
+
+
+def social_task_title(message: str) -> str:
+    clean = re.sub(r"\s+", " ", message).strip()
+    return (clean[:72] + "...") if len(clean) > 75 else clean or "Social post"
+
+
+def is_social_posting_team_run(team_id: str, message: str) -> bool:
+    return team_id == SOCIAL_POSTING_TEAM_SLUG and wants_social_publish(message)
 
 
 def start_agent_run(
@@ -276,7 +610,9 @@ AGENTS: dict[str, dict[str, str]] = {
         "role": "Developer / Growth Engineer",
         "prompt": (
             "Ты Dex: разработчик, бизнес-аналитик и growth-инженер. "
-            "Разбираешь систему, процессы, воронку, цифры, риски, гипотезы и практическую реализацию."
+            "Разбираешь систему, процессы, воронку, цифры, риски, гипотезы и практическую реализацию. "
+            "В Social Posting Team только ты готовишь approval-only загрузку видео в YouTube через upload_youtube_video; "
+            "никогда не считай видео опубликованным до успешного ответа backend."
         ),
     },
     "nova": {
@@ -286,7 +622,8 @@ AGENTS: dict[str, dict[str, str]] = {
             "Ты Echo: оператор поддержки, ответов клиентам и community-support агент. "
             "Отвечаешь на вопросы, комментарии, входящие сообщения, негатив и FAQ, "
             "держишь тон спокойно, передаешь покупательское намерение Ava и готовишь approved-публикации "
-            "в Telegram без автопостинга."
+            "для Telegram, Instagram и YouTube. Для YouTube фиксируешь только подтвержденный video ID/URL, privacy status "
+            "или безопасную причину ошибки."
         ),
     },
 }
@@ -586,6 +923,8 @@ class AgentHandler(SimpleHTTPRequestHandler):
             session_id = str(payload.get("sessionId", "")).strip() or "local-browser"
             account_id = normalize_account_id(str(payload.get("accountId", "")).strip() or ACCOUNT_ID)
             run_id = normalize_run_id(payload.get("runId"))
+            team_id = str(payload.get("teamId", "")).strip()
+            team_name = str(payload.get("teamName", "")).strip()
             history = clean_client_history(payload.get("history", []), current_message=message)
             raw_attachments = payload.get("attachments", [])
             if not isinstance(raw_attachments, list):
@@ -614,7 +953,15 @@ class AgentHandler(SimpleHTTPRequestHandler):
             check_agent_run_cancelled(run_id)
 
             if agent_id == "all":
-                result = run_team_chat(session_id, account_id, turn_context, history, run_id=run_id)
+                result = run_team_chat(
+                    session_id,
+                    account_id,
+                    turn_context,
+                    history,
+                    run_id=run_id,
+                    team_id=team_id,
+                    team_name=team_name,
+                )
                 result["runId"] = run_id
                 self._send_json(result)
                 return
@@ -645,7 +992,19 @@ class AgentHandler(SimpleHTTPRequestHandler):
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:
-            self._send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            LOGGER.exception(
+                "agent_chat_exception runId=%s agentId=%s exceptionType=%s",
+                run_id,
+                locals().get("agent_id", ""),
+                exc.__class__.__name__,
+            )
+            self._send_json(
+                {
+                    "error": AI_BACKEND_UNAVAILABLE_MESSAGE,
+                    "code": AI_BACKEND_UNAVAILABLE_CODE,
+                },
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
         finally:
             if turn_context is not None:
                 turn_context.cleanup()
@@ -670,7 +1029,7 @@ class AgentHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             pass
 
 
@@ -879,6 +1238,12 @@ def run_direct_agent_chat(
             summary=reply,
             metadata={"sessionId": session_id, "mode": "direct"},
         )
+    pending_google_action = build_pending_google_action(
+        turn_context.message,
+        run_id=run_id,
+        source="direct",
+        agent_id=agent_id,
+    )
     return {
         "reply": reply,
         "messages": [
@@ -893,6 +1258,7 @@ def run_direct_agent_chat(
             )
         ],
         "agent": agent_payload(agent_id),
+        "pendingGoogleAction": pending_google_action,
     }
 
 
@@ -903,6 +1269,8 @@ def run_team_chat(
     history: object | None = None,
     *,
     run_id: str,
+    team_id: str = "",
+    team_name: str = "",
 ) -> dict[str, Any]:
     check_agent_run_cancelled(run_id)
     pending_key = f"{account_id}:{session_id}"
@@ -914,6 +1282,23 @@ def run_team_chat(
             f"Исходная задача:\n{pending.get('message', '')}\n\n"
             f"Уточнение пользователя:\n{turn_context.message}"
         )
+    if is_social_posting_team_run(team_id, effective_message):
+        return run_social_posting_team_chat(
+            session_id,
+            account_id,
+            turn_context,
+            history,
+            run_id=run_id,
+            effective_message=effective_message,
+            pending=pending,
+            team_id=team_id,
+            team_name=team_name,
+        )
+    pending_google_action = build_pending_google_action(
+        effective_message,
+        run_id=run_id,
+        source="team",
+    )
     coordinator = get_memory("coordinator", account_id=account_id)
     team_history = merge_histories(
         memory_turns("coordinator", account_id=account_id, limit=8),
@@ -977,6 +1362,7 @@ def run_team_chat(
             "agent": agent_payload("all"),
             "decision": decision,
             "pendingRunId": run_id,
+            "pendingGoogleAction": pending_google_action,
         }
 
     if not assignments:
@@ -1026,6 +1412,7 @@ def run_team_chat(
             ],
             "agent": agent_payload("all"),
             "decision": decision,
+            "pendingGoogleAction": pending_google_action,
         }
 
     messages: list[dict[str, Any]] = []
@@ -1104,7 +1491,7 @@ def run_team_chat(
     check_agent_run_cancelled(run_id)
     final_reply, publish_text = split_publish_text(final_reply)
     publish_text = resolve_publish_text(effective_message, final_reply, publish_text, reports)
-    if wants_telegram_publish(effective_message) and publish_text:
+    if wants_social_publish(effective_message) and publish_text:
         final_reply = append_copyable_post_block(final_reply, publish_text)
     pending_publish = build_pending_publish(
         effective_message,
@@ -1145,7 +1532,494 @@ def run_team_chat(
         "agent": agent_payload("all"),
         "decision": decision,
         "pendingPublish": pending_publish,
+        "pendingGoogleAction": pending_google_action,
     }
+
+
+def run_social_posting_team_chat(
+    session_id: str,
+    account_id: str,
+    turn_context: TurnContext,
+    history: object | None,
+    *,
+    run_id: str,
+    effective_message: str,
+    pending: dict[str, Any] | None,
+    team_id: str,
+    team_name: str,
+) -> dict[str, Any]:
+    total_start = time.perf_counter()
+    timings: dict[str, float] = {}
+    current_phase = "task_creation"
+    current_agent = "Atlas"
+    bridge = SocialTaskBridge(account_id, session_id, run_id, effective_message, team_id)
+    phase_start = time.perf_counter()
+    task_payload = bridge.create_task()
+    timings["taskCreation"] = elapsed_seconds(phase_start)
+    log_social_phase(
+        run_id,
+        "task_creation",
+        task_id=bridge.task_id,
+        agent="Atlas",
+        elapsed=timings["taskCreation"],
+        status="created" if task_payload else "skipped",
+        extra={"bridgeEnabled": bridge.enabled},
+    )
+    statuses = SocialAgentStatusTracker(bridge if bridge.enabled else None)
+    messages: list[dict[str, Any]] = []
+    reports: list[dict[str, str]] = []
+    coordinator = get_memory("coordinator", account_id=account_id)
+    team_history = merge_histories(
+        memory_turns("coordinator", account_id=account_id, limit=8),
+        history,
+        limit=14,
+    )
+    user_message_id = coordinator.add_message(
+        role="user",
+        author="User",
+        text=effective_message,
+        event_type="social_task_user",
+        team_run_id=run_id,
+        metadata={
+            "sessionId": session_id,
+            "taskId": bridge.task_id,
+            "teamId": team_id,
+            "teamName": team_name,
+            "continuedFrom": pending.get("runId") if pending else "",
+        },
+    )
+    try:
+        current_phase = "atlas_planning"
+        current_agent = "Atlas"
+        statuses.set("coordinator", "planning", db_slug="atlas", name="Atlas")
+        task_payload = bridge.update_task("planning", progress=10) or task_payload
+        phase_start = time.perf_counter()
+        decision = safe_social_coordinator_decision(
+            turn_context,
+            run_id,
+            account_id=account_id,
+            effective_message=effective_message,
+            history=team_history,
+        )
+        timings["atlasPlanning"] = elapsed_seconds(phase_start)
+        log_social_phase(
+            run_id,
+            "atlas_planning",
+            task_id=bridge.task_id,
+            agent="Atlas",
+            elapsed=timings["atlasPlanning"],
+        )
+        check_agent_run_cancelled(run_id)
+        assignments = social_posting_assignments(decision, effective_message)
+        task_payload = bridge.update_task(
+            "assigned",
+            progress=20,
+            result_json={"decision": decision, "assignments": assignments},
+        ) or task_payload
+        for item in SOCIAL_POSTING_AGENT_CHAIN:
+            statuses.set(item["runtimeId"], "waiting", db_slug=item["dbSlug"], name=item["name"])
+        coordinator_text = social_routing_text(decision, assignments)
+        routing_status = statuses.set("coordinator", "working", db_slug="atlas", name="Atlas")
+        messages.append(
+            agent_message(
+                "Atlas",
+                coordinator_text,
+                phase="routing",
+                audience="team",
+                from_id="coordinator",
+                to_id="team",
+                run_id=run_id,
+                agent_status=routing_status,
+                task_id=bridge.task_id,
+            )
+        )
+        coordinator.add_message(
+            role="assistant",
+            author="Atlas",
+            text=coordinator_text,
+            event_type="social_task_routing",
+            team_run_id=run_id,
+            metadata={"sessionId": session_id, "taskId": bridge.task_id, "decision": decision},
+        )
+
+        for index, assignment in enumerate(assignments):
+            check_agent_run_cancelled(run_id)
+            runtime_id = assignment["agentId"]
+            current_phase = f"agent_{runtime_id}"
+            current_agent = assignment.get("displayName", display_agent_name(runtime_id))
+            working_status = statuses.set(
+                runtime_id,
+                "working",
+                db_slug=assignment.get("dbSlug", ""),
+                name=assignment.get("displayName", display_agent_name(runtime_id)),
+            )
+            task_payload = bridge.update_task("in_progress", progress=min(85, 28 + index * 14)) or task_payload
+            contextual_assignment = {
+                **assignment,
+                "task": build_social_assignment_task(assignment, effective_message, reports),
+            }
+            phase_start = time.perf_counter()
+            item = run_social_assignment_report_safe(
+                contextual_assignment,
+                effective_message,
+                turn_context,
+                run_id,
+                session_id,
+                account_id,
+                history,
+            )
+            timings[runtime_id] = elapsed_seconds(phase_start)
+            log_social_phase(
+                run_id,
+                current_phase,
+                task_id=bridge.task_id,
+                agent=current_agent,
+                elapsed=timings[runtime_id],
+            )
+            report = item["report"]
+            report["agent"] = assignment.get("displayName", report.get("agent", "Agent"))
+            reports.append(report)
+            completed_status = statuses.set(
+                runtime_id,
+                "completed",
+                db_slug=assignment.get("dbSlug", ""),
+                name=assignment.get("displayName", display_agent_name(runtime_id)),
+            )
+            message = item["message"]
+            message["author"] = assignment.get("displayName", message.get("author", "Agent"))
+            message["agentStatus"] = completed_status
+            message["taskId"] = bridge.task_id
+            messages.append(message)
+
+        current_phase = "atlas_final"
+        current_agent = "Atlas"
+        phase_start = time.perf_counter()
+        final_reply = run_social_final_reply_safe(
+            effective_message,
+            team_history,
+            decision,
+            reports,
+            turn_context,
+            account_id,
+            run_id,
+        )
+        timings["atlasFinal"] = elapsed_seconds(phase_start)
+        log_social_phase(
+            run_id,
+            "atlas_final",
+            task_id=bridge.task_id,
+            agent="Atlas",
+            elapsed=timings["atlasFinal"],
+        )
+        check_agent_run_cancelled(run_id)
+        final_reply, publish_text = split_publish_text(final_reply)
+        publish_text = resolve_publish_text(effective_message, final_reply, publish_text, reports)
+        if publish_text:
+            final_reply = append_copyable_post_block(final_reply, publish_text)
+        pending_publish = build_pending_publish(
+            effective_message,
+            final_reply,
+            publish_text,
+            run_id=run_id,
+            force_auto_publish=True,
+            task_id=bridge.task_id,
+        )
+        task_payload = bridge.update_task(
+            "in_progress" if pending_publish else "completed",
+            progress=90 if pending_publish else 100,
+            result_json={
+                "finalReply": final_reply,
+                "publishText": publish_text,
+                "reports": reports,
+                "pendingPublish": pending_publish,
+            },
+        ) or task_payload
+        final_status = statuses.set("coordinator", "completed", db_slug="atlas", name="Atlas")
+        timings["total"] = elapsed_seconds(total_start)
+        log_social_phase(
+            run_id,
+            "total",
+            task_id=bridge.task_id,
+            agent="Atlas",
+            elapsed=timings["total"],
+            status="completed",
+        )
+        coordinator_final_id = coordinator.add_message(
+            role="assistant",
+            author="Atlas",
+            text=final_reply,
+            event_type="social_task_final",
+            team_run_id=run_id,
+            metadata={"sessionId": session_id, "taskId": bridge.task_id, "runId": run_id},
+        )
+        auto_remember_if_useful(
+            coordinator,
+            text=f"User: {effective_message}\nFinal: {final_reply}",
+            title="Social Posting Team final",
+            source_message_id=coordinator_final_id or user_message_id,
+            event_type="social_task_final",
+            metadata={"sessionId": session_id, "runId": run_id, "taskId": bridge.task_id},
+        )
+        messages.append(
+            agent_message(
+                "Atlas",
+                final_reply,
+                phase="final",
+                audience="user",
+                from_id="coordinator",
+                is_final=True,
+                run_id=run_id,
+                agent_status=final_status,
+                task_id=bridge.task_id,
+            )
+        )
+        return {
+            "reply": final_reply,
+            "messages": messages,
+            "agent": agent_payload("all"),
+            "decision": decision,
+            "pendingPublish": pending_publish,
+            "task": task_payload,
+            "agentStatuses": statuses.payload(),
+            "timings": timings,
+        }
+    except Exception as exc:
+        log_social_exception(run_id, current_phase, exc, task_id=bridge.task_id, agent=current_agent)
+        for item in SOCIAL_POSTING_AGENT_CHAIN:
+            current = statuses.statuses.get(item["runtimeId"], {})
+            if current.get("status") == "working":
+                statuses.set(item["runtimeId"], "failed", db_slug=item["dbSlug"], name=item["name"])
+        statuses.set("coordinator", "failed", db_slug="atlas", name="Atlas")
+        bridge.update_task(
+            "failed",
+            progress=0,
+            error=AI_BACKEND_UNAVAILABLE_MESSAGE,
+            result_json={"runId": run_id},
+        )
+        timings["total"] = elapsed_seconds(total_start)
+        log_social_phase(
+            run_id,
+            "total",
+            task_id=bridge.task_id,
+            agent=current_agent,
+            elapsed=timings["total"],
+            status="failed",
+        )
+        raise
+
+
+def social_posting_assignments(decision: dict[str, Any], message: str) -> list[dict[str, str]]:
+    raw_assignments = normalize_assignments(decision.get("assignments"))
+    raw_summary = "\n".join(f"{item['agentId']}: {item['task']}" for item in raw_assignments)
+    platform_guidance = social_posting_platform_guidance(message)
+    assignments: list[dict[str, str]] = []
+    for item in SOCIAL_POSTING_AGENT_CHAIN:
+        assignments.append(
+            {
+                "agentId": item["runtimeId"],
+                "dbSlug": item["dbSlug"],
+                "displayName": item["name"],
+                "role": item["role"],
+                "task": (
+                    f"Role: {item['name']} / {item['role']}.\n"
+                    f"{item['task']}\n"
+                    f"Platform rules:\n{platform_guidance}\n"
+                    f"Atlas planning context:\n{raw_summary or 'Atlas selected the Social Posting Team pipeline.'}\n"
+                    f"Original user request:\n{message}"
+                ),
+            }
+        )
+    return assignments
+
+
+def social_routing_text(decision: dict[str, Any], assignments: list[dict[str, str]]) -> str:
+    coordinator_note = str(decision.get("coordinatorMessage") or decision.get("summary") or "").strip()
+    lines = [coordinator_note or "Atlas planned the Social Posting Team route."]
+    lines.extend(f"{item['displayName']}: {item['role']}" for item in assignments)
+    return "\n".join(lines)
+
+
+def build_social_assignment_task(
+    assignment: dict[str, str],
+    effective_message: str,
+    previous_reports: list[dict[str, str]],
+) -> str:
+    previous = "\n\n".join(
+        f"{report.get('agent', 'Agent')} report:\n{report.get('text', '')}"
+        for report in previous_reports
+        if str(report.get("text", "")).strip()
+    )
+    if not previous:
+        previous = "No previous agent output yet."
+    return (
+        f"{assignment['task']}\n\n"
+        "Use previous agent output as context. Do not redo another agent's role unless needed for coherence.\n\n"
+        f"Previous outputs:\n{previous}\n\n"
+        f"User request:\n{effective_message}"
+    )
+
+
+def safe_social_coordinator_decision(
+    turn_context: TurnContext,
+    run_id: str,
+    *,
+    account_id: str,
+    effective_message: str,
+    history: object | None = None,
+) -> dict[str, Any]:
+    try:
+        return coordinator_decision(
+            turn_context,
+            run_id,
+            account_id=account_id,
+            effective_message=effective_message,
+            history=history,
+        )
+    except AgentRunCancelled:
+        raise
+    except RuntimeError:
+        decision = keyword_decision(effective_message)
+        decision.update(
+            {
+                "action": "delegate",
+                "coordinatorMessage": "Atlas selected the Social Posting Team route.",
+                "needsUserInput": False,
+                "userQuestions": [],
+                "runId": run_id,
+                "providerFallback": True,
+                "providerError": AI_BACKEND_UNAVAILABLE_MESSAGE,
+            }
+        )
+        return decision
+
+
+def run_social_assignment_report_safe(
+    assignment: dict[str, str],
+    effective_message: str,
+    turn_context: TurnContext,
+    run_id: str,
+    session_id: str,
+    account_id: str,
+    history: object | None = None,
+) -> dict[str, Any]:
+    try:
+        return run_single_assignment_report(
+            assignment,
+            effective_message,
+            turn_context,
+            run_id,
+            session_id,
+            account_id,
+            history,
+        )
+    except AgentRunCancelled:
+        raise
+    except RuntimeError:
+        return fallback_social_assignment_report(assignment, effective_message, run_id)
+
+
+def run_social_final_reply_safe(
+    effective_message: str,
+    team_history: object,
+    decision: dict[str, Any],
+    reports: list[dict[str, str]],
+    turn_context: TurnContext,
+    account_id: str,
+    run_id: str,
+) -> str:
+    coordinator = get_memory("coordinator", account_id=account_id)
+    try:
+        return run_ai(
+            build_coordinator_final_prompt(
+                effective_message,
+                team_history,
+                decision,
+                reports,
+                memory_context=coordinator.context_for_prompt(effective_message),
+                tool_context=turn_context.tool_context,
+                crm_context=get_crm(account_id=account_id).context_for_query(effective_message),
+                language_source=turn_context.message,
+            ),
+            agent_id="coordinator",
+            image_paths=turn_context.image_paths,
+            search_enabled=False,
+            run_id=run_id,
+        )
+    except AgentRunCancelled:
+        raise
+    except RuntimeError:
+        return fallback_social_final_reply(effective_message, reports)
+
+
+def fallback_social_assignment_report(
+    assignment: dict[str, str],
+    effective_message: str,
+    run_id: str,
+) -> dict[str, Any]:
+    runtime_id = assignment.get("agentId", "")
+    name = assignment.get("displayName") or display_agent_name(runtime_id)
+    publish_text = fallback_social_publish_text(effective_message)
+    target = publish_platform_summary(effective_message)
+    if runtime_id == "scout":
+        report = (
+            "Scout report: use a personal travel angle, keep the hook short, "
+            "and avoid claims that need live research."
+        )
+    elif runtime_id == "mika":
+        report = f"Mira report: publish-ready {target} copy:\n{publish_text}"
+    elif runtime_id == "dev":
+        report = f"Dex report: {target} publishing handoff is ready."
+    elif runtime_id == "nova":
+        report = "Echo report: copy is clear, concise, and ready for final approval/publish."
+    else:
+        report = f"{name} report: fallback output prepared."
+    return {
+        "report": {
+            "agentId": runtime_id,
+            "agent": name,
+            "text": report,
+            "providerError": AI_BACKEND_UNAVAILABLE_MESSAGE,
+            "providerFallback": True,
+        },
+        "message": agent_message(
+            name,
+            report,
+            phase="internal",
+            audience="team",
+            from_id=runtime_id,
+            to_id="coordinator",
+            run_id=run_id,
+        ),
+    }
+
+
+def fallback_social_publish_text(message: str) -> str:
+    clean = re.sub(r"\s+", " ", message).strip()
+    first_sentence = re.split(r"[.!?]\s+", clean, maxsplit=1)[0].strip(" .!?")
+    lowered = clean.lower()
+    if "\u043a\u0438\u0442\u0430\u0439" in lowered or "china" in lowered:
+        topic = "\u042f \u043b\u0435\u0447\u0443 \u0432 \u041a\u0438\u0442\u0430\u0439"
+    elif first_sentence and len(first_sentence) <= 140:
+        topic = first_sentence
+    else:
+        topic = "\u041d\u043e\u0432\u044b\u0439 \u044d\u0442\u0430\u043f, \u043d\u043e\u0432\u044b\u0439 \u043c\u0430\u0440\u0448\u0440\u0443\u0442"
+    return (
+        f"{topic}.\n\n"
+        "\u0412\u043f\u0435\u0440\u0435\u0434\u0438 \u043d\u043e\u0432\u044b\u0435 \u043c\u0435\u0441\u0442\u0430, "
+        "\u0432\u0441\u0442\u0440\u0435\u0447\u0438, \u0438\u0434\u0435\u0438 \u0438 \u043d\u0430\u0431\u043b\u044e\u0434\u0435\u043d\u0438\u044f. "
+        "\u0411\u0443\u0434\u0443 \u0434\u0435\u043b\u0438\u0442\u044c\u0441\u044f \u0441\u0430\u043c\u044b\u043c "
+        "\u0438\u043d\u0442\u0435\u0440\u0435\u0441\u043d\u044b\u043c \u043f\u043e \u0434\u043e\u0440\u043e\u0433\u0435.\n\n"
+        "\u0421\u043b\u0435\u0434\u0438\u0442\u0435 \u0437\u0430 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f\u043c\u0438."
+    )
+
+
+def fallback_social_final_reply(message: str, reports: list[dict[str, str]]) -> str:
+    publish_text = fallback_social_publish_text(message)
+    target = publish_platform_summary(message)
+    return (
+        f"\u0413\u043e\u0442\u043e\u0432\u043e. Social Posting Team \u043f\u043e\u0434\u0433\u043e\u0442\u043e\u0432\u0438\u043b \u043c\u0430\u0442\u0435\u0440\u0438\u0430\u043b \u0434\u043b\u044f {target}.\n\n"
+        f"<PUBLISH_TEXT>{publish_text}</PUBLISH_TEXT>"
+    )
 
 
 def coordinator_decision(
@@ -1217,7 +2091,7 @@ def build_coordinator_decision_prompt(
         "- Для контента, постов, Reels, сценариев, рынка, конкурентов, аудитории, хуков и тем подключай Scout.",
         "- Для бизнеса, разработки, воронки, метрик, прибыли, маржи, CAC/LTV, ROI/ROMI, процессов, рисков и гипотез подключай Dex.",
         "- Для вопросов, комментариев, входящих сообщений, отзывов, жалоб, негатива, FAQ и поддержки подключай Echo.",
-        "- Если пользователь просит опубликовать, выложить или подготовить social post для Telegram, Instagram или канала, подключай Scout + Echo.",
+        "- Если пользователь просит опубликовать, выложить или подготовить social post для Telegram, Instagram или YouTube, подключай Scout + Echo; для YouTube обязательно подключай Dex для approval-only загрузки видео.",
         "- Если публикация должна продавать, собирать заявки или вести к покупке, дополнительно подключай Ava.",
         "- Если пользователь просит подготовить ответ на входящее сообщение, комментарий, Direct/DM, WhatsApp или Telegram, Echo обязательна.",
         "- Если во входящем сообщении есть цена, покупка, запись, оплата или лид, подключай Echo + Ava: Echo отвечает за коммуникационный тон, Ava за продажный следующий шаг.",
@@ -1291,7 +2165,8 @@ def build_agent_report_prompt(
         "Не пиши шаблонное 'беру задачу'. Сразу дай полезный результат.",
         "Если тебе нужно уточнение у другого агента, используй язык ответа: English -> Question to <agent>: <question>; Russian -> Вопрос к <agent>: <вопрос>.",
         "Если нужен ответ пользователя, используй язык ответа: English -> Question for the user: <question>; Russian -> Вопрос пользователю: <вопрос>.",
-        "Если твоя задача связана с social-публикацией для Telegram или Instagram, подготовь publish-ready материал, но не пиши будто публикация уже отправлена.",
+        "Если твоя задача связана с social-публикацией для Telegram, Instagram или YouTube, подготовь publish-ready материал, но не пиши будто публикация уже отправлена.",
+        "Для YouTube нужны public HTTPS URL видео, title до 100 символов, description до 5 000 символов, privacy private по умолчанию и отдельное явное подтверждение пользователя.",
     ]
     append_context_blocks(lines, memory_context=memory_context, tool_context=tool_context, crm_context=crm_context)
     lines.extend(["", agent_tool_prompt(agent_id)])
@@ -1345,10 +2220,11 @@ def build_coordinator_final_prompt(
             "Если агент задал важный вопрос и без ответа нельзя продолжить, задай пользователю четкие вопросы.",
             "Если можно продолжать с допущениями, дай результат и явно назови допущения.",
             "Финал не должен быть склейкой отчетов. Убери повторы, воду и слабые формулировки.",
-            "Если задача просит Telegram/Instagram-публикацию или постинг, не утверждай что пост уже опубликован.",
+            "Если задача просит Telegram/Instagram/YouTube-публикацию или постинг, не утверждай что материал уже опубликован.",
             "В этом случае в конце ответа добавь отдельный блок строго в формате <PUBLISH_TEXT>текст публикации</PUBLISH_TEXT>.",
             "Внутри <PUBLISH_TEXT> должен быть только готовый caption/post text без служебных комментариев.",
             "Если пользователь приложил фото или дал прямую ссылку на фото/видео, внутри <PUBLISH_TEXT> нужен короткий caption: 1-3 компактных абзаца и один понятный CTA.",
+            "Для YouTube первая строка <PUBLISH_TEXT> должна быть сильным title до 100 символов, а остальной текст — готовым description до 5 000 символов. Напомни, что загрузка выполняется отдельно, только после approval, с private visibility по умолчанию.",
             "Текст внутри <PUBLISH_TEXT> должен быть готовым social post: сильный хук, живой тон, короткие абзацы, конкретика, при необходимости bullets, CTA в конце.",
             "Не пиши внутри готового поста служебные слова вроде: Atlas, Echo, вводные, допущение, отчет, универсальный пост, подготовил.",
             "Если нет цены, модели, контакта или города, используй аккуратные плейсхолдеры: [цена], [модель], [контакт], [город].",
@@ -1492,8 +2368,10 @@ def agent_message(
     to_id: str = "",
     is_final: bool = False,
     run_id: str = "",
+    agent_status: dict[str, str] | None = None,
+    task_id: int | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "author": author,
         "text": text,
         "type": "agent",
@@ -1504,6 +2382,11 @@ def agent_message(
         "isFinal": is_final,
         "runId": run_id,
     }
+    if agent_status:
+        payload["agentStatus"] = agent_status
+    if task_id:
+        payload["taskId"] = task_id
+    return payload
 
 
 def agent_payload(agent_id: str) -> dict[str, Any]:
@@ -2067,19 +2950,121 @@ def wants_web_search(agent_id: str, *texts: str) -> bool:
     return any(trigger in value for trigger in WEB_SEARCH_TRIGGERS)
 
 
-def wants_telegram_publish(text: str) -> bool:
+def wants_social_publish(text: str) -> bool:
     lowered = text.lower()
-    return any(trigger in lowered for trigger in PUBLISH_TRIGGERS)
+    return any(
+        trigger in lowered
+        for trigger in (
+            *PUBLISH_TRIGGERS,
+            *PUBLISH_TRIGGERS_UNICODE,
+            *YOUTUBE_TRIGGERS,
+            *YOUTUBE_TRIGGERS_UNICODE,
+        )
+    )
+
+
+def wants_telegram_publish(text: str) -> bool:
+    """Backward-compatible name for the legacy Office publish trigger."""
+
+    return wants_social_publish(text)
+
+
+def explicit_publish_platforms(text: str) -> list[str]:
+    lowered = text.lower()
+    platforms: list[str] = []
+    if any(word in lowered for word in TELEGRAM_TRIGGERS_UNICODE):
+        platforms.append("telegram")
+    if any(word in lowered for word in INSTAGRAM_TRIGGERS_UNICODE):
+        platforms.append("instagram")
+    if "telegram" in lowered or re.search(r"(?:^|\W)tg(?:$|\W)", lowered):
+        platforms.append("telegram")
+    if any(word in lowered for word in ("instagram", "insta")):
+        platforms.append("instagram")
+    if any(word in lowered for word in (*YOUTUBE_TRIGGERS, *YOUTUBE_TRIGGERS_UNICODE)):
+        platforms.append("youtube")
+    return list(dict.fromkeys(platforms))
 
 
 def publish_platforms(text: str) -> list[str]:
+    return explicit_publish_platforms(text) or ["telegram"]
+
+
+def resolved_publish_platforms(user_message: str, final_reply: str = "") -> list[str]:
+    """Prefer the user's channel, then the current agent conclusion, before the legacy Telegram default."""
+
+    requested = explicit_publish_platforms(user_message)
+    if requested:
+        return requested
+    inferred = explicit_publish_platforms(final_reply)
+    return inferred or ["telegram"]
+
+
+def publish_platform_summary(text: str) -> str:
+    labels = {
+        "telegram": "Telegram post",
+        "instagram": "Instagram post",
+        "youtube": "YouTube video",
+    }
+    return " + ".join(labels[platform] for platform in publish_platforms(text))
+
+
+def social_posting_platform_guidance(text: str) -> str:
+    platforms = publish_platforms(text)
+    labels = {"telegram": "Telegram", "instagram": "Instagram", "youtube": "YouTube"}
+    lines = [
+        f"Detected target: {' + '.join(labels[platform] for platform in platforms)}.",
+        "Never claim a publish succeeded until the backend returns a confirmed external result.",
+    ]
+    if "youtube" in platforms:
+        lines.extend(
+            [
+                "YouTube publishing means uploading a video, not creating a text-only Community post.",
+                "Require a connected YouTube channel and a direct public HTTPS video URL.",
+                "Never tell the user that a text-only YouTube Community post can be sent automatically: the public YouTube Data API does not support that action.",
+                "Without a video URL, prepare copy for manual use in YouTube Studio and do not redirect or fall back to Telegram.",
+                "Mira prepares a title of at most 100 characters and a description of at most 5,000 characters.",
+                "Dex uses upload_youtube_video only after explicit user approval; visibility defaults to private unless the user explicitly chooses unlisted or public.",
+                "Echo reports the confirmed video URL/privacy or an actionable safe error.",
+            ]
+        )
+    if "youtube" in platforms and len(platforms) > 1:
+        lines.append(
+            "YouTube must be a separate approved action from Telegram/Instagram; tell the user which other platforms need a separate publish action."
+        )
+    return "\n".join(lines)
+
+
+def youtube_privacy_status(text: str) -> str:
     lowered = text.lower()
-    platforms: list[str] = []
-    if any(word in lowered for word in ("telegram", "tg", "телеграм", "тг", "канал")):
-        platforms.append("telegram")
-    if any(word in lowered for word in ("instagram", "insta", "инстаграм")):
-        platforms.append("instagram")
-    return platforms or ["telegram"]
+    wants_unlisted = "unlisted" in lowered or "\u043f\u043e \u0441\u0441\u044b\u043b\u043a\u0435" in lowered
+    if wants_unlisted:
+        return "unlisted"
+    english_public = re.search(
+        r"\b(?:privacy\s*[:=-]?\s*public|make (?:it )?public|publish publicly)\b",
+        lowered,
+    )
+    if english_public:
+        return "public"
+    if re.search(
+        r"\u0441\u0434\u0435\u043b\u0430\u0439(?:\u0442\u0435)?\s+\u043f\u0443\u0431\u043b\u0438\u0447\u043d|"
+        r"\u043f\u0440\u0438\u0432\u0430\u0442\u043d\u043e\u0441\u0442\u044c\s*[:=-]?\s*\u043f\u0443\u0431\u043b\u0438\u0447",
+        lowered,
+    ):
+        return "public"
+    return "private"
+
+
+def youtube_publish_title(user_message: str, publish_text: str) -> str:
+    for candidate in (publish_text, user_message):
+        first_line = next(
+            (line.strip() for line in candidate.splitlines() if line.strip()),
+            "",
+        )
+        first_line = DIRECT_MEDIA_URL_RE.sub("", first_line)
+        first_line = re.sub(r"\s+", " ", first_line).strip(" -:|#")
+        if first_line:
+            return first_line[:100]
+    return "New video"
 
 
 def extract_publish_media_url(text: str) -> str:
@@ -2107,7 +3092,7 @@ def resolve_publish_text(
         return explicit_user_text
     if tagged_publish_text.strip():
         return sanitize_publish_text(tagged_publish_text, allow_short=True)
-    if not wants_telegram_publish(user_message):
+    if not wants_social_publish(user_message):
         return ""
     final_candidate = extract_publish_text_from_text(final_reply, allow_short=True)
     if final_candidate:
@@ -2225,6 +3210,212 @@ def append_copyable_post_block(display_text: str, publish_text: str) -> str:
     return f"{display}\n\n{heading}\n{post}"
 
 
+GOOGLE_WRITE_ACTION_TOOLS = frozenset(
+    {
+        "create_gmail_draft",
+        "send_gmail",
+        "create_calendar_event",
+        "append_google_sheet_row",
+        "update_google_sheet_row",
+    }
+)
+
+
+def _google_has_any(value: str, phrases: tuple[str, ...]) -> bool:
+    return any(phrase in value for phrase in phrases)
+
+
+def _google_email_query(message: str) -> str:
+    match = re.search(
+        r"(?:search|find|look\s+for|show|check)\s+(?:my\s+)?(?:gmail|e-?mail|inbox)\s*(?:for|about|from|with)?\s*(.+)$",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).strip(" .,:;-")[:1000]
+    match = re.search(r"(?:\u043d\u0430\u0439\u0434\u0438|\u043f\u043e\u0438\u0441\u043a)\S*\s+(.+)$", message, flags=re.IGNORECASE)
+    return match.group(1).strip(" .,:;-")[:1000] if match else ""
+
+
+def _google_spreadsheet_id(message: str) -> str:
+    match = GOOGLE_SHEET_URL_RE.search(message)
+    if match:
+        return match.group(1)[:200]
+    match = re.search(r"(?:spreadsheet[_\s-]*id|sheet[_\s-]*id)\s*[:=]\s*([A-Za-z0-9_-]{1,200})", message, flags=re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _google_sheet_range(message: str) -> str:
+    match = re.search(r"(?:range|\u0434\u0438\u0430\u043f\u0430\u0437\u043e\u043d)\s*[:=]\s*([^\n,;]{1,500})", message, flags=re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+def _google_calendar_times(message: str) -> tuple[str, str]:
+    values = GOOGLE_RFC3339_RE.findall(message)
+    if len(values) >= 2:
+        return values[0], values[1]
+    return "", ""
+
+
+def _google_email_body(message: str) -> str:
+    match = re.search(r"[\"']([^\"']{1,20_000})[\"']", message, flags=re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+
+def _google_subject(message: str) -> str:
+    match = re.search(r"(?:subject|\u0442\u0435\u043c\u0430)\s*[:=]\s*([^\n]{1,255})", message, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"\babout\s+([^\n.]{1,255})", message, flags=re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+def _pending_google_action(
+    tool: str,
+    *,
+    arguments: dict[str, Any],
+    run_id: str,
+    source: str,
+    agent_id: str,
+    title: str,
+    detail: str,
+) -> dict[str, Any]:
+    return {
+        "tool": tool,
+        "arguments": arguments,
+        "requiresApproval": tool in GOOGLE_WRITE_ACTION_TOOLS,
+        "runId": run_id,
+        "source": source[:80],
+        "agent": agent_id,
+        "title": title,
+        "detail": detail,
+        "status": "approval_required" if tool in GOOGLE_WRITE_ACTION_TOOLS else "ready",
+    }
+
+
+def build_pending_google_action(
+    message: str,
+    *,
+    run_id: str,
+    source: str = "office",
+    agent_id: str = "mika",
+) -> dict[str, Any] | None:
+    """Turn an explicit Office request into a browser-executed Google action card.
+
+    The agent server never receives a user's OAuth token. It only creates safe, editable
+    intent data; the authenticated Office client makes the action request after the user
+    presses the card button.
+    """
+
+    lowered = message.casefold()
+    gmail_context = _google_has_any(
+        lowered,
+        ("gmail", "e-mail", "email", "inbox", "\u043f\u043e\u0447\u0442", "\u043f\u0438\u0441\u044c\u043c"),
+    )
+    calendar_context = _google_has_any(
+        lowered,
+        ("google calendar", "calendar", "calender", "\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440", "\u0432\u0441\u0442\u0440\u0435\u0447"),
+    )
+    sheets_context = bool(GOOGLE_SHEET_URL_RE.search(message)) or _google_has_any(
+        lowered,
+        ("google sheets", "spreadsheet", "sheets", "sheet", "\u0442\u0430\u0431\u043b\u0438\u0446"),
+    )
+
+    send_words = ("send", "\u043e\u0442\u043f\u0440\u0430\u0432", "\u043f\u043e\u0448\u043b\u0438")
+    draft_words = ("draft", "compose", "\u0447\u0435\u0440\u043d\u043e\u0432", "\u043d\u0430\u043f\u0438\u0448")
+    read_words = ("search", "find", "look for", "show", "check", "list", "read", "\u043d\u0430\u0439\u0434", "\u043f\u043e\u0438\u0441\u043a", "\u043f\u043e\u043a\u0430\u0436", "\u043f\u0440\u043e\u0447\u0438\u0442")
+    create_words = ("create", "add", "book", "schedule", "\u0441\u043e\u0437\u0434\u0430", "\u0434\u043e\u0431\u0430\u0432", "\u043d\u0430\u0437\u043d\u0430\u0447")
+    append_words = ("append", "add row", "insert row", "\u0434\u043e\u0431\u0430\u0432\u044c \u0441\u0442\u0440\u043e\u043a", "\u0434\u043e\u0431\u0430\u0432\u044c \u0440\u044f\u0434")
+
+    if gmail_context:
+        recipients = GOOGLE_EMAIL_ADDRESS_RE.findall(message)
+        email_arguments = {
+            "to": recipients[:50],
+            "subject": _google_subject(message),
+            "body": _google_email_body(message),
+        }
+        if _google_has_any(lowered, send_words):
+            return _pending_google_action(
+                "send_gmail",
+                arguments=email_arguments,
+                run_id=run_id,
+                source=source,
+                agent_id=agent_id,
+                title="Send Gmail message",
+                detail="Review the recipient, subject, and body before sending.",
+            )
+        if _google_has_any(lowered, draft_words):
+            return _pending_google_action(
+                "create_gmail_draft",
+                arguments=email_arguments,
+                run_id=run_id,
+                source=source,
+                agent_id=agent_id,
+                title="Create Gmail draft",
+                detail="Review the message before creating the draft in Gmail.",
+            )
+        if _google_has_any(lowered, read_words):
+            return _pending_google_action(
+                "search_gmail",
+                arguments={"query": _google_email_query(message)},
+                run_id=run_id,
+                source=source,
+                agent_id=agent_id,
+                title="Search Gmail",
+                detail="Run this read-only Gmail search using the connected account.",
+            )
+
+    if calendar_context:
+        start, end = _google_calendar_times(message)
+        if _google_has_any(lowered, create_words):
+            return _pending_google_action(
+                "create_calendar_event",
+                arguments={"summary": _google_subject(message), "start": start, "end": end},
+                run_id=run_id,
+                source=source,
+                agent_id=agent_id,
+                title="Create calendar event",
+                detail="Confirm the event details before it is added to Google Calendar.",
+            )
+        if _google_has_any(lowered, read_words):
+            arguments: dict[str, Any] = {}
+            if start and end:
+                arguments.update({"timeMin": start, "timeMax": end})
+            return _pending_google_action(
+                "list_calendar_events",
+                arguments=arguments,
+                run_id=run_id,
+                source=source,
+                agent_id=agent_id,
+                title="View calendar events",
+                detail="Read upcoming events from the connected Google Calendar.",
+            )
+
+    if sheets_context:
+        sheet_arguments = {"spreadsheetId": _google_spreadsheet_id(message), "range": _google_sheet_range(message)}
+        if _google_has_any(lowered, append_words):
+            return _pending_google_action(
+                "append_google_sheet_row",
+                arguments={**sheet_arguments, "valuesText": ""},
+                run_id=run_id,
+                source=source,
+                agent_id="dev",
+                title="Append Google Sheets row",
+                detail="Confirm the sheet, range, and row values before appending data.",
+            )
+        if _google_has_any(lowered, read_words):
+            return _pending_google_action(
+                "read_google_sheet",
+                arguments=sheet_arguments,
+                run_id=run_id,
+                source=source,
+                agent_id="dev",
+                title="Read Google Sheet",
+                detail="Read the selected Google Sheet range using the connected account.",
+            )
+    return None
+
+
 def build_pending_publish(
     user_message: str,
     final_reply: str,
@@ -2232,32 +3423,80 @@ def build_pending_publish(
     *,
     run_id: str,
     media_url: str = "",
+    force_auto_publish: bool = False,
+    task_id: int | None = None,
 ) -> dict[str, Any] | None:
-    if not wants_telegram_publish(user_message):
+    if not wants_social_publish(user_message):
         return None
     text = (publish_text or extract_requested_publish_text(user_message)).strip()
     if not text:
         return None
-    platforms = publish_platforms(user_message)
-    auto_publish = os.environ.get("TELEGRAM_AUTO_PUBLISH", "false").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    } and "instagram" not in platforms
+    platforms = resolved_publish_platforms(user_message, final_reply)
+    is_youtube_publish = "youtube" in platforms
+    # The YouTube tool is an approval-only, single-target action. Do not let a
+    # mixed request fall through to the legacy multi-platform social publisher.
+    separate_platforms: list[str] = []
+    if is_youtube_publish:
+        separate_platforms = [platform for platform in platforms if platform != "youtube"]
+        platforms = ["youtube"]
+    env_auto_publish = (
+        os.environ.get("TELEGRAM_AUTO_PUBLISH", "false").strip().lower()
+        not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+    )
+    auto_publish = (
+        not is_youtube_publish
+        and (force_auto_publish or env_auto_publish)
+        and "instagram" not in platforms
+    )
     resolved_media_url = media_url or extract_publish_media_url(user_message)
     media_base = resolved_media_url.lower().split("?", 1)[0]
-    return {
-        "platform": "telegram",
+    pending_publish: dict[str, Any] = {
+        "platform": platforms[0] or "telegram",
         "platforms": platforms,
         "status": "auto_publish_pending" if auto_publish else "approval_required",
         "text": text[:4000],
         "mediaUrl": resolved_media_url,
-        "mediaType": "video/mp4" if media_base.endswith((".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".webm")) else "",
+        "mediaType": (
+            "video/mp4"
+            if media_base.endswith((".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"))
+            else ""
+        ),
         "runId": run_id,
+        "taskId": task_id,
         "source": "team",
         "autoPublish": auto_publish,
     }
+    if is_youtube_publish:
+        pending_publish.update(
+            {
+                "youtubeTitle": youtube_publish_title(user_message, text),
+                "youtubeDescription": text[:5000],
+                "privacyStatus": youtube_privacy_status(user_message),
+            }
+        )
+        if not resolved_media_url:
+            pending_publish["notice"] = (
+                "YouTube API cannot publish text-only Community posts automatically. "
+                "Add a public HTTPS video URL to upload a video, or copy this text into YouTube Studio manually."
+            )
+        if separate_platforms:
+            pending_publish.update(
+                {
+                    "separateActionRequired": True,
+                    "separatePlatforms": separate_platforms,
+                    "notice": (
+                        f"{pending_publish.get('notice', '')} "
+                        "YouTube uploads require a separate approval. Publish "
+                        f"{', '.join(separate_platforms)} in another action."
+                    ).strip(),
+                }
+            )
+    return pending_publish
 
 
 def run_ai(
@@ -2280,9 +3519,10 @@ def run_ai(
         return reply
     except RuntimeError as openrouter_error:
         check_agent_run_cancelled(run_id)
-        print(
-            f"OpenRouter failed for {agent_id}, falling back to Codex: {str(openrouter_error)[-300:]}",
-            flush=True,
+        LOGGER.warning(
+            "agent_openrouter_failed agentId=%s errorType=%s; using Codex fallback",
+            agent_id,
+            openrouter_error.__class__.__name__,
         )
         try:
             return run_codex(
@@ -2292,13 +3532,16 @@ def run_ai(
                 search_enabled=search_enabled,
                 run_id=run_id,
             )
+        except AgentRunCancelled:
+            raise
         except RuntimeError as codex_error:
-            openrouter_detail = str(openrouter_error)[-500:]
-            codex_detail = str(codex_error)[-500:]
-            raise RuntimeError(
-                f"AI backend не ответил. OpenRouter primary: {openrouter_detail}. "
-                f"Codex fallback: {codex_detail}"
-            ) from codex_error
+            LOGGER.error(
+                "agent_backends_unavailable agentId=%s primaryErrorType=%s fallbackErrorType=%s",
+                agent_id,
+                openrouter_error.__class__.__name__,
+                codex_error.__class__.__name__,
+            )
+            raise AgentBackendUnavailable(AI_BACKEND_UNAVAILABLE_MESSAGE) from None
 
 
 def run_openrouter(
@@ -2315,7 +3558,7 @@ def run_openrouter(
     payload: dict[str, Any] = {
         "model": AGENT_MODEL_OVERRIDES.get(agent_id, AGENT_MODEL_OVERRIDES["coordinator"]),
         "messages": [{"role": "user", "content": openrouter_content(prompt, image_paths)}],
-        "max_tokens": 8000,
+        "max_tokens": OPENROUTER_MAX_TOKENS,
     }
     effective_search_enabled = (
         AGENT_SEARCH_ENABLED.get(agent_id, False) if search_enabled is None else bool(search_enabled)
@@ -2452,7 +3695,13 @@ def _run_codex_once(
     check_agent_run_cancelled(run_id)
     with tempfile.TemporaryDirectory(prefix="n1n-agent-") as temp_dir:
         output_file = Path(temp_dir) / "reply.txt"
-        command = ["codex", "-a", "never"]
+        command = [
+            "codex",
+            "-a",
+            "never",
+            "--config",
+            f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"',
+        ]
         if search_enabled:
             command.append("--search")
         command.append("exec")
@@ -2479,6 +3728,8 @@ def _run_codex_once(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env=codex_environment(),
         )
         register_agent_process(run_id, process)
@@ -2511,6 +3762,8 @@ def _run_codex_once(
 
 def codex_environment() -> dict[str, str]:
     env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
     if hasattr(os, "getuid"):
         uid = os.getuid()
         env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
