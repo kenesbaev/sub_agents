@@ -1,16 +1,17 @@
 :root {
-  --bg: #f4f6f8;
-  --ink: #1d2433;
-  --muted: #667085;
-  --line: #d8dde7;
+  --bg: #f5f6f8;
+  --ink: #10131a;
+  --muted: #707783;
+  --line: #e1e6ee;
   --panel: #ffffff;
-  --panel-soft: #f9fafb;
+  --panel-soft: #f5f8fc;
   --brand: #4f5bd5;
-  --cyan: #0097a7;
-  --green: #13a56f;
-  --amber: #c98908;
-  --rose: #d04f6a;
-  --shadow: 0 12px 32px rgba(19, 28, 48, 0.12);
+  --brand-2: #5d6cf4;
+  --cyan: #1488e2;
+  --green: #0aa06e;
+  --amber: #f79009;
+  --rose: #ff4b55;
+  --shadow: 0 12px 32px rgba(29, 43, 64, 0.12);
   --chat-panel-width: 320px;
 }
 
@@ -78,7 +79,7 @@ button {
   height: 38px;
   border-radius: 8px;
   object-fit: contain;
-  box-shadow: 0 8px 18px rgba(79, 91, 213, 0.22);
+  box-shadow: 0 8px 18px rgba(79, 67, 233, 0.14);
 }
 
 .brand h1,
@@ -135,7 +136,7 @@ button {
 }
 
 .tool-button.primary {
-  background: var(--brand);
+  background: linear-gradient(135deg, var(--brand), var(--brand-2));
   color: white;
   border-color: var(--brand);
 }
@@ -384,7 +385,7 @@ button {
 
 .agent-row.active {
   background: #eef1ff;
-  border-color: rgba(79, 91, 213, 0.35);
+  border-color: color-mix(in srgb, var(--brand) 35%, transparent);
 }
 
 .agent-row.team-row {
@@ -396,9 +397,9 @@ button {
   place-items: center;
   width: 46px;
   height: 46px;
-  border: 1px solid color-mix(in srgb, var(--agent-color, #4f5bd5) 26%, transparent);
+  border: 1px solid color-mix(in srgb, var(--agent-color, var(--brand)) 26%, transparent);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--agent-color, #4f5bd5) 8%, #ffffff);
+  background: color-mix(in srgb, var(--agent-color, var(--brand)) 8%, #ffffff);
   overflow: hidden;
 }
 
@@ -456,17 +457,17 @@ button {
 
 .status-dot.working {
   background: var(--green);
-  box-shadow: 0 0 0 4px rgba(19, 165, 111, 0.16);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 16%, transparent);
 }
 
 .status-dot.happy {
   background: var(--amber);
-  box-shadow: 0 0 0 4px rgba(201, 137, 8, 0.16);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber) 16%, transparent);
 }
 
 .status-dot.focused {
   background: var(--cyan);
-  box-shadow: 0 0 0 4px rgba(0, 151, 167, 0.15);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--cyan) 15%, transparent);
 }
 
 .stage {
@@ -475,7 +476,7 @@ button {
   min-height: 480px;
   overflow: hidden;
   background:
-    linear-gradient(180deg, #f7f8fb 0%, #eef2f7 100%);
+    linear-gradient(180deg, #f7fbff 0%, #eef4fb 100%);
 }
 
 .chat-resize-handle {
@@ -494,7 +495,7 @@ button {
   inset: 0 auto 0 2px;
   width: 3px;
   border-radius: 999px;
-  background: #4f5bd5;
+  background: var(--brand);
   opacity: 0;
   transform: scaleY(0.72);
   transition: opacity 160ms ease, transform 160ms ease;
@@ -503,7 +504,7 @@ button {
 
 .chat-resize-handle:hover,
 .chat-resize-handle.dragging {
-  background: rgba(79, 91, 213, 0.08);
+  background: color-mix(in srgb, var(--brand) 8%, transparent);
 }
 
 .chat-resize-handle:hover::before,
@@ -535,11 +536,12 @@ body.resizing-chat {
   position: absolute;
   inset: 0;
   pointer-events: none;
+  overflow: hidden;
 }
 
 .speech-bubble {
   position: absolute;
-  max-width: 210px;
+  max-width: 184px;
   transform: translate(-50%, -100%);
   border: 1px solid rgba(31, 40, 61, 0.12);
   border-radius: 8px;
@@ -550,7 +552,8 @@ body.resizing-chat {
   font-size: 12px;
   line-height: 1.35;
   opacity: 0;
-  transition: opacity 180ms ease;
+  transition: opacity 180ms ease, transform 180ms ease;
+  will-change: left, top, transform;
 }
 
 .speech-bubble.visible {
@@ -565,6 +568,30 @@ body.resizing-chat {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.speech-bubble.full-card > span {
+  display: block;
+  color: #344054;
+  font-weight: 600;
+}
+
+.speech-bubble.compact {
+  max-width: 116px;
+  border-color: color-mix(in srgb, var(--brand) 22%, transparent);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 5px 16px rgba(31, 41, 55, 0.1);
+  padding: 3px 7px;
+}
+
+.speech-bubble.compact strong {
+  display: block;
+  margin: 0;
+  color: #475569;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
 .scene-hud {
@@ -637,7 +664,7 @@ body.resizing-chat {
 
 .chat-tab.active {
   border-color: var(--brand);
-  color: #2632e6;
+  color: var(--brand);
 }
 
 .tab-icon-chat {
@@ -720,14 +747,14 @@ body.resizing-chat {
 .chat-target select {
   width: 100%;
   height: 40px;
-  border: 1px solid #cfd5ff;
+  border: 1px solid color-mix(in srgb, var(--brand) 28%, var(--line));
   border-radius: 10px;
   background: #fff;
   color: var(--ink);
   padding: 0 12px;
   font-weight: 700;
   outline: 0;
-  box-shadow: 0 0 0 3px rgba(79, 91, 213, 0.06);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 6%, transparent);
 }
 
 .chat-messages {
@@ -790,9 +817,9 @@ body.resizing-chat {
   place-items: center;
   width: 38px;
   height: 38px;
-  border: 1px solid color-mix(in srgb, var(--agent-color, #4f5bd5) 24%, transparent);
+  border: 1px solid color-mix(in srgb, var(--agent-color, var(--brand)) 24%, transparent);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--agent-color, #4f5bd5) 8%, #ffffff);
+  background: color-mix(in srgb, var(--agent-color, var(--brand)) 8%, #ffffff);
   color: #fff;
   font-size: 11px;
   font-weight: 800;
@@ -825,7 +852,7 @@ body.resizing-chat {
 }
 
 .chat-message-head time {
-  color: #667085;
+  color: var(--muted);
   font-size: 11px;
 }
 
@@ -865,8 +892,8 @@ body.resizing-chat {
 
 .chat-message.user .chat-bubble {
   margin-left: auto;
-  border-color: #d9defd;
-  background: #eef1ff;
+  border-color: color-mix(in srgb, var(--brand) 20%, var(--line));
+  background: #f0f2ff;
   color: #344054;
 }
 
@@ -922,9 +949,9 @@ body.resizing-chat {
   gap: 8px;
   max-width: 100%;
   margin-top: 8px;
-  border: 1px solid rgba(0, 143, 138, 0.28);
+  border: 1px solid color-mix(in srgb, var(--cyan) 28%, transparent);
   border-radius: 8px;
-  background: rgba(0, 143, 138, 0.06);
+  background: color-mix(in srgb, var(--cyan) 6%, var(--panel));
   padding: 10px;
 }
 
@@ -949,7 +976,7 @@ body.resizing-chat {
   gap: 8px;
   align-items: center;
   min-width: 0;
-  border: 1px solid rgba(0, 143, 138, 0.18);
+  border: 1px solid color-mix(in srgb, var(--cyan) 18%, transparent);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.64);
   padding: 6px;
@@ -977,7 +1004,7 @@ body.resizing-chat {
 }
 
 .publish-media-field span {
-  color: #667085;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 800;
 }
@@ -985,7 +1012,7 @@ body.resizing-chat {
 .publish-media-field input {
   min-width: 0;
   height: 32px;
-  border: 1px solid rgba(0, 143, 138, 0.28);
+  border: 1px solid color-mix(in srgb, var(--cyan) 28%, transparent);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.78);
   color: var(--ink);
@@ -998,7 +1025,7 @@ body.resizing-chat {
   min-height: 30px;
   border: 0;
   border-radius: 8px;
-  background: var(--brand);
+  background: linear-gradient(135deg, var(--cyan), var(--brand-2));
   color: #fff;
   padding: 0 12px;
   font-size: 12px;
@@ -1013,6 +1040,109 @@ body.resizing-chat {
 .publish-card small {
   color: #b42318;
   font-size: 11px;
+}
+
+.publish-card .publish-notice {
+  color: #b54708;
+}
+
+.google-action-card {
+  display: grid;
+  gap: 8px;
+  max-width: 100%;
+  margin-top: 8px;
+  border: 1px solid color-mix(in srgb, var(--brand) 28%, transparent);
+  border-radius: 10px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--cyan) 8%, var(--panel)),
+    color-mix(in srgb, var(--brand-2) 6%, var(--panel))
+  );
+  padding: 10px;
+}
+
+.google-action-card strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.google-action-card p {
+  margin: 0;
+  color: #4a5d80;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.google-action-field {
+  display: grid;
+  gap: 5px;
+}
+
+.google-action-field span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.google-action-field input,
+.google-action-field textarea {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--brand) 28%, transparent);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.google-action-field input {
+  height: 32px;
+  padding-block: 0;
+}
+
+.google-action-field textarea {
+  min-height: 68px;
+  resize: vertical;
+}
+
+.google-action-card button {
+  justify-self: start;
+  min-height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--brand), var(--brand-2));
+  color: #fff;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.google-action-card button:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.google-action-card small {
+  color: #b42318;
+  font-size: 11px;
+}
+
+.google-action-result {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--brand) 16%, transparent);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.65);
+  color: #344054;
+  padding: 8px;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .chat-composer {
@@ -1108,7 +1238,7 @@ body.resizing-chat {
 }
 
 .chat-attach-button:hover {
-  background: #eef1ff;
+  background: #eceeff;
   transform: scale(1.02);
 }
 
@@ -1131,7 +1261,7 @@ body.resizing-chat {
   height: 34px;
   border: 0;
   border-radius: 999px;
-  background: var(--brand);
+  background: linear-gradient(135deg, var(--brand), var(--brand-2));
   color: #fff;
   cursor: pointer;
   font-size: 24px;

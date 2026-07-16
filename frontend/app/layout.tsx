@@ -2,12 +2,12 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Rebly AI",
-  description: "Hire a compact AI business team for Instagram and Telegram automation.",
+  title: "Teamora AI",
+  description: "Build a connected AI team for sales, marketing, support, and automation.",
   icons: {
-    icon: "/images/rebly-logo-mark.svg",
-    shortcut: "/images/rebly-logo-mark.svg",
-    apple: "/images/rebly-logo-mark.svg",
+    icon: "/images/teamora-ai-logo-mark.svg",
+    shortcut: "/images/teamora-ai-logo-mark.svg",
+    apple: "/images/teamora-ai-logo-mark.svg",
   },
 };
 

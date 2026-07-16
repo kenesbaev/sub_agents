@@ -34,8 +34,8 @@ DEFAULT_TEAM_DEFINITIONS: tuple[DefaultTeamDefinition, ...] = (
         category="Social",
         description="Team for auto-posting: prepares ideas, captions, visual briefs, and approved posts through Connected Apps.",
         agents_count=5,
-        output="Publish-ready caption + media brief + Telegram/Instagram publish status",
-        tags=("Marketing", "Instagram", "Telegram"),
+        output="Publish-ready caption/video metadata + Telegram/Instagram/YouTube publish status",
+        tags=("Marketing", "Instagram", "Telegram", "YouTube"),
         icon="Share2",
         roster=(
             DefaultAgentDefinition("atlas", "Atlas", "Coordinator", "/images/agents/coordinator.png", "#4F5BD5"),
@@ -48,11 +48,11 @@ DEFAULT_TEAM_DEFINITIONS: tuple[DefaultTeamDefinition, ...] = (
             "source": "ready",
             "frontend_source_id": "social-posting-team",
             "workflow": (
-                "Atlas accepts the task and selects Telegram, Instagram, or both.",
-                "Scout researches topic, audience, angle, and current signals.",
-                "Mira writes caption, hook, CTA, and visual brief.",
-                "Dex checks Connected Apps and publishes approved content through the backend.",
-                "Echo records publish status and errors for later review.",
+                "Atlas accepts the task and selects Telegram, Instagram, YouTube, or a supported combination.",
+                "Scout researches the topic, audience, angle, and platform-specific format.",
+                "Mira writes the caption or YouTube title and description.",
+                "Dex checks Connected Apps and publishes approved content; YouTube requires a public HTTPS video URL and separate approval.",
+                "Echo records the confirmed publish status, YouTube video URL/privacy, and safe errors for later review.",
             ),
         },
     ),
@@ -183,4 +183,3 @@ DEFAULT_TEAM_DEFINITIONS: tuple[DefaultTeamDefinition, ...] = (
         },
     ),
 )
-

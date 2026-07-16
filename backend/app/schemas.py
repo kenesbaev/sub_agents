@@ -103,6 +103,7 @@ class PublishTargetResult(BaseModel):
     platform: PublishPlatform
     ok: bool
     external_id: str | int | None = None
+    url: str | None = Field(default=None, max_length=2048)
     error: str | None = None
 
 

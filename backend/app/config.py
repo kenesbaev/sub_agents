@@ -45,10 +45,12 @@ class Settings(BaseSettings):
     linkedin_auth_uri: str = "https://www.linkedin.com/oauth/v2/authorization"
     linkedin_token_uri: str = "https://www.linkedin.com/oauth/v2/accessToken"
     linkedin_redirect_uri: str = "http://127.0.0.1:8000/api/connected-apps/linkedin/callback"
+    linkedin_scopes: str = ""
 
     shopify_client_id: str = ""
     shopify_client_secret: str = ""
     shopify_shop_domain: str = ""
+    shopify_api_version: str = "2026-07"
     shopify_scopes: str = ""
     shopify_redirect_uri: str = ""
     shopify_auth_uri: str = ""

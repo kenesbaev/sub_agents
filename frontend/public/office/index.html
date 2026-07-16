@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Agent Office</title>
-    <link rel="icon" href="data:," />
+    <title>Teamora AI Office</title>
+    <link rel="icon" href="/images/teamora-ai-logo-mark.svg" />
     <link rel="stylesheet" href="./styles.css" />
     <script type="importmap">
       {
@@ -19,11 +19,14 @@
     <div class="app-shell">
       <header class="topbar">
         <div class="brand">
-          <img class="brand-mark" src="/images/rebly-logo-mark.svg" alt="" aria-hidden="true" />
+          <img class="brand-mark" src="/images/teamora-ai-logo-mark.svg" alt="" aria-hidden="true" />
           <div>
-            <h1>Agent Office</h1>
+            <h1 id="officeTitle">Teamora AI Office</h1>
             <p id="teamStatus">5 agents online</p>
           </div>
+        </div>
+        <div class="toolbar" aria-label="Office controls">
+          <button id="viewBtn" class="tool-button" type="button">Reset view</button>
         </div>
       </header>
 

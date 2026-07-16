@@ -25,3 +25,4 @@ data/
 test-results/
 playwright-report/
 dashboard-office-preview.png
+.codex_work/

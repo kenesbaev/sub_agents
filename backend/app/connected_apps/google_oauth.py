@@ -20,11 +20,13 @@ GOOGLE_WORKSPACE_TOOLS = (
     "create_gmail_draft",
     "send_gmail",
     "reply_gmail",
+    "list_calendar_events",
     "find_free_time",
     "create_calendar_event",
     "search_drive_files",
     "create_google_doc",
     "read_google_sheet",
+    "append_google_sheet_row",
     "update_google_sheet_row",
 )
 

@@ -1,0 +1,2 @@
+# Standalone local developer tool; this is not required by the public backend.
+openai-codex==0.1.0b3

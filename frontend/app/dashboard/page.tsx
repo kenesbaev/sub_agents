@@ -421,9 +421,9 @@ const socialPostingTeam: TeamCardData = {
   agents: "5 agents",
   agentsCount: 5,
   copy: "Команда для авто-постинга: готовит идеи, captions, визуальный brief и публикует approved-посты через Connected Apps.",
-  modalCopy: "Social Posting Team работает прямо в сайте. Пользователь подключает Telegram/Instagram в Connected Apps, команда готовит пост, показывает preview, а Dex отправляет approved-публикацию через backend API.",
-  output: "Publish-ready caption + media brief + Telegram/Instagram publish status",
-  tags: ["Marketing", "Instagram", "Telegram"],
+  modalCopy: "Social Posting Team работает прямо в сайте. Пользователь подключает Telegram, Instagram или YouTube в Connected Apps, команда готовит пост или видео, показывает preview, а Dex отправляет approved-публикацию через backend API. Для YouTube нужен публичный HTTPS URL видео и отдельное подтверждение перед загрузкой.",
+  output: "Publish-ready caption + media brief + Telegram/Instagram status + YouTube upload status",
+  tags: ["Marketing", "Instagram", "Telegram", "YouTube"],
   icon: Share2,
   roster: [
     { name: "Atlas", role: "Coordinator", avatar: "/images/agents/coordinator.png", accent: "#4F5BD5" },
@@ -433,17 +433,17 @@ const socialPostingTeam: TeamCardData = {
     { name: "Echo", role: "Analytics", avatar: "/images/agents/nova.png", accent: "#C98908" }
   ],
   workflow: [
-    "Atlas принимает задачу и выбирает платформы: Telegram, Instagram или обе",
+    "Atlas принимает задачу и выбирает платформу: Telegram, Instagram или YouTube",
     "Scout находит тему, аудиторию, угол подачи и актуальные сигналы",
-    "Mira пишет caption, hook, CTA и visual brief для картинки/видео",
-    "Dex проверяет Connected Apps и отправляет approved-пост через сайт",
+    "Mira пишет caption, hook, CTA и visual brief, а для YouTube — title и description",
+    "Dex проверяет Connected Apps; YouTube-видео загружает только после отдельного approval по публичному HTTPS URL",
     "Echo сохраняет статус публикации и ошибки, чтобы вернуться к ним позже"
   ],
   modalWorkflow: [
     { agent: "Atlas", text: "Собирает brief: цель поста, площадки, дедлайн, нужный формат и ограничения бренда.", path: "workspace/social/brief.md" },
     { agent: "Scout", text: "Находит темы, аудиторию, боли, тренды и лучшие углы подачи для публикации.", path: "workspace/social/research.md" },
-    { agent: "Mira", text: "Пишет caption, hook, CTA, хэштеги, visual brief и image prompt для approval.", path: "workspace/social/copy.md" },
-    { agent: "Dex", text: "Проверяет Telegram Bot и Instagram Graph подключение, затем публикует approved-пост.", path: "connected-apps/publisher" },
+    { agent: "Mira", text: "Пишет caption, hook, CTA, хэштеги и visual brief; для YouTube готовит title и description.", path: "workspace/social/copy.md" },
+    { agent: "Dex", text: "Проверяет Telegram Bot, Instagram Graph или YouTube OAuth; YouTube-видео загружает только после approval по публичному HTTPS URL.", path: "connected-apps/publisher" },
     { agent: "Echo", text: "Записывает publish result, external id, ошибки и следующую рекомендацию.", path: "workspace/social/history.md" }
   ]
 };
@@ -803,6 +803,8 @@ export default function DashboardPage() {
   const [manualSecretStatus, setManualSecretStatus] = useState<Record<string, string>>({});
   const [oauthConnectingApps, setOauthConnectingApps] = useState<Record<string, boolean>>({});
   const [connectedAppErrors, setConnectedAppErrors] = useState<Record<string, string>>({});
+  const [shopifyConnectOpen, setShopifyConnectOpen] = useState(false);
+  const [shopifyShopDomain, setShopifyShopDomain] = useState("");
   const [selectedOfficeAgent, setSelectedOfficeAgent] = useState("all");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedOfficeTeam, setSelectedOfficeTeam] = useState<TeamCardData | null>(null);
@@ -1294,7 +1296,7 @@ export default function DashboardPage() {
     }
   }
 
-  async function connectOAuthProvider(providerKey: string) {
+  async function connectOAuthProvider(providerKey: string, connectPayload?: Record<string, string>) {
     setOauthConnectingApps((current) => ({ ...current, [providerKey]: true }));
     setConnectedAppErrors((current) => {
       const next = { ...current };
@@ -1305,6 +1307,12 @@ export default function DashboardPage() {
       const response = await fetch(`${API_URL}/api/connected-apps/${providerKey}/connect`, {
         method: "POST",
         credentials: "include",
+        ...(connectPayload
+          ? {
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(connectPayload),
+            }
+          : {}),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || typeof payload.authorizationUrl !== "string") {
@@ -1392,15 +1400,15 @@ export default function DashboardPage() {
     { id: "support" as View, label: "Support", icon: LifeBuoy }
   ];
 
-  const displayName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || user?.email || "Rebly user";
+  const displayName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || user?.email || "Teamora user";
 
   return (
     <main className={`dashboard ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`} aria-label="Workspace sidebar">
         <div className="sidebar-top">
-          <Link className="dash-brand" href="/" aria-label="Rebly AI home">
-            <img className="dash-logo brand-logo-mark" src="/images/rebly-logo-mark.svg" alt="" />
-            <span>Rebly AI</span>
+          <Link className="dash-brand" href="/" aria-label="Teamora AI home">
+            <img className="dash-logo brand-logo-mark" src="/images/teamora-ai-logo-mark.svg" alt="" />
+            <span>Teamora AI</span>
           </Link>
           <button
             className="sidebar-toggle"
@@ -1451,7 +1459,7 @@ export default function DashboardPage() {
         </nav>
 
         {activeView === "office" && selectedOfficeTeamPayload && (
-          <div className="office-team-strip" aria-label="Agent Office team">
+          <div className="office-team-strip" aria-label="Teamora AI Office team">
             <div className="office-team-head">
               <strong>Team</strong>
               <span>{Math.max(visibleOfficeAgents.length - 1, 0)} / {Math.max(visibleOfficeAgents.length - 1, 0)}</span>
@@ -1516,7 +1524,7 @@ export default function DashboardPage() {
         )}
 
         {activeView === "office" && (
-          <section className="office-view" aria-label="Agent Office">
+          <section className="office-view" aria-label="Teamora AI Office">
             {selectedOfficeTeamPayload ? (
               <>
                 <div className="office-exit-bar">
@@ -1527,7 +1535,7 @@ export default function DashboardPage() {
                 <iframe
                   ref={officeFrameRef}
                   className="office-full-frame"
-                  src="/office/index.html?embed=dashboard"
+                  src={`/office/index.html?embed=dashboard&apiUrl=${encodeURIComponent(API_URL)}`}
                   title="Business AI office"
                   onLoad={() => {
                     sendOfficeTeam(selectedOfficeTeamPayload, activeConversation);
@@ -1667,6 +1675,7 @@ export default function DashboardPage() {
                     <option>Marketing</option>
                     <option>Instagram</option>
                     <option>Telegram</option>
+                    <option>YouTube</option>
                     <option>Sales</option>
                     <option>Leads</option>
                     <option>Support</option>
@@ -1880,6 +1889,10 @@ export default function DashboardPage() {
                   manualSecretStatus,
                   oauthConnectingApps,
                   connectedAppErrors,
+                  shopifyConnectOpen,
+                  setShopifyConnectOpen,
+                  shopifyShopDomain,
+                  setShopifyShopDomain,
                   setManualSecret,
                   connectTelegram,
                   connectOAuthProvider,
@@ -2268,6 +2281,10 @@ function renderSettingsPanel({
   manualSecretStatus,
   oauthConnectingApps,
   connectedAppErrors,
+  shopifyConnectOpen,
+  setShopifyConnectOpen,
+  shopifyShopDomain,
+  setShopifyShopDomain,
   setManualSecret,
   connectTelegram,
   connectOAuthProvider,
@@ -2303,9 +2320,13 @@ function renderSettingsPanel({
   manualSecretStatus: Record<string, string>;
   oauthConnectingApps: Record<string, boolean>;
   connectedAppErrors: Record<string, string>;
+  shopifyConnectOpen: boolean;
+  setShopifyConnectOpen: (value: boolean) => void;
+  shopifyShopDomain: string;
+  setShopifyShopDomain: (value: string) => void;
   setManualSecret: (providerKey: string, value: string) => void;
   connectTelegram: (kind: "bot") => void;
-  connectOAuthProvider: (providerKey: string) => void | Promise<void>;
+  connectOAuthProvider: (providerKey: string, connectPayload?: Record<string, string>) => void | Promise<void>;
   connectManualSecretProvider: (providerKey: string) => void | Promise<void>;
   disconnectConnectedApp: (providerKey: string) => void | Promise<void>;
   loadIntegrations: () => void | Promise<void>;
@@ -2529,6 +2550,15 @@ function renderSettingsPanel({
       return matchesSearch && matchesFilter;
     });
     const secretModalCard = appCards.find((card) => card.providerKey === configuringConnectedApp && card.action === "secret") || null;
+    const shopifyModalCard = appCards.find((card) => card.providerKey === "shopify") || null;
+    const openShopifyConnect = () => {
+      setShopifyShopDomain(defaultShopifyDomain(providersByKey.get("shopify")));
+      setShopifyConnectOpen(true);
+    };
+    const closeShopifyConnect = () => {
+      setShopifyConnectOpen(false);
+      setShopifyShopDomain("");
+    };
     return (
       <div className="settings-page connected-apps-page">
         <div className="connected-apps-head">
@@ -2595,6 +2625,7 @@ function renderSettingsPanel({
             const isTelegram = card.providerKey === "telegram";
             const isManual = card.action === "manual";
             const isSecret = card.action === "secret";
+            const isShopify = card.providerKey === "shopify";
             const isConfiguring = configuringConnectedApp === card.providerKey;
             return (
               <ConnectionCard
@@ -2617,6 +2648,7 @@ function renderSettingsPanel({
                     return;
                   }
                   if (isTelegram) connectTelegram("bot");
+                  else if (isShopify) openShopifyConnect();
                   else connectOAuthProvider(card.providerKey);
                 }}
                 onReconnect={() => {
@@ -2626,7 +2658,8 @@ function renderSettingsPanel({
                     setConfiguringConnectedApp(card.providerKey);
                     return;
                   }
-                  connectOAuthProvider(card.providerKey);
+                  if (isShopify) openShopifyConnect();
+                  else connectOAuthProvider(card.providerKey);
                 }}
                 onDisconnect={() => {
                   setConfiguringConnectedApp("");
@@ -2657,6 +2690,17 @@ function renderSettingsPanel({
             onChange={(value) => setManualSecret(secretModalCard.providerKey, value)}
             onConnect={() => connectManualSecretProvider(secretModalCard.providerKey)}
             onClose={() => setConfiguringConnectedApp("")}
+          />
+        )}
+        {shopifyConnectOpen && shopifyModalCard && (
+          <ShopifyConnectModal
+            card={shopifyModalCard}
+            shopDomain={shopifyShopDomain}
+            statusText={connectedAppErrors.shopify}
+            isConnecting={Boolean(oauthConnectingApps.shopify)}
+            onChange={setShopifyShopDomain}
+            onConnect={(shopDomain) => connectOAuthProvider("shopify", { shopDomain })}
+            onClose={closeShopifyConnect}
           />
         )}
       </div>
@@ -2725,6 +2769,31 @@ function metadataValue(account: ConnectedAccount | null, key: string) {
 
 function accountValue(account: ConnectedAccount | null, fallback = "") {
   return account?.label || fallback || account?.identifier || "";
+}
+
+function normalizeShopifyDomain(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "")
+    .replace(/\.+$/, "");
+}
+
+function isShopifyDomain(value: string) {
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.myshopify\.com$/i.test(normalizeShopifyDomain(value));
+}
+
+function defaultShopifyDomain(provider: ConnectedProvider | undefined) {
+  const account = provider?.accounts.find((candidate) => candidate.isDefault);
+  if (!account) return "";
+  const candidates = [
+    metadataValue(account, "shopDomain"),
+    metadataValue(account, "shop_domain"),
+    account.identifier,
+    account.label || "",
+  ];
+  return candidates.map(normalizeShopifyDomain).find(isShopifyDomain) || "";
 }
 
 function asHandle(value: string) {
@@ -2934,14 +3003,14 @@ function buildConnectedAppCards(
       key: "discord",
       providerKey: "discord",
       title: "Discord",
-      description: "Connect Discord to manage communities, announcements, moderation, and support workflows.",
-      capabilities: ["Channels", "Messages", "Moderation", "Support"],
+      description: "Connect a Discord account to identify the user and view servers they can access. Channel posting needs a separate bot or webhook installation.",
+      capabilities: ["Profile", "Email", "Servers"],
       logo: "D",
       logoUrl: "https://cdn.simpleicons.org/discord",
       logoTone: "discord",
       connected: providerConnected("discord"),
       connectedAt: connectedAt("discord"),
-      connectedLabel: "Server",
+      connectedLabel: "Account",
       connectedValue: accountValue(firstConnectedAccount(providers, "discord")),
       connectLabel: "Connect",
       action: "oauth"
@@ -3160,6 +3229,91 @@ function ApiKeyConnectModal({
             Connect
           </button>
         </div>
+      </section>
+    </div>
+  );
+}
+
+function ShopifyConnectModal({
+  card,
+  shopDomain,
+  statusText,
+  isConnecting,
+  onChange,
+  onConnect,
+  onClose,
+}: {
+  card: ConnectedAppCardData;
+  shopDomain: string;
+  statusText?: string;
+  isConnecting: boolean;
+  onChange: (value: string) => void;
+  onConnect: (shopDomain: string) => void | Promise<void>;
+  onClose: () => void;
+}) {
+  const normalizedDomain = normalizeShopifyDomain(shopDomain);
+  const validDomain = isShopifyDomain(normalizedDomain);
+  const validationMessage = shopDomain.trim() && !validDomain ? "Enter a valid .myshopify.com store domain." : statusText;
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!validDomain || isConnecting) return;
+    void onConnect(normalizedDomain);
+  }
+
+  return (
+    <div className="api-key-overlay" role="dialog" aria-modal="true" aria-label="Connect Shopify" onClick={onClose}>
+      <section className="api-key-modal" onClick={(event) => event.stopPropagation()}>
+        <button className="modal-close" type="button" onClick={onClose} aria-label="Close">
+          <X size={18} />
+        </button>
+        <div className="api-key-modal-head">
+          <span className={`app-logo app-logo-${card.logoTone}`}>
+            <img
+              src={card.logoUrl}
+              alt=""
+              onError={(event) => {
+                event.currentTarget.style.display = "none";
+              }}
+            />
+            <span>{card.logo}</span>
+          </span>
+          <div>
+            <h2>Connect Shopify</h2>
+            <span>Enter the store domain before continuing to Shopify.</span>
+          </div>
+        </div>
+        <form onSubmit={submit}>
+          <label className="api-key-field">
+            <span>Store domain</span>
+            <input
+              type="text"
+              name="rebly-shopify-store-domain"
+              value={shopDomain}
+              onChange={(event) => onChange(event.target.value)}
+              placeholder="your-store.myshopify.com"
+              autoComplete="url"
+              autoCorrect="off"
+              autoCapitalize="none"
+              inputMode="url"
+              spellCheck={false}
+              autoFocus
+              aria-invalid={Boolean(shopDomain.trim() && !validDomain)}
+              aria-describedby="shopify-domain-help"
+            />
+          </label>
+          <small id="shopify-domain-help" className={validationMessage ? "api-key-status" : "shopify-domain-help"}>
+            {validationMessage || "Use the .myshopify.com domain shown in your Shopify admin."}
+          </small>
+          <div className="api-key-actions">
+            <button className="button" type="button" onClick={onClose}>
+              Cancel
+            </button>
+            <button className="button solid" type="submit" disabled={!validDomain || isConnecting}>
+              {isConnecting ? "Connecting..." : "Continue to Shopify"}
+            </button>
+          </div>
+        </form>
       </section>
     </div>
   );

@@ -63,8 +63,13 @@ class CoreDomainTest(unittest.TestCase):
 
         response = client.get("/api/teams")
         self.assertEqual(response.status_code, 200, response.text)
-        names = {team["name"] for team in response.json()}
+        teams = response.json()
+        names = {team["name"] for team in teams}
         self.assertTrue({"Social Posting Team", "Business AI Team", "Founder's COS", "Marketing Team", "Sales Team", "Support Team"}.issubset(names))
+        social_team = next(team for team in teams if team["slug"] == "social-posting-team")
+        self.assertIn("YouTube", social_team["metadata_json"]["tags"])
+        self.assertIn("YouTube", social_team["metadata_json"]["output"])
+        self.assertTrue(any("public HTTPS video URL" in step for step in social_team["metadata_json"]["workflow"]))
 
     def test_seed_idempotency(self) -> None:
         self.register()
@@ -74,16 +79,25 @@ class CoreDomainTest(unittest.TestCase):
             workspace = ensure_default_workspace(db, user)
             first_count = db.query(Team).filter(Team.workspace_id == workspace.id).count()
             first_memberships = db.query(TeamAgent).count()
+            social_team = db.scalar(select(Team).where(Team.workspace_id == workspace.id, Team.slug == "social-posting-team"))
+            social_team.metadata_json = {
+                **(social_team.metadata_json or {}),
+                "output": "Old Telegram-only output",
+                "workspaceNote": "keep-me",
+            }
             seed_default_workspace(db, workspace, created_by=user.id)
             seed_default_workspace(db, workspace, created_by=user.id)
             db.commit()
             second_count = db.query(Team).filter(Team.workspace_id == workspace.id).count()
             second_memberships = db.query(TeamAgent).count()
+            refreshed_metadata = social_team.metadata_json
 
         self.assertEqual(6, first_count)
         self.assertEqual(first_count, second_count)
         self.assertGreater(first_memberships, 0)
         self.assertEqual(first_memberships, second_memberships)
+        self.assertIn("YouTube", refreshed_metadata["output"])
+        self.assertEqual("keep-me", refreshed_metadata["workspaceNote"])
 
     def test_workspace_member_roles_control_write_access(self) -> None:
         owner_client = self.register("owner@example.com")

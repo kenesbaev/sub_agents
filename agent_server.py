@@ -90,6 +90,10 @@ CODEX_MODEL_OVERRIDES = {
     "nova": "gpt-5.4-mini",
 }
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MAX_TOKENS = 1024
+CODEX_REASONING_EFFORT = "xhigh"
+AI_BACKEND_UNAVAILABLE_MESSAGE = "AI service is temporarily unavailable. Please try again in a minute."
+AI_BACKEND_UNAVAILABLE_CODE = "agent_unavailable"
 AGENT_SEARCH_ENABLED = {
     "coordinator": True,
     "mika": True,
@@ -141,6 +145,8 @@ PUBLISH_TRIGGERS = (
     "пост",
     "telegram",
     "instagram",
+    "youtube",
+    "youtu.be",
     "insta",
     "телеграм",
     "тг",
@@ -159,20 +165,38 @@ PUBLISH_TRIGGERS_UNICODE = (
     "\u0442\u0433",
     "\u043a\u0430\u043d\u0430\u043b",
     "\u0438\u043d\u0441\u0442\u0430\u0433\u0440\u0430\u043c",
+    "\u044e\u0442\u0443\u0431",
 )
 TELEGRAM_TRIGGERS_UNICODE = (
     "\u0442\u0435\u043b\u0435\u0433\u0440\u0430\u043c",
     "\u0442\u0433",
-    "\u043a\u0430\u043d\u0430\u043b",
 )
 INSTAGRAM_TRIGGERS_UNICODE = (
     "\u0438\u043d\u0441\u0442\u0430\u0433\u0440\u0430\u043c",
+)
+YOUTUBE_TRIGGERS_UNICODE = (
+    "\u044e\u0442\u0443\u0431",
+    "\u044e\u0442\u044c\u044e\u0431",
+)
+YOUTUBE_TRIGGERS = (
+    "youtube",
+    "youtu.be",
+    "youtube.com",
+    "you tube",
+    "yuotube",
+    "yotube",
 )
 DIRECT_MEDIA_URL_RE = re.compile(
     r"https?://[^\s<>\")']+\.(?:avif|gif|jpe?g|png|webp|m4v|mov|mp4|mpeg|mpg|webm)(?:[?#][^\s<>\")']*)?",
     re.IGNORECASE,
 )
 EXPLICIT_PUBLISH_TEXT_RE = re.compile(r"[\"“”«»']([^\"“”«»']{1,4000})[\"“”«»']")
+GOOGLE_EMAIL_ADDRESS_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+GOOGLE_SHEET_URL_RE = re.compile(r"https?://docs\.google\.com/spreadsheets/d/([A-Za-z0-9_-]+)", re.IGNORECASE)
+GOOGLE_RFC3339_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})\b",
+    re.IGNORECASE,
+)
 PENDING_TEAM_RUNS: dict[str, dict[str, Any]] = {}
 ACTIVE_AGENT_RUNS: dict[str, dict[str, Any]] = {}
 ACTIVE_AGENT_RUNS_LOCK = threading.Lock()
@@ -183,28 +207,41 @@ SOCIAL_POSTING_AGENT_CHAIN = (
         "dbSlug": "scout",
         "name": "Scout",
         "role": "Research",
-        "task": "Research the context, audience angle, travel signal, hook options, and any cultural sensitivities for the post.",
+        "task": (
+            "Research the context, audience angle, hook options, platform-specific format, "
+            "and any cultural sensitivities for the post or video."
+        ),
     },
     {
         "runtimeId": "mika",
         "dbSlug": "mira",
         "name": "Mira",
         "role": "Copy + creative",
-        "task": "Write the publish-ready caption/post text using Scout's context. Keep it natural and ready for Telegram.",
+        "task": (
+            "Write publish-ready copy using Scout's context. For YouTube, provide a concise title "
+            "of at most 100 characters and a description of at most 5,000 characters; for Telegram "
+            "or Instagram, provide the platform-ready caption."
+        ),
     },
     {
         "runtimeId": "dev",
         "dbSlug": "dex",
         "name": "Dex",
         "role": "Publisher",
-        "task": "Check that the material is safe to publish, identify the target platform, and prepare the final publishing handoff.",
+        "task": (
+            "Check that the material is safe to publish, identify the target platform, and prepare the final publishing handoff. "
+            "For YouTube, require a connected channel, a public HTTPS video URL, explicit approval, and private visibility by default."
+        ),
     },
     {
         "runtimeId": "nova",
         "dbSlug": "echo",
         "name": "Echo",
         "role": "Analytics",
-        "task": "Review the final post for clarity, publish-readiness, and concise status reporting to Atlas.",
+        "task": (
+            "Review the final material for clarity and publish-readiness. Report only confirmed publishing results, including "
+            "the YouTube video URL/privacy or a safe actionable error when applicable."
+        ),
     },
 )
 
@@ -213,6 +250,10 @@ class AgentRunCancelled(RuntimeError):
     def __init__(self, run_id: str) -> None:
         super().__init__("Task stopped by user.")
         self.run_id = run_id
+
+
+class AgentBackendUnavailable(RuntimeError):
+    """A safe public error for failures across all AI providers."""
 
 
 def elapsed_seconds(start: float) -> float:
@@ -450,7 +491,7 @@ def social_task_title(message: str) -> str:
 
 
 def is_social_posting_team_run(team_id: str, message: str) -> bool:
-    return team_id == SOCIAL_POSTING_TEAM_SLUG and wants_telegram_publish(message)
+    return team_id == SOCIAL_POSTING_TEAM_SLUG and wants_social_publish(message)
 
 
 def start_agent_run(
@@ -569,7 +610,9 @@ AGENTS: dict[str, dict[str, str]] = {
         "role": "Developer / Growth Engineer",
         "prompt": (
             "Ты Dex: разработчик, бизнес-аналитик и growth-инженер. "
-            "Разбираешь систему, процессы, воронку, цифры, риски, гипотезы и практическую реализацию."
+            "Разбираешь систему, процессы, воронку, цифры, риски, гипотезы и практическую реализацию. "
+            "В Social Posting Team только ты готовишь approval-only загрузку видео в YouTube через upload_youtube_video; "
+            "никогда не считай видео опубликованным до успешного ответа backend."
         ),
     },
     "nova": {
@@ -579,7 +622,8 @@ AGENTS: dict[str, dict[str, str]] = {
             "Ты Echo: оператор поддержки, ответов клиентам и community-support агент. "
             "Отвечаешь на вопросы, комментарии, входящие сообщения, негатив и FAQ, "
             "держишь тон спокойно, передаешь покупательское намерение Ava и готовишь approved-публикации "
-            "в Telegram без автопостинга."
+            "для Telegram, Instagram и YouTube. Для YouTube фиксируешь только подтвержденный video ID/URL, privacy status "
+            "или безопасную причину ошибки."
         ),
     },
 }
@@ -954,7 +998,13 @@ class AgentHandler(SimpleHTTPRequestHandler):
                 locals().get("agent_id", ""),
                 exc.__class__.__name__,
             )
-            self._send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._send_json(
+                {
+                    "error": AI_BACKEND_UNAVAILABLE_MESSAGE,
+                    "code": AI_BACKEND_UNAVAILABLE_CODE,
+                },
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
         finally:
             if turn_context is not None:
                 turn_context.cleanup()
@@ -1188,6 +1238,12 @@ def run_direct_agent_chat(
             summary=reply,
             metadata={"sessionId": session_id, "mode": "direct"},
         )
+    pending_google_action = build_pending_google_action(
+        turn_context.message,
+        run_id=run_id,
+        source="direct",
+        agent_id=agent_id,
+    )
     return {
         "reply": reply,
         "messages": [
@@ -1202,6 +1258,7 @@ def run_direct_agent_chat(
             )
         ],
         "agent": agent_payload(agent_id),
+        "pendingGoogleAction": pending_google_action,
     }
 
 
@@ -1237,6 +1294,11 @@ def run_team_chat(
             team_id=team_id,
             team_name=team_name,
         )
+    pending_google_action = build_pending_google_action(
+        effective_message,
+        run_id=run_id,
+        source="team",
+    )
     coordinator = get_memory("coordinator", account_id=account_id)
     team_history = merge_histories(
         memory_turns("coordinator", account_id=account_id, limit=8),
@@ -1300,6 +1362,7 @@ def run_team_chat(
             "agent": agent_payload("all"),
             "decision": decision,
             "pendingRunId": run_id,
+            "pendingGoogleAction": pending_google_action,
         }
 
     if not assignments:
@@ -1349,6 +1412,7 @@ def run_team_chat(
             ],
             "agent": agent_payload("all"),
             "decision": decision,
+            "pendingGoogleAction": pending_google_action,
         }
 
     messages: list[dict[str, Any]] = []
@@ -1427,7 +1491,7 @@ def run_team_chat(
     check_agent_run_cancelled(run_id)
     final_reply, publish_text = split_publish_text(final_reply)
     publish_text = resolve_publish_text(effective_message, final_reply, publish_text, reports)
-    if wants_telegram_publish(effective_message) and publish_text:
+    if wants_social_publish(effective_message) and publish_text:
         final_reply = append_copyable_post_block(final_reply, publish_text)
     pending_publish = build_pending_publish(
         effective_message,
@@ -1468,6 +1532,7 @@ def run_team_chat(
         "agent": agent_payload("all"),
         "decision": decision,
         "pendingPublish": pending_publish,
+        "pendingGoogleAction": pending_google_action,
     }
 
 
@@ -1725,7 +1790,12 @@ def run_social_posting_team_chat(
             if current.get("status") == "working":
                 statuses.set(item["runtimeId"], "failed", db_slug=item["dbSlug"], name=item["name"])
         statuses.set("coordinator", "failed", db_slug="atlas", name="Atlas")
-        bridge.update_task("failed", progress=0, error=str(exc), result_json={"runId": run_id})
+        bridge.update_task(
+            "failed",
+            progress=0,
+            error=AI_BACKEND_UNAVAILABLE_MESSAGE,
+            result_json={"runId": run_id},
+        )
         timings["total"] = elapsed_seconds(total_start)
         log_social_phase(
             run_id,
@@ -1741,6 +1811,7 @@ def run_social_posting_team_chat(
 def social_posting_assignments(decision: dict[str, Any], message: str) -> list[dict[str, str]]:
     raw_assignments = normalize_assignments(decision.get("assignments"))
     raw_summary = "\n".join(f"{item['agentId']}: {item['task']}" for item in raw_assignments)
+    platform_guidance = social_posting_platform_guidance(message)
     assignments: list[dict[str, str]] = []
     for item in SOCIAL_POSTING_AGENT_CHAIN:
         assignments.append(
@@ -1752,6 +1823,7 @@ def social_posting_assignments(decision: dict[str, Any], message: str) -> list[d
                 "task": (
                     f"Role: {item['name']} / {item['role']}.\n"
                     f"{item['task']}\n"
+                    f"Platform rules:\n{platform_guidance}\n"
                     f"Atlas planning context:\n{raw_summary or 'Atlas selected the Social Posting Team pipeline.'}\n"
                     f"Original user request:\n{message}"
                 ),
@@ -1805,7 +1877,7 @@ def safe_social_coordinator_decision(
         )
     except AgentRunCancelled:
         raise
-    except RuntimeError as exc:
+    except RuntimeError:
         decision = keyword_decision(effective_message)
         decision.update(
             {
@@ -1815,7 +1887,7 @@ def safe_social_coordinator_decision(
                 "userQuestions": [],
                 "runId": run_id,
                 "providerFallback": True,
-                "providerError": str(exc)[-500:],
+                "providerError": AI_BACKEND_UNAVAILABLE_MESSAGE,
             }
         )
         return decision
@@ -1842,8 +1914,8 @@ def run_social_assignment_report_safe(
         )
     except AgentRunCancelled:
         raise
-    except RuntimeError as exc:
-        return fallback_social_assignment_report(assignment, effective_message, run_id, str(exc))
+    except RuntimeError:
+        return fallback_social_assignment_report(assignment, effective_message, run_id)
 
 
 def run_social_final_reply_safe(
@@ -1883,20 +1955,20 @@ def fallback_social_assignment_report(
     assignment: dict[str, str],
     effective_message: str,
     run_id: str,
-    error: str,
 ) -> dict[str, Any]:
     runtime_id = assignment.get("agentId", "")
     name = assignment.get("displayName") or display_agent_name(runtime_id)
     publish_text = fallback_social_publish_text(effective_message)
+    target = publish_platform_summary(effective_message)
     if runtime_id == "scout":
         report = (
             "Scout report: use a personal travel angle, keep the hook short, "
             "and avoid claims that need live research."
         )
     elif runtime_id == "mika":
-        report = f"Mira report: publish-ready Telegram copy:\n{publish_text}"
+        report = f"Mira report: publish-ready {target} copy:\n{publish_text}"
     elif runtime_id == "dev":
-        report = "Dex report: Telegram text-only publishing handoff is ready."
+        report = f"Dex report: {target} publishing handoff is ready."
     elif runtime_id == "nova":
         report = "Echo report: copy is clear, concise, and ready for final approval/publish."
     else:
@@ -1906,7 +1978,7 @@ def fallback_social_assignment_report(
             "agentId": runtime_id,
             "agent": name,
             "text": report,
-            "providerError": error[-500:],
+            "providerError": AI_BACKEND_UNAVAILABLE_MESSAGE,
             "providerFallback": True,
         },
         "message": agent_message(
@@ -1943,10 +2015,9 @@ def fallback_social_publish_text(message: str) -> str:
 
 def fallback_social_final_reply(message: str, reports: list[dict[str, str]]) -> str:
     publish_text = fallback_social_publish_text(message)
+    target = publish_platform_summary(message)
     return (
-        "\u0413\u043e\u0442\u043e\u0432\u043e. Social Posting Team "
-        "\u043f\u043e\u0434\u0433\u043e\u0442\u043e\u0432\u0438\u043b \u0442\u0435\u043a\u0441\u0442 "
-        "\u0434\u043b\u044f Telegram.\n\n"
+        f"\u0413\u043e\u0442\u043e\u0432\u043e. Social Posting Team \u043f\u043e\u0434\u0433\u043e\u0442\u043e\u0432\u0438\u043b \u043c\u0430\u0442\u0435\u0440\u0438\u0430\u043b \u0434\u043b\u044f {target}.\n\n"
         f"<PUBLISH_TEXT>{publish_text}</PUBLISH_TEXT>"
     )
 
@@ -2020,7 +2091,7 @@ def build_coordinator_decision_prompt(
         "- Для контента, постов, Reels, сценариев, рынка, конкурентов, аудитории, хуков и тем подключай Scout.",
         "- Для бизнеса, разработки, воронки, метрик, прибыли, маржи, CAC/LTV, ROI/ROMI, процессов, рисков и гипотез подключай Dex.",
         "- Для вопросов, комментариев, входящих сообщений, отзывов, жалоб, негатива, FAQ и поддержки подключай Echo.",
-        "- Если пользователь просит опубликовать, выложить или подготовить social post для Telegram, Instagram или канала, подключай Scout + Echo.",
+        "- Если пользователь просит опубликовать, выложить или подготовить social post для Telegram, Instagram или YouTube, подключай Scout + Echo; для YouTube обязательно подключай Dex для approval-only загрузки видео.",
         "- Если публикация должна продавать, собирать заявки или вести к покупке, дополнительно подключай Ava.",
         "- Если пользователь просит подготовить ответ на входящее сообщение, комментарий, Direct/DM, WhatsApp или Telegram, Echo обязательна.",
         "- Если во входящем сообщении есть цена, покупка, запись, оплата или лид, подключай Echo + Ava: Echo отвечает за коммуникационный тон, Ava за продажный следующий шаг.",
@@ -2094,7 +2165,8 @@ def build_agent_report_prompt(
         "Не пиши шаблонное 'беру задачу'. Сразу дай полезный результат.",
         "Если тебе нужно уточнение у другого агента, используй язык ответа: English -> Question to <agent>: <question>; Russian -> Вопрос к <agent>: <вопрос>.",
         "Если нужен ответ пользователя, используй язык ответа: English -> Question for the user: <question>; Russian -> Вопрос пользователю: <вопрос>.",
-        "Если твоя задача связана с social-публикацией для Telegram или Instagram, подготовь publish-ready материал, но не пиши будто публикация уже отправлена.",
+        "Если твоя задача связана с social-публикацией для Telegram, Instagram или YouTube, подготовь publish-ready материал, но не пиши будто публикация уже отправлена.",
+        "Для YouTube нужны public HTTPS URL видео, title до 100 символов, description до 5 000 символов, privacy private по умолчанию и отдельное явное подтверждение пользователя.",
     ]
     append_context_blocks(lines, memory_context=memory_context, tool_context=tool_context, crm_context=crm_context)
     lines.extend(["", agent_tool_prompt(agent_id)])
@@ -2148,10 +2220,11 @@ def build_coordinator_final_prompt(
             "Если агент задал важный вопрос и без ответа нельзя продолжить, задай пользователю четкие вопросы.",
             "Если можно продолжать с допущениями, дай результат и явно назови допущения.",
             "Финал не должен быть склейкой отчетов. Убери повторы, воду и слабые формулировки.",
-            "Если задача просит Telegram/Instagram-публикацию или постинг, не утверждай что пост уже опубликован.",
+            "Если задача просит Telegram/Instagram/YouTube-публикацию или постинг, не утверждай что материал уже опубликован.",
             "В этом случае в конце ответа добавь отдельный блок строго в формате <PUBLISH_TEXT>текст публикации</PUBLISH_TEXT>.",
             "Внутри <PUBLISH_TEXT> должен быть только готовый caption/post text без служебных комментариев.",
             "Если пользователь приложил фото или дал прямую ссылку на фото/видео, внутри <PUBLISH_TEXT> нужен короткий caption: 1-3 компактных абзаца и один понятный CTA.",
+            "Для YouTube первая строка <PUBLISH_TEXT> должна быть сильным title до 100 символов, а остальной текст — готовым description до 5 000 символов. Напомни, что загрузка выполняется отдельно, только после approval, с private visibility по умолчанию.",
             "Текст внутри <PUBLISH_TEXT> должен быть готовым social post: сильный хук, живой тон, короткие абзацы, конкретика, при необходимости bullets, CTA в конце.",
             "Не пиши внутри готового поста служебные слова вроде: Atlas, Echo, вводные, допущение, отчет, универсальный пост, подготовил.",
             "Если нет цены, модели, контакта или города, используй аккуратные плейсхолдеры: [цена], [модель], [контакт], [город].",
@@ -2877,23 +2950,121 @@ def wants_web_search(agent_id: str, *texts: str) -> bool:
     return any(trigger in value for trigger in WEB_SEARCH_TRIGGERS)
 
 
-def wants_telegram_publish(text: str) -> bool:
+def wants_social_publish(text: str) -> bool:
     lowered = text.lower()
-    return any(trigger in lowered for trigger in (*PUBLISH_TRIGGERS, *PUBLISH_TRIGGERS_UNICODE))
+    return any(
+        trigger in lowered
+        for trigger in (
+            *PUBLISH_TRIGGERS,
+            *PUBLISH_TRIGGERS_UNICODE,
+            *YOUTUBE_TRIGGERS,
+            *YOUTUBE_TRIGGERS_UNICODE,
+        )
+    )
 
 
-def publish_platforms(text: str) -> list[str]:
+def wants_telegram_publish(text: str) -> bool:
+    """Backward-compatible name for the legacy Office publish trigger."""
+
+    return wants_social_publish(text)
+
+
+def explicit_publish_platforms(text: str) -> list[str]:
     lowered = text.lower()
     platforms: list[str] = []
     if any(word in lowered for word in TELEGRAM_TRIGGERS_UNICODE):
         platforms.append("telegram")
     if any(word in lowered for word in INSTAGRAM_TRIGGERS_UNICODE):
         platforms.append("instagram")
-    if any(word in lowered for word in ("telegram", "tg", "телеграм", "тг", "канал")):
+    if "telegram" in lowered or re.search(r"(?:^|\W)tg(?:$|\W)", lowered):
         platforms.append("telegram")
-    if any(word in lowered for word in ("instagram", "insta", "инстаграм")):
+    if any(word in lowered for word in ("instagram", "insta")):
         platforms.append("instagram")
-    return list(dict.fromkeys(platforms)) or ["telegram"]
+    if any(word in lowered for word in (*YOUTUBE_TRIGGERS, *YOUTUBE_TRIGGERS_UNICODE)):
+        platforms.append("youtube")
+    return list(dict.fromkeys(platforms))
+
+
+def publish_platforms(text: str) -> list[str]:
+    return explicit_publish_platforms(text) or ["telegram"]
+
+
+def resolved_publish_platforms(user_message: str, final_reply: str = "") -> list[str]:
+    """Prefer the user's channel, then the current agent conclusion, before the legacy Telegram default."""
+
+    requested = explicit_publish_platforms(user_message)
+    if requested:
+        return requested
+    inferred = explicit_publish_platforms(final_reply)
+    return inferred or ["telegram"]
+
+
+def publish_platform_summary(text: str) -> str:
+    labels = {
+        "telegram": "Telegram post",
+        "instagram": "Instagram post",
+        "youtube": "YouTube video",
+    }
+    return " + ".join(labels[platform] for platform in publish_platforms(text))
+
+
+def social_posting_platform_guidance(text: str) -> str:
+    platforms = publish_platforms(text)
+    labels = {"telegram": "Telegram", "instagram": "Instagram", "youtube": "YouTube"}
+    lines = [
+        f"Detected target: {' + '.join(labels[platform] for platform in platforms)}.",
+        "Never claim a publish succeeded until the backend returns a confirmed external result.",
+    ]
+    if "youtube" in platforms:
+        lines.extend(
+            [
+                "YouTube publishing means uploading a video, not creating a text-only Community post.",
+                "Require a connected YouTube channel and a direct public HTTPS video URL.",
+                "Never tell the user that a text-only YouTube Community post can be sent automatically: the public YouTube Data API does not support that action.",
+                "Without a video URL, prepare copy for manual use in YouTube Studio and do not redirect or fall back to Telegram.",
+                "Mira prepares a title of at most 100 characters and a description of at most 5,000 characters.",
+                "Dex uses upload_youtube_video only after explicit user approval; visibility defaults to private unless the user explicitly chooses unlisted or public.",
+                "Echo reports the confirmed video URL/privacy or an actionable safe error.",
+            ]
+        )
+    if "youtube" in platforms and len(platforms) > 1:
+        lines.append(
+            "YouTube must be a separate approved action from Telegram/Instagram; tell the user which other platforms need a separate publish action."
+        )
+    return "\n".join(lines)
+
+
+def youtube_privacy_status(text: str) -> str:
+    lowered = text.lower()
+    wants_unlisted = "unlisted" in lowered or "\u043f\u043e \u0441\u0441\u044b\u043b\u043a\u0435" in lowered
+    if wants_unlisted:
+        return "unlisted"
+    english_public = re.search(
+        r"\b(?:privacy\s*[:=-]?\s*public|make (?:it )?public|publish publicly)\b",
+        lowered,
+    )
+    if english_public:
+        return "public"
+    if re.search(
+        r"\u0441\u0434\u0435\u043b\u0430\u0439(?:\u0442\u0435)?\s+\u043f\u0443\u0431\u043b\u0438\u0447\u043d|"
+        r"\u043f\u0440\u0438\u0432\u0430\u0442\u043d\u043e\u0441\u0442\u044c\s*[:=-]?\s*\u043f\u0443\u0431\u043b\u0438\u0447",
+        lowered,
+    ):
+        return "public"
+    return "private"
+
+
+def youtube_publish_title(user_message: str, publish_text: str) -> str:
+    for candidate in (publish_text, user_message):
+        first_line = next(
+            (line.strip() for line in candidate.splitlines() if line.strip()),
+            "",
+        )
+        first_line = DIRECT_MEDIA_URL_RE.sub("", first_line)
+        first_line = re.sub(r"\s+", " ", first_line).strip(" -:|#")
+        if first_line:
+            return first_line[:100]
+    return "New video"
 
 
 def extract_publish_media_url(text: str) -> str:
@@ -2921,7 +3092,7 @@ def resolve_publish_text(
         return explicit_user_text
     if tagged_publish_text.strip():
         return sanitize_publish_text(tagged_publish_text, allow_short=True)
-    if not wants_telegram_publish(user_message):
+    if not wants_social_publish(user_message):
         return ""
     final_candidate = extract_publish_text_from_text(final_reply, allow_short=True)
     if final_candidate:
@@ -3039,6 +3210,212 @@ def append_copyable_post_block(display_text: str, publish_text: str) -> str:
     return f"{display}\n\n{heading}\n{post}"
 
 
+GOOGLE_WRITE_ACTION_TOOLS = frozenset(
+    {
+        "create_gmail_draft",
+        "send_gmail",
+        "create_calendar_event",
+        "append_google_sheet_row",
+        "update_google_sheet_row",
+    }
+)
+
+
+def _google_has_any(value: str, phrases: tuple[str, ...]) -> bool:
+    return any(phrase in value for phrase in phrases)
+
+
+def _google_email_query(message: str) -> str:
+    match = re.search(
+        r"(?:search|find|look\s+for|show|check)\s+(?:my\s+)?(?:gmail|e-?mail|inbox)\s*(?:for|about|from|with)?\s*(.+)$",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).strip(" .,:;-")[:1000]
+    match = re.search(r"(?:\u043d\u0430\u0439\u0434\u0438|\u043f\u043e\u0438\u0441\u043a)\S*\s+(.+)$", message, flags=re.IGNORECASE)
+    return match.group(1).strip(" .,:;-")[:1000] if match else ""
+
+
+def _google_spreadsheet_id(message: str) -> str:
+    match = GOOGLE_SHEET_URL_RE.search(message)
+    if match:
+        return match.group(1)[:200]
+    match = re.search(r"(?:spreadsheet[_\s-]*id|sheet[_\s-]*id)\s*[:=]\s*([A-Za-z0-9_-]{1,200})", message, flags=re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _google_sheet_range(message: str) -> str:
+    match = re.search(r"(?:range|\u0434\u0438\u0430\u043f\u0430\u0437\u043e\u043d)\s*[:=]\s*([^\n,;]{1,500})", message, flags=re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+def _google_calendar_times(message: str) -> tuple[str, str]:
+    values = GOOGLE_RFC3339_RE.findall(message)
+    if len(values) >= 2:
+        return values[0], values[1]
+    return "", ""
+
+
+def _google_email_body(message: str) -> str:
+    match = re.search(r"[\"']([^\"']{1,20_000})[\"']", message, flags=re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+
+def _google_subject(message: str) -> str:
+    match = re.search(r"(?:subject|\u0442\u0435\u043c\u0430)\s*[:=]\s*([^\n]{1,255})", message, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"\babout\s+([^\n.]{1,255})", message, flags=re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+def _pending_google_action(
+    tool: str,
+    *,
+    arguments: dict[str, Any],
+    run_id: str,
+    source: str,
+    agent_id: str,
+    title: str,
+    detail: str,
+) -> dict[str, Any]:
+    return {
+        "tool": tool,
+        "arguments": arguments,
+        "requiresApproval": tool in GOOGLE_WRITE_ACTION_TOOLS,
+        "runId": run_id,
+        "source": source[:80],
+        "agent": agent_id,
+        "title": title,
+        "detail": detail,
+        "status": "approval_required" if tool in GOOGLE_WRITE_ACTION_TOOLS else "ready",
+    }
+
+
+def build_pending_google_action(
+    message: str,
+    *,
+    run_id: str,
+    source: str = "office",
+    agent_id: str = "mika",
+) -> dict[str, Any] | None:
+    """Turn an explicit Office request into a browser-executed Google action card.
+
+    The agent server never receives a user's OAuth token. It only creates safe, editable
+    intent data; the authenticated Office client makes the action request after the user
+    presses the card button.
+    """
+
+    lowered = message.casefold()
+    gmail_context = _google_has_any(
+        lowered,
+        ("gmail", "e-mail", "email", "inbox", "\u043f\u043e\u0447\u0442", "\u043f\u0438\u0441\u044c\u043c"),
+    )
+    calendar_context = _google_has_any(
+        lowered,
+        ("google calendar", "calendar", "calender", "\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440", "\u0432\u0441\u0442\u0440\u0435\u0447"),
+    )
+    sheets_context = bool(GOOGLE_SHEET_URL_RE.search(message)) or _google_has_any(
+        lowered,
+        ("google sheets", "spreadsheet", "sheets", "sheet", "\u0442\u0430\u0431\u043b\u0438\u0446"),
+    )
+
+    send_words = ("send", "\u043e\u0442\u043f\u0440\u0430\u0432", "\u043f\u043e\u0448\u043b\u0438")
+    draft_words = ("draft", "compose", "\u0447\u0435\u0440\u043d\u043e\u0432", "\u043d\u0430\u043f\u0438\u0448")
+    read_words = ("search", "find", "look for", "show", "check", "list", "read", "\u043d\u0430\u0439\u0434", "\u043f\u043e\u0438\u0441\u043a", "\u043f\u043e\u043a\u0430\u0436", "\u043f\u0440\u043e\u0447\u0438\u0442")
+    create_words = ("create", "add", "book", "schedule", "\u0441\u043e\u0437\u0434\u0430", "\u0434\u043e\u0431\u0430\u0432", "\u043d\u0430\u0437\u043d\u0430\u0447")
+    append_words = ("append", "add row", "insert row", "\u0434\u043e\u0431\u0430\u0432\u044c \u0441\u0442\u0440\u043e\u043a", "\u0434\u043e\u0431\u0430\u0432\u044c \u0440\u044f\u0434")
+
+    if gmail_context:
+        recipients = GOOGLE_EMAIL_ADDRESS_RE.findall(message)
+        email_arguments = {
+            "to": recipients[:50],
+            "subject": _google_subject(message),
+            "body": _google_email_body(message),
+        }
+        if _google_has_any(lowered, send_words):
+            return _pending_google_action(
+                "send_gmail",
+                arguments=email_arguments,
+                run_id=run_id,
+                source=source,
+                agent_id=agent_id,
+                title="Send Gmail message",
+                detail="Review the recipient, subject, and body before sending.",
+            )
+        if _google_has_any(lowered, draft_words):
+            return _pending_google_action(
+                "create_gmail_draft",
+                arguments=email_arguments,
+                run_id=run_id,
+                source=source,
+                agent_id=agent_id,
+                title="Create Gmail draft",
+                detail="Review the message before creating the draft in Gmail.",
+            )
+        if _google_has_any(lowered, read_words):
+            return _pending_google_action(
+                "search_gmail",
+                arguments={"query": _google_email_query(message)},
+                run_id=run_id,
+                source=source,
+                agent_id=agent_id,
+                title="Search Gmail",
+                detail="Run this read-only Gmail search using the connected account.",
+            )
+
+    if calendar_context:
+        start, end = _google_calendar_times(message)
+        if _google_has_any(lowered, create_words):
+            return _pending_google_action(
+                "create_calendar_event",
+                arguments={"summary": _google_subject(message), "start": start, "end": end},
+                run_id=run_id,
+                source=source,
+                agent_id=agent_id,
+                title="Create calendar event",
+                detail="Confirm the event details before it is added to Google Calendar.",
+            )
+        if _google_has_any(lowered, read_words):
+            arguments: dict[str, Any] = {}
+            if start and end:
+                arguments.update({"timeMin": start, "timeMax": end})
+            return _pending_google_action(
+                "list_calendar_events",
+                arguments=arguments,
+                run_id=run_id,
+                source=source,
+                agent_id=agent_id,
+                title="View calendar events",
+                detail="Read upcoming events from the connected Google Calendar.",
+            )
+
+    if sheets_context:
+        sheet_arguments = {"spreadsheetId": _google_spreadsheet_id(message), "range": _google_sheet_range(message)}
+        if _google_has_any(lowered, append_words):
+            return _pending_google_action(
+                "append_google_sheet_row",
+                arguments={**sheet_arguments, "valuesText": ""},
+                run_id=run_id,
+                source=source,
+                agent_id="dev",
+                title="Append Google Sheets row",
+                detail="Confirm the sheet, range, and row values before appending data.",
+            )
+        if _google_has_any(lowered, read_words):
+            return _pending_google_action(
+                "read_google_sheet",
+                arguments=sheet_arguments,
+                run_id=run_id,
+                source=source,
+                agent_id="dev",
+                title="Read Google Sheet",
+                detail="Read the selected Google Sheet range using the connected account.",
+            )
+    return None
+
+
 def build_pending_publish(
     user_message: str,
     final_reply: str,
@@ -3049,33 +3426,77 @@ def build_pending_publish(
     force_auto_publish: bool = False,
     task_id: int | None = None,
 ) -> dict[str, Any] | None:
-    if not wants_telegram_publish(user_message):
+    if not wants_social_publish(user_message):
         return None
     text = (publish_text or extract_requested_publish_text(user_message)).strip()
     if not text:
         return None
-    platforms = publish_platforms(user_message)
-    env_auto_publish = os.environ.get("TELEGRAM_AUTO_PUBLISH", "false").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }
-    auto_publish = (force_auto_publish or env_auto_publish) and "instagram" not in platforms
+    platforms = resolved_publish_platforms(user_message, final_reply)
+    is_youtube_publish = "youtube" in platforms
+    # The YouTube tool is an approval-only, single-target action. Do not let a
+    # mixed request fall through to the legacy multi-platform social publisher.
+    separate_platforms: list[str] = []
+    if is_youtube_publish:
+        separate_platforms = [platform for platform in platforms if platform != "youtube"]
+        platforms = ["youtube"]
+    env_auto_publish = (
+        os.environ.get("TELEGRAM_AUTO_PUBLISH", "false").strip().lower()
+        not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+    )
+    auto_publish = (
+        not is_youtube_publish
+        and (force_auto_publish or env_auto_publish)
+        and "instagram" not in platforms
+    )
     resolved_media_url = media_url or extract_publish_media_url(user_message)
     media_base = resolved_media_url.lower().split("?", 1)[0]
-    return {
-        "platform": "telegram",
+    pending_publish: dict[str, Any] = {
+        "platform": platforms[0] or "telegram",
         "platforms": platforms,
         "status": "auto_publish_pending" if auto_publish else "approval_required",
         "text": text[:4000],
         "mediaUrl": resolved_media_url,
-        "mediaType": "video/mp4" if media_base.endswith((".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".webm")) else "",
+        "mediaType": (
+            "video/mp4"
+            if media_base.endswith((".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"))
+            else ""
+        ),
         "runId": run_id,
         "taskId": task_id,
         "source": "team",
         "autoPublish": auto_publish,
     }
+    if is_youtube_publish:
+        pending_publish.update(
+            {
+                "youtubeTitle": youtube_publish_title(user_message, text),
+                "youtubeDescription": text[:5000],
+                "privacyStatus": youtube_privacy_status(user_message),
+            }
+        )
+        if not resolved_media_url:
+            pending_publish["notice"] = (
+                "YouTube API cannot publish text-only Community posts automatically. "
+                "Add a public HTTPS video URL to upload a video, or copy this text into YouTube Studio manually."
+            )
+        if separate_platforms:
+            pending_publish.update(
+                {
+                    "separateActionRequired": True,
+                    "separatePlatforms": separate_platforms,
+                    "notice": (
+                        f"{pending_publish.get('notice', '')} "
+                        "YouTube uploads require a separate approval. Publish "
+                        f"{', '.join(separate_platforms)} in another action."
+                    ).strip(),
+                }
+            )
+    return pending_publish
 
 
 def run_ai(
@@ -3098,9 +3519,10 @@ def run_ai(
         return reply
     except RuntimeError as openrouter_error:
         check_agent_run_cancelled(run_id)
-        print(
-            f"OpenRouter failed for {agent_id}, falling back to Codex: {str(openrouter_error)[-300:]}",
-            flush=True,
+        LOGGER.warning(
+            "agent_openrouter_failed agentId=%s errorType=%s; using Codex fallback",
+            agent_id,
+            openrouter_error.__class__.__name__,
         )
         try:
             return run_codex(
@@ -3113,12 +3535,13 @@ def run_ai(
         except AgentRunCancelled:
             raise
         except RuntimeError as codex_error:
-            openrouter_detail = str(openrouter_error)[-500:]
-            codex_detail = str(codex_error)[-500:]
-            raise RuntimeError(
-                f"AI backend не ответил. OpenRouter primary: {openrouter_detail}. "
-                f"Codex fallback: {codex_detail}"
-            ) from codex_error
+            LOGGER.error(
+                "agent_backends_unavailable agentId=%s primaryErrorType=%s fallbackErrorType=%s",
+                agent_id,
+                openrouter_error.__class__.__name__,
+                codex_error.__class__.__name__,
+            )
+            raise AgentBackendUnavailable(AI_BACKEND_UNAVAILABLE_MESSAGE) from None
 
 
 def run_openrouter(
@@ -3135,7 +3558,7 @@ def run_openrouter(
     payload: dict[str, Any] = {
         "model": AGENT_MODEL_OVERRIDES.get(agent_id, AGENT_MODEL_OVERRIDES["coordinator"]),
         "messages": [{"role": "user", "content": openrouter_content(prompt, image_paths)}],
-        "max_tokens": 8000,
+        "max_tokens": OPENROUTER_MAX_TOKENS,
     }
     effective_search_enabled = (
         AGENT_SEARCH_ENABLED.get(agent_id, False) if search_enabled is None else bool(search_enabled)
@@ -3272,7 +3695,13 @@ def _run_codex_once(
     check_agent_run_cancelled(run_id)
     with tempfile.TemporaryDirectory(prefix="n1n-agent-") as temp_dir:
         output_file = Path(temp_dir) / "reply.txt"
-        command = ["codex", "-a", "never"]
+        command = [
+            "codex",
+            "-a",
+            "never",
+            "--config",
+            f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"',
+        ]
         if search_enabled:
             command.append("--search")
         command.append("exec")

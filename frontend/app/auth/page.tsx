@@ -42,8 +42,8 @@ function AuthContent() {
       <section className="auth-card">
         <div className="auth-top">
           <Link className="brand" href="/">
-            <img className="brand-logo-mark" src="/images/rebly-logo-mark.svg" alt="" />
-            <span>Rebly AI</span>
+            <img className="brand-logo-mark" src="/images/teamora-ai-logo-mark.svg" alt="" />
+            <span>Teamora AI</span>
           </Link>
           <h1>Welcome back</h1>
           <p>Sign in with Google to open your AI workspace.</p>
@@ -58,7 +58,7 @@ function AuthContent() {
           {loading && <div className="auth-status">Redirecting to Google...</div>}
         </div>
 
-        <div className="auth-foot">Secured by Rebly AI</div>
+        <div className="auth-foot">Secured by Teamora AI</div>
       </section>
     </main>
   );
@@ -72,8 +72,8 @@ export default function AuthPage() {
           <section className="auth-card">
             <div className="auth-top">
               <span className="brand">
-                <img className="brand-logo-mark" src="/images/rebly-logo-mark.svg" alt="" />
-                <span>Rebly AI</span>
+                <img className="brand-logo-mark" src="/images/teamora-ai-logo-mark.svg" alt="" />
+                <span>Teamora AI</span>
               </span>
               <Loader2 size={22} />
             </div>

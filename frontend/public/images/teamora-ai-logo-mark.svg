@@ -1,0 +1,32 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Teamora AI</title>
+  <defs>
+    <linearGradient id="teamoraGradient" x1="33" y1="40" x2="220" y2="215" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1056EF"/>
+      <stop offset="0.55" stop-color="#402BEE"/>
+      <stop offset="1" stop-color="#7C2FEF"/>
+    </linearGradient>
+    <linearGradient id="teamoraCyan" x1="118" y1="198" x2="143" y2="225" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#14D6F4"/>
+      <stop offset="1" stop-color="#2BB8E8"/>
+    </linearGradient>
+  </defs>
+  <path d="M54 129V78L128 32L202 78V129" stroke="url(#teamoraGradient)" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M36 142V100L61 85" stroke="#1765EE" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M220 142V100L195 85" stroke="#1765EE" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="109" y="73" width="17" height="17" rx="2" fill="#071B69"/>
+  <rect x="134" y="73" width="17" height="17" rx="2" fill="#071B69"/>
+  <rect x="109" y="98" width="17" height="17" rx="2" fill="#071B69"/>
+  <rect x="134" y="98" width="17" height="17" rx="2" fill="#071B69"/>
+  <circle cx="79" cy="137" r="17" fill="#6D2DF2"/>
+  <circle cx="128" cy="127" r="20" fill="#1559ED"/>
+  <circle cx="177" cy="137" r="17" fill="#6D2DF2"/>
+  <path d="M52 180C52 157 64 145 80 145C97 145 107 158 107 180V191H52V180Z" fill="#6D2DF2"/>
+  <path d="M91 191C91 160 106 145 128 145C150 145 165 160 165 191V201H91V191Z" fill="#1559ED"/>
+  <path d="M149 180C149 158 159 145 176 145C192 145 204 157 204 180V191H149V180Z" fill="#6D2DF2"/>
+  <path d="M25 185C65 219 191 219 231 185" stroke="url(#teamoraGradient)" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="25" cy="185" r="12" fill="#FFFFFF" stroke="#6D2DF2" stroke-width="10"/>
+  <circle cx="231" cy="185" r="12" fill="#FFFFFF" stroke="#1765EE" stroke-width="10"/>
+  <circle cx="128" cy="213" r="18" fill="#FFFFFF" stroke="url(#teamoraCyan)" stroke-width="10"/>
+  <circle cx="128" cy="213" r="6" fill="url(#teamoraCyan)"/>
+</svg>

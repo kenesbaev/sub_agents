@@ -160,7 +160,6 @@ DISCORD_CAPABILITIES = (
     CapabilityDefinition("discord.identity", "Identity", "Read Discord user identity.", "read", "identify"),
     CapabilityDefinition("discord.email", "Email", "Read Discord account email when granted.", "read", "email"),
     CapabilityDefinition("discord.guilds", "Servers", "List accessible Discord servers.", "read", "guilds"),
-    CapabilityDefinition("discord.messages", "Messages", "Coordinate Discord announcement workflows.", "write", "identify"),
 )
 
 SLACK_CAPABILITIES = (

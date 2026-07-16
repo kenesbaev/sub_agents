@@ -235,7 +235,18 @@ def seed_default_workspace(db: Session, workspace: Workspace, created_by: int | 
             created += 1
         else:
             team.coordinator_agent_id = team.coordinator_agent_id or (coordinator.id if coordinator else None)
-            team.metadata_json = {**metadata, **(team.metadata_json or {})}
+            existing_metadata = team.metadata_json or {}
+            is_seed_managed = bool(
+                existing_metadata.get("seeded")
+                or existing_metadata.get("frontend_source_id") == team_definition.slug
+            )
+            # Refresh system-owned copy/capabilities for seeded teams while
+            # preserving any unrelated workspace metadata added by the user.
+            team.metadata_json = (
+                {**existing_metadata, **metadata}
+                if is_seed_managed
+                else {**metadata, **existing_metadata}
+            )
 
         for position, (agent_definition, agent) in enumerate(seed_agents):
             membership = db.scalar(select(TeamAgent).where(TeamAgent.team_id == team.id, TeamAgent.agent_id == agent.id))
