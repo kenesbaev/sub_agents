@@ -4,7 +4,8 @@ import Link from "next/link";
 import { Loader2 } from "lucide-react";
 import { Suspense, useState } from "react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+// Browser requests stay on the frontend origin. Next.js proxies /api server-side.
+const API_URL = "";
 
 function GoogleIcon() {
   return (
@@ -38,7 +39,13 @@ function AuthContent() {
   }
 
   return (
-    <main className="grid-page auth-page">
+    <main className="grid-page auth-page auth-cosmic-page">
+      <div className="auth-cosmos" aria-hidden="true">
+        <span className="auth-stars auth-stars-far" />
+        <span className="auth-stars auth-stars-near" />
+        <span className="auth-aurora auth-aurora-left" />
+        <span className="auth-aurora auth-aurora-right" />
+      </div>
       <section className="auth-card">
         <div className="auth-top">
           <Link className="brand" href="/">
@@ -68,7 +75,8 @@ export default function AuthPage() {
   return (
     <Suspense
       fallback={
-        <main className="grid-page auth-page">
+        <main className="grid-page auth-page auth-cosmic-page">
+          <div className="auth-cosmos" aria-hidden="true" />
           <section className="auth-card">
             <div className="auth-top">
               <span className="brand">

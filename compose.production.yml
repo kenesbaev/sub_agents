@@ -1,0 +1,360 @@
+name: ${COMPOSE_PROJECT_NAME:-teamora-production}
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-app-env: &app-env
+  env_file:
+    - ${PRODUCTION_ENV_FILE:-.env.production}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    stop_grace_period: 60s
+    cpus: 1.5
+    mem_limit: 2g
+    pids_limit: 200
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - data
+    logging: *default-logging
+
+  migrate:
+    <<: *app-env
+    image: ${BACKEND_IMAGE:-teamora-backend}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    read_only: true
+    cpus: 0.75
+    mem_limit: 768m
+    pids_limit: 100
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      DATABASE_POOL_SIZE: "1"
+      DATABASE_MAX_OVERFLOW: "0"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      INTEGRATION_ENCRYPTION_SECRET: ${INTEGRATION_ENCRYPTION_SECRET:?INTEGRATION_ENCRYPTION_SECRET is required}
+      COOKIE_SECURE: "true"
+      FRONTEND_URL: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      BACKEND_URL: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      DATABASE_AUTO_CREATE_SCHEMA: "false"
+      DATABASE_STARTUP_BACKFILL: "false"
+      LOCAL_PASSWORD_AUTH_ENABLED: "false"
+      YOUTUBE_UPLOAD_ENABLED: "false"
+      SCHEDULED_POST_WORKER_ENABLED: "false"
+      YOUTUBE_SNAPSHOT_WORKER_ENABLED: "false"
+      YOUTUBE_SNAPSHOT_WORKER_RUN_IN_API: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - data
+    logging: *default-logging
+
+  backend:
+    <<: *app-env
+    image: ${BACKEND_IMAGE:-teamora-backend}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    stop_grace_period: 30s
+    cpus: 1.5
+    mem_limit: 1536m
+    pids_limit: 256
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      DATABASE_POOL_SIZE: "5"
+      DATABASE_MAX_OVERFLOW: "5"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      INTEGRATION_ENCRYPTION_SECRET: ${INTEGRATION_ENCRYPTION_SECRET:?INTEGRATION_ENCRYPTION_SECRET is required}
+      FRONTEND_URL: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      BACKEND_URL: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      COOKIE_SECURE: "true"
+      DATABASE_AUTO_CREATE_SCHEMA: "false"
+      DATABASE_STARTUP_BACKFILL: "false"
+      LOCAL_PASSWORD_AUTH_ENABLED: "false"
+      YOUTUBE_UPLOAD_ENABLED: "false"
+      SCHEDULED_POST_WORKER_ENABLED: "false"
+      YOUTUBE_SNAPSHOT_WORKER_ENABLED: "false"
+      YOUTUBE_SNAPSHOT_WORKER_RUN_IN_API: "false"
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request; from urllib.parse import urlsplit; host=urlsplit(os.environ['BACKEND_URL']).netloc; request=urllib.request.Request('http://127.0.0.1:8000/readyz',headers={'Host':host}); urllib.request.urlopen(request,timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - edge
+      - data
+    logging: *default-logging
+
+  youtube-worker:
+    <<: *app-env
+    image: ${BACKEND_IMAGE:-teamora-backend}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "app.youtube_growth.worker_main"]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    stop_grace_period: 30s
+    cpus: 0.75
+    mem_limit: 768m
+    pids_limit: 128
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      DATABASE_POOL_SIZE: "2"
+      DATABASE_MAX_OVERFLOW: "1"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      INTEGRATION_ENCRYPTION_SECRET: ${INTEGRATION_ENCRYPTION_SECRET:?INTEGRATION_ENCRYPTION_SECRET is required}
+      FRONTEND_URL: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      BACKEND_URL: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      COOKIE_SECURE: "true"
+      DATABASE_AUTO_CREATE_SCHEMA: "false"
+      DATABASE_STARTUP_BACKFILL: "false"
+      LOCAL_PASSWORD_AUTH_ENABLED: "false"
+      YOUTUBE_UPLOAD_ENABLED: "false"
+      SCHEDULED_POST_WORKER_ENABLED: "false"
+      YOUTUBE_SNAPSHOT_WORKER_ENABLED: "true"
+      YOUTUBE_SNAPSHOT_WORKER_RUN_IN_API: "false"
+    healthcheck:
+      test: ["CMD", "python", "-c", "from app.db.session import engine; from app.health import readiness_report; import sys; sys.exit(0 if readiness_report(engine)[0] else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - data
+    logging: *default-logging
+
+  scheduled-post-worker:
+    <<: *app-env
+    image: ${BACKEND_IMAGE:-teamora-backend}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "app.scheduled_posts.worker_main"]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    stop_grace_period: 30s
+    cpus: 0.75
+    mem_limit: 768m
+    pids_limit: 128
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      DATABASE_POOL_SIZE: "2"
+      DATABASE_MAX_OVERFLOW: "1"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      INTEGRATION_ENCRYPTION_SECRET: ${INTEGRATION_ENCRYPTION_SECRET:?INTEGRATION_ENCRYPTION_SECRET is required}
+      FRONTEND_URL: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      BACKEND_URL: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      COOKIE_SECURE: "true"
+      DATABASE_AUTO_CREATE_SCHEMA: "false"
+      DATABASE_STARTUP_BACKFILL: "false"
+      LOCAL_PASSWORD_AUTH_ENABLED: "false"
+      YOUTUBE_UPLOAD_ENABLED: "false"
+      YOUTUBE_SNAPSHOT_WORKER_ENABLED: "false"
+      YOUTUBE_SNAPSHOT_WORKER_RUN_IN_API: "false"
+      SCHEDULED_POST_WORKER_ENABLED: "true"
+      SCHEDULED_POST_WORKER_BATCH_SIZE: "1"
+    healthcheck:
+      test: ["CMD", "python", "-c", "from app.db.session import engine; from app.health import readiness_report; import sys; sys.exit(0 if readiness_report(engine)[0] else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - data
+    logging: *default-logging
+
+  agent:
+    <<: *app-env
+    image: ${AGENT_IMAGE:-teamora-agent}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    restart: unless-stopped
+    init: true
+    read_only: true
+    stop_grace_period: 30s
+    cpus: 2.0
+    mem_limit: 2g
+    pids_limit: 256
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      DATABASE_POOL_SIZE: "3"
+      DATABASE_MAX_OVERFLOW: "2"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      INTEGRATION_ENCRYPTION_SECRET: ${INTEGRATION_ENCRYPTION_SECRET:?INTEGRATION_ENCRYPTION_SECRET is required}
+      FRONTEND_URL: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      BACKEND_URL: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      COOKIE_SECURE: "true"
+      DATABASE_AUTO_CREATE_SCHEMA: "false"
+      DATABASE_STARTUP_BACKFILL: "false"
+      LOCAL_PASSWORD_AUTH_ENABLED: "false"
+      YOUTUBE_UPLOAD_ENABLED: "false"
+      YOUTUBE_SNAPSHOT_WORKER_ENABLED: "false"
+      YOUTUBE_SNAPSHOT_WORKER_RUN_IN_API: "false"
+      SCHEDULED_POST_WORKER_ENABLED: "false"
+      FRONTEND_PUBLIC_URL: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      AGENT_ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      AGENT_REQUIRE_AUTH: "true"
+      AGENT_VALIDATE_USER_DB: "true"
+      AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:?AGENT_INTERNAL_TOKEN is required}
+      AGENT_CODEX_FALLBACK_ENABLED: "false"
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required}
+      KALIYA_LINK_FETCH_ENABLED: "false"
+      KALIYA_VIDEO_LINK_DOWNLOAD_ENABLED: "false"
+      TELEGRAM_AUTO_PUBLISH: "false"
+      AGENT_SERVER_LOG_LEVEL: ${AGENT_SERVER_LOG_LEVEL:-INFO}
+    volumes:
+      - agent-data:/app/data
+    expose:
+      - "4173"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4173/readyz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - edge
+      - data
+    logging: *default-logging
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-teamora-frontend}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        BACKEND_INTERNAL_URL: http://backend:8000
+        AGENT_INTERNAL_URL: http://agent:4173
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    cpus: 1.0
+    mem_limit: 1g
+    pids_limit: 128
+    environment:
+      NODE_ENV: production
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+      BACKEND_INTERNAL_URL: http://backend:8000
+      AGENT_INTERNAL_URL: http://agent:4173
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    depends_on:
+      backend:
+        condition: service_healthy
+      agent:
+        condition: service_healthy
+      youtube-worker:
+        condition: service_healthy
+      scheduled-post-worker:
+        condition: service_healthy
+    networks:
+      - edge
+    logging: *default-logging
+
+  nginx:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cpus: 0.5
+    mem_limit: 512m
+    pids_limit: 100
+    ports:
+      - "${HTTP_BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:80"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=384m,mode=1777
+      - /var/cache/nginx:size=64m,mode=0755
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/nginx-health | grep -q ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      agent:
+        condition: service_healthy
+    networks:
+      - edge
+    logging: *default-logging
+
+volumes:
+  postgres-data:
+  agent-data:
+
+networks:
+  edge:
+    driver: bridge
+  data:
+    driver: bridge
+    internal: true

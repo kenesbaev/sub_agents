@@ -6,20 +6,19 @@ const officeParams = new URLSearchParams(window.location.search);
 const isDashboardEmbed = officeParams.get("embed") === "dashboard";
 document.body.classList.toggle("embedded-dashboard", isDashboardEmbed);
 
-function configuredAuthApi() {
-  const configured = officeParams.get("apiUrl");
-  if (configured) {
-    try {
-      const url = new URL(configured, window.location.origin);
-      if (url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) {
-        return url.origin;
-      }
-    } catch {
-      // Fall back to the existing local development endpoint below.
-    }
-  }
-  return window.location.hostname === "localhost" ? "http://localhost:8000" : "http://127.0.0.1:8000";
+function normalizeOfficeTheme(value) {
+  return String(value || "").toLowerCase() === "light" ? "light" : "dark";
 }
+
+function applyOfficeTheme(value) {
+  const theme = normalizeOfficeTheme(value);
+  window.__teamoraOfficeTheme = theme;
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+  window.dispatchEvent(new CustomEvent("teamora-office-theme", { detail: { theme } }));
+}
+
+applyOfficeTheme(officeParams.get("theme") || "dark");
 
 const workspace = document.querySelector(".workspace");
 const canvas = document.querySelector("#officeCanvas");
@@ -49,8 +48,8 @@ const chatResizeHandle = document.querySelector("#chatResizeHandle");
 
 const AGENT_CHAT_API_PATH = "/api/agents/chat";
 const AGENT_CHAT_TIMEOUT_MS = 240000;
-const AGENT_CHAT_API_CANDIDATES = buildAgentChatApiCandidates();
-const AUTH_API = configuredAuthApi();
+const AGENT_CHAT_API_CANDIDATES = [AGENT_CHAT_API_PATH];
+const AUTH_API = "";
 const GOOGLE_ACTION_LABELS = {
   search_gmail: "Search Gmail",
   create_gmail_draft: "Create Gmail draft",
@@ -81,15 +80,6 @@ let chatSessionId = getOrCreateChatSessionId(accountKey);
 let storageReady = false;
 let selectedChatImages = [];
 let activeChatRun = null;
-
-function buildAgentChatApiCandidates() {
-  const protocol = window.location.protocol || "http:";
-  const host = window.location.hostname || "127.0.0.1";
-  const preferred = `${protocol}//${host}:4173${AGENT_CHAT_API_PATH}`;
-  const loopback = host === "127.0.0.1" ? "localhost" : "127.0.0.1";
-  const fallback = `${protocol}//${loopback}:4173${AGENT_CHAT_API_PATH}`;
-  return [...new Set([preferred, fallback])];
-}
 
 const tasks = [
   "Route request",
@@ -318,7 +308,7 @@ let slots = workStations.map((station) => station.point.clone());
 let roomGateways = DEFAULT_ROOM_GATEWAYS;
 let idleDestinations = DEFAULT_IDLE_DESTINATIONS;
 
-const TEAM_HOUSE_TEAM_IDS = new Set(["sales-team", "marketing-team"]);
+const TEAM_HOUSE_TEAM_IDS = new Set(["sales-team", "marketing-team", "youtube-growth-team"]);
 const TEAM_HOUSE_SIZE = Object.freeze({
   width: 32,
   depth: 23,
@@ -333,6 +323,7 @@ const TEAM_HOUSE_SIZE = Object.freeze({
 const TEAM_HOUSE_TEAM_SEAT_SLOTS = {
   "sales-team": [0, 1, 2, 3, 8],
   "marketing-team": [4, 5, 6, 7, 12],
+  "youtube-growth-team": [16, 17, 18, 4, 5, 6, 12, 19],
 };
 
 const TEAM_HOUSE_ROOMS = {
@@ -491,15 +482,34 @@ function cloneAgent(agent) {
   return { ...agent };
 }
 
-function normalizeTeamAgent(rawAgent, index) {
+const MAX_TEAM_AGENTS = 12;
+
+function normalizeRuntimeAgentId(rawAgent, index, usedIds) {
+  const requested = String(rawAgent?.id || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  const isCoordinator = index === 0 && (requested === "atlas" || requested === "coordinator" || rawAgent?.name === "Atlas");
+  const base = isCoordinator ? "coordinator" : requested || `agent-${index + 1}`;
+  let candidate = base;
+  let suffix = 2;
+  while (usedIds.has(candidate)) {
+    candidate = `${base}-${suffix}`.slice(0, 80);
+    suffix += 1;
+  }
+  usedIds.add(candidate);
+  return candidate;
+}
+
+function normalizeTeamAgent(rawAgent, index, runtimeId) {
   const base = DEFAULT_AGENTS[index % DEFAULT_AGENTS.length];
-  const requestedId = String(rawAgent?.id || "").trim();
-  const allowedId = DEFAULT_AGENTS.some((agent) => agent.id === requestedId) ? requestedId : base.id;
-  const runtimeBase = DEFAULT_AGENTS.find((agent) => agent.id === allowedId) || base;
+  const runtimeBase = DEFAULT_AGENTS.find((agent) => agent.id === runtimeId) || (runtimeId === "coordinator" ? DEFAULT_AGENTS[0] : base);
   const name = String(rawAgent?.name || base.name || `Agent ${index + 1}`).trim();
   const role = String(rawAgent?.role || base.role || "AI agent").trim();
   return {
-    id: allowedId,
+    id: runtimeId,
     name,
     role,
     kind: runtimeBase.kind || "human",
@@ -515,13 +525,16 @@ function normalizeTeamAgent(rawAgent, index) {
 function normalizeTeamPayload(data) {
   const team = data && typeof data === "object" ? data : {};
   const sourceAgents = Array.isArray(team.agents) ? team.agents : [];
+  const teamId = String(team.id || "custom-team");
+  const targetCapacity = shouldUseTeamHouse(teamId) ? TEAM_HOUSE_WORK_STATIONS.length : DEFAULT_WORK_STATIONS.length;
+  const usedIds = new Set();
   const nextAgents = sourceAgents
-    .slice(0, Math.min(DEFAULT_AGENTS.length, slots.length))
-    .map(normalizeTeamAgent)
+    .slice(0, Math.min(MAX_TEAM_AGENTS, targetCapacity))
+    .map((agent, index) => normalizeTeamAgent(agent, index, normalizeRuntimeAgentId(agent, index, usedIds)))
     .filter((agent) => agent.name);
   if (!nextAgents.length) return null;
   return {
-    id: String(team.id || "custom-team"),
+    id: teamId,
     name: String(team.name || "Team"),
     agents: nextAgents,
   };
@@ -584,7 +597,10 @@ let hoveredAgentIndex = -1;
 let cameraTransition = null;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color("#f4f6f8");
+scene.background = new THREE.Color(window.__teamoraOfficeTheme === "dark" ? "#061225" : "#f4f6f8");
+window.addEventListener("teamora-office-theme", (event) => {
+  applyOfficeSceneTheme(event.detail?.theme);
+});
 
 const camera = new THREE.OrthographicCamera(-7, 7, 4.6, -4.6, 0.1, 100);
 camera.position.set(9.8, 8.1, 10.8);
@@ -644,6 +660,41 @@ scene.add(sun);
 
 const root = new THREE.Group();
 scene.add(root);
+
+function applyOfficeSceneTheme(value) {
+  const theme = normalizeOfficeTheme(value);
+  const isDark = theme === "dark";
+  scene.background = new THREE.Color(isDark ? "#061225" : "#f4f6f8");
+
+  ambient.color.set(isDark ? "#b8d8ff" : "#ffffff");
+  ambient.groundColor.set(isDark ? "#020617" : "#9ca3af");
+  ambient.intensity = isDark ? 1.55 : 2.8;
+  sun.color.set(isDark ? "#dbeafe" : "#ffffff");
+  sun.intensity = isDark ? 2.05 : 3.2;
+
+  root.traverse((object) => {
+    if (!object?.isMesh) return;
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    materials.forEach((material) => {
+      if (!material?.color || !(material.isMeshStandardMaterial || material.isMeshPhysicalMaterial)) return;
+      if (material.userData.teamoraLightColor === undefined) {
+        material.userData.teamoraLightColor = material.color.getHex();
+      }
+
+      material.color.setHex(material.userData.teamoraLightColor);
+      if (isDark) {
+        const hsl = {};
+        material.color.getHSL(hsl);
+        material.color.setHSL(
+          hsl.h,
+          Math.min(1, hsl.s * 1.08 + 0.08),
+          Math.max(0.045, Math.min(0.23, hsl.l * 0.3)),
+        );
+      }
+      material.needsUpdate = true;
+    });
+  });
+}
 
 const clickTargets = [];
 const gltfLoader = new GLTFLoader();
@@ -781,6 +832,7 @@ function setOfficeLayout(teamId) {
     } else {
       addOffice();
     }
+    applyOfficeSceneTheme(window.__teamoraOfficeTheme);
 
     const shadowExtent = nextLayout === "team-house" ? 19 : 10;
     sun.shadow.camera.left = -shadowExtent;
@@ -2482,7 +2534,10 @@ function createEmptyChatThreads() {
 
 function safeStorageGet(key) {
   try {
-    return window.localStorage.getItem(key);
+    // Purge private chat data written by older builds and keep new state only
+    // for this browser tab.
+    window.localStorage.removeItem(key);
+    return window.sessionStorage.getItem(key);
   } catch {
     return null;
   }
@@ -2490,7 +2545,7 @@ function safeStorageGet(key) {
 
 function safeStorageSet(key, value) {
   try {
-    window.localStorage.setItem(key, value);
+    window.sessionStorage.setItem(key, value);
   } catch {
     // Storage can be unavailable in strict/private browser modes.
   }
@@ -2606,7 +2661,7 @@ function serializeChatThreads() {
             : message.pendingPublish,
           // Gmail and Sheets results can contain private workspace data. Keep a
           // completed card visible for this session, but never write its result
-          // into local storage.
+          // into persistent browser storage.
           pendingGoogleAction: message.pendingGoogleAction
             ? { ...message.pendingGoogleAction, result: null }
             : message.pendingGoogleAction,
@@ -2689,6 +2744,7 @@ function normalizePendingPublish(value, contextText = "") {
   if (!value || typeof value !== "object" || typeof value.text !== "string") return null;
   const platforms = normalizePublishPlatforms(value.platforms || value.platform);
   const isYoutube = platforms.includes("youtube");
+  const rawAccountId = Number(value.accountId ?? value.account_id);
   const pending = {
     platform: platforms[0] || "telegram",
     platforms,
@@ -2701,6 +2757,11 @@ function normalizePendingPublish(value, contextText = "") {
     youtubeTitle: String(value.youtubeTitle || value.youtube_title || defaultYoutubeTitle(value.text)).slice(0, 100),
     youtubeDescription: String(value.youtubeDescription || value.youtube_description || value.text || "").slice(0, 5000),
     privacyStatus: normalizeYoutubePrivacyStatus(value.privacyStatus || value.privacy_status),
+    accountId: Number.isInteger(rawAccountId) && rawAccountId > 0 ? rawAccountId : null,
+    accountLabel: String(value.accountLabel || value.account_label || "").slice(0, 255),
+    youtubeUploadGranted: value.youtubeUploadGranted === true || value.youtube_upload_granted === true
+      ? true
+      : (value.youtubeUploadGranted === false || value.youtube_upload_granted === false ? false : null),
     resultUrl: safeExternalHttpsUrl(value.resultUrl || value.result_url || value.publishedUrl || value.published_url),
     runId: String(value.runId || ""),
     taskId: value.taskId || value.task_id || null,
@@ -3265,7 +3326,10 @@ function createPublishCard(chatId, message) {
   const action = document.createElement("button");
   action.type = "button";
   action.textContent = publishButtonText(pending.status, platforms[0]);
-  action.disabled = pending.status === "auto_publish_pending" || pending.status === "publishing" || pending.status === "published";
+  action.disabled = pending.status === "auto_publish_pending"
+    || pending.status === "publishing"
+    || pending.status === "published"
+    || pending.status === "reconciliation_required";
   action.addEventListener("click", () => publishPendingMessage(chatId, message));
 
   card.appendChild(action);
@@ -3536,6 +3600,16 @@ async function executeGoogleAction(chatId, message) {
 }
 
 function appendYoutubeApprovalFields(card, pending) {
+  const accountField = document.createElement("label");
+  accountField.className = "publish-media-field";
+  const accountLabel = document.createElement("span");
+  accountLabel.textContent = "Connected YouTube account";
+  const accountInput = document.createElement("input");
+  accountInput.type = "text";
+  accountInput.readOnly = true;
+  accountInput.value = pending.accountLabel || "Default connected YouTube account";
+  accountField.append(accountLabel, accountInput);
+
   const mediaField = document.createElement("label");
   mediaField.className = "publish-media-field";
   const mediaLabel = document.createElement("span");
@@ -3598,7 +3672,7 @@ function appendYoutubeApprovalFields(card, pending) {
     saveChatState();
   });
   privacyField.append(privacyLabel, privacyInput);
-  card.append(mediaField, titleField, descriptionField, privacyField);
+  card.append(accountField, mediaField, titleField, descriptionField, privacyField);
 }
 
 function platformLabel(platform) {
@@ -3611,9 +3685,19 @@ function publishButtonText(status, platform = "") {
   if (status === "auto_publish_pending") return "Auto publishing...";
   if (status === "publishing") return "Publishing...";
   if (status === "published") return "Published";
+  if (status === "reconciliation_required") return "Manual reconciliation required";
   if (status === "error") return "Retry publish";
   if (platform === "youtube") return "Publish video";
   return "Publish";
+}
+
+function markSocialReconciliationRequired(pending) {
+  pending.status = "reconciliation_required";
+  pending.autoPublish = false;
+  pending.error = (
+    "Manual reconciliation required. Check Telegram and Instagram directly before taking any further action; "
+    + "the provider outcome could not be confirmed."
+  );
 }
 
 function appendChatMessage(chatId, message, { save = true } = {}) {
@@ -3694,7 +3778,183 @@ function setPanelTab(tab) {
   if (showChat) scrollChatToBottom();
 }
 
+function youtubeGrowthDelegation(text) {
+  const clean = String(text || "").trim();
+  const lower = clean.toLowerCase();
+  const url = clean.match(/https?:\/\/[^\s]+/i)?.[0] || "";
+  let action = "analyze_competitors";
+  if (/(?:content\s*plan|контент[^\s]*\s+план|план\s+контент)/i.test(clean)) action = "create_content_plan";
+  else if (/(?:checkpoint|1\s*h|6\s*h|24\s*h|72\s*h|7\s*d|результат|метрик)/i.test(clean)) action = "growth_snapshot";
+  else if (/(?:competitor|конкурент|trend|тренд|content\s*gap)/i.test(clean)) action = "analyze_competitors";
+  else if (url && /(?:channel|канал)/i.test(clean)) action = "analyze_channel";
+  else if (url) action = "analyze_video";
+  const days = /(?:30\s*(?:day|дн)|месяц)/i.test(clean) ? 30 : 7;
+  return {
+    action,
+    input: {
+      message: clean.slice(0, 10_000),
+      ...(url ? { url } : {}),
+      ...(action === "analyze_competitors" ? { query: clean.slice(0, 500), limit: 20 } : {}),
+      ...(action === "create_content_plan" ? { days } : {}),
+      source: "teamora_office",
+      language_hint: /[\u0400-\u04ff]/.test(lower) ? "ru" : "en",
+    },
+    artifact_ids: [],
+  };
+}
+
+function isExplicitYoutubePublishIntent(value) {
+  const text = String(value || "").trim();
+  if (!explicitPublishPlatformHints(text).includes("youtube")) return false;
+  const command = text.replace(
+    /^(?:(?:please|hey|okay|ok|atlas|teamora|пожалуйста|смотри|так|атлас|тимора)[,:;!\s-]+)+/i,
+    "",
+  );
+  const englishAction = /^(?:(?:can|could|would|will)\s+you\s+|i\s+(?:want|need)\s+you\s+to\s+|we\s+need\s+to\s+)?(?:publish|upload|post|send)\b.{0,160}(?:(?:to|on)\s+youtube|youtube\s+(?:video|short|clip|content))/i;
+  const russianAction = /^(?:(?:мне|нам)\s+(?:нужно|надо)\s+|(?:я|мы)\s+хочу\s+(?:чтобы\s+ты\s+)?|нужно\s+|надо\s+)?(?:опубликуй|опубликовать|опубликовал|публикуй|загрузи|загрузить|выложи|выложить|размести|разместить|отправь|отправить)(?=\s|[.,!?;:]|$).{0,160}(?:(?:на|в)\s*(?:youtube|ютуб|ютьюб)|(?:youtube|ютуб|ютьюб)\s*(?:видео|ролик|shorts?|шортс)?)/i;
+  const russianPostAction = /^(?:сделай|делай|создай)(?=\s|[.,!?;:]|$).{0,80}(?:публикаци[а-яё]*|пост)(?=\s|[.,!?;:]|$).{0,80}(?:на|в)\s*(?:youtube|ютуб|ютьюб)/i;
+  const youtubeFirstAction = /^(?:youtube|ютуб|ютьюб)[,:;!\s-]+(?:publish|upload|post|send|опубликуй|публикуй|загрузи|выложи|размести|отправь)(?=\s|[.,!?;:]|$)/i;
+  return englishAction.test(command)
+    || russianAction.test(command)
+    || russianPostAction.test(command)
+    || youtubeFirstAction.test(command);
+}
+
+async function defaultYoutubePublishAccount() {
+  try {
+    const response = await fetch(`${AUTH_API}/api/connected-apps`, {
+      credentials: "include",
+    });
+    if (!response.ok) {
+      return { id: null, label: "YouTube account status unavailable", uploadGranted: null };
+    }
+    const payload = await response.json().catch(() => ({}));
+    const provider = Array.isArray(payload.providers)
+      ? payload.providers.find((item) => item?.key === "youtube")
+      : null;
+    if (!provider?.connected || !Array.isArray(provider.accounts) || !provider.accounts.length) {
+      return { id: null, label: "No YouTube account connected", uploadGranted: false };
+    }
+    const account = provider.accounts.find((item) => item?.isDefault) || provider.accounts[0];
+    const grantedCapabilities = Array.isArray(account?.grantedCapabilities) ? account.grantedCapabilities : [];
+    const uploadCapability = Array.isArray(provider.capabilities)
+      ? provider.capabilities.find((item) => item?.key === "youtube.upload")
+      : null;
+    return {
+      id: Number.isInteger(Number(account?.id)) && Number(account.id) > 0 ? Number(account.id) : null,
+      label: String(account?.label || account?.identifier || "Default connected YouTube account").slice(0, 255),
+      uploadGranted: grantedCapabilities.includes("youtube.upload") || uploadCapability?.granted === true,
+    };
+  } catch {
+    return { id: null, label: "YouTube account status unavailable", uploadGranted: null };
+  }
+}
+
+async function youtubePublisherApproval(text, runId) {
+  const clean = String(text || "").trim().slice(0, 10_000);
+  const linkedMedia = extractPublishMediaFromText(clean);
+  const mediaUrl = linkedMedia?.mediaType?.startsWith("video/")
+    ? publicYoutubeVideoUrl(linkedMedia.mediaUrl)
+    : "";
+  const account = await defaultYoutubePublishAccount();
+  const notice = account.uploadGranted === false
+    ? "Connect YouTube with publisher access before publishing. Nothing has been uploaded."
+    : "Review the connected account and every field, then click Publish video to approve the upload. Nothing is published automatically.";
+  const pendingPublish = normalizePendingPublish({
+    platform: "youtube",
+    platforms: ["youtube"],
+    status: "approval_required",
+    text: clean,
+    mediaUrl,
+    mediaType: mediaUrl ? "video/mp4" : "",
+    mediaName: mediaUrl ? (linkedMedia?.mediaName || "video") : "",
+    youtubeTitle: defaultYoutubeTitle(clean),
+    youtubeDescription: clean,
+    privacyStatus: "private",
+    accountId: account.id,
+    accountLabel: account.label,
+    youtubeUploadGranted: account.uploadGranted,
+    runId,
+    source: "youtube-growth-team",
+    autoPublish: false,
+    separateActionRequired: true,
+    notice,
+  }, clean);
+  const reply = mediaUrl
+    ? "Publisher prepared a YouTube upload for review. Confirm the connected account, title, description, privacy, and video URL in the approval card."
+    : "Publisher prepared a YouTube upload approval card. Add a public HTTPS video URL and review every field before approving.";
+  return {
+    reply,
+    messages: [{
+      author: "Publisher",
+      from: "youtube-publisher",
+      text: reply,
+      phase: "final",
+      isFinal: true,
+      runId,
+    }],
+    pendingPublish,
+  };
+}
+
+async function requestYoutubeGrowthTeam(text, runId) {
+  const controller = new AbortController();
+  if (activeChatRun?.runId === runId) activeChatRun.controller = controller;
+  const timeout = window.setTimeout(() => controller.abort(), AGENT_CHAT_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${AUTH_API}/api/youtube-growth/delegate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(youtubeGrowthDelegation(text)),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = typeof payload?.detail === "string" ? payload.detail : payload?.detail?.message;
+      throw new Error(detail || `YouTube Growth delegation failed (HTTP ${response.status}).`);
+    }
+    const childCount = Array.isArray(payload.child_tasks) ? payload.child_tasks.length : 0;
+    const artifactIds = Array.isArray(payload.artifact_ids) ? payload.artifact_ids : [];
+    const taskId = payload.coordinator_task_id || "";
+    const textParts = [
+      payload.message || "The YouTube Growth request is queued.",
+      taskId ? `Coordinator task: #${taskId}.` : "",
+      childCount ? `${childCount} specialist task${childCount === 1 ? "" : "s"} created.` : "",
+      artifactIds.length ? `Artifacts: ${artifactIds.map((id) => `#${id}`).join(", ")}.` : "",
+      "Open YouTube Growth in the dashboard to review validated results, sources, and limitations.",
+    ].filter(Boolean).join(" ");
+    return {
+      reply: textParts,
+      messages: [{
+        author: "Atlas",
+        from: "coordinator",
+        text: textParts,
+        phase: "final",
+        isFinal: true,
+        runId,
+        taskId,
+      }],
+      task: taskId ? { id: taskId, status: payload.status || "queued" } : null,
+    };
+  } finally {
+    window.clearTimeout(timeout);
+    if (activeChatRun?.runId === runId && activeChatRun.controller === controller) {
+      activeChatRun.controller = null;
+    }
+  }
+}
+
 async function requestAgentChat(chatId, text, files = [], runId = createClientRunId()) {
+  if (officeConversationTeamId === "youtube-growth-team") {
+    if (files.length) {
+      throw new Error("Use the YouTube Growth dashboard to analyze an owned uploaded file. Office delegation accepts text and YouTube URLs.");
+    }
+    if (isExplicitYoutubePublishIntent(text)) {
+      return youtubePublisherApproval(text, runId);
+    }
+    return requestYoutubeGrowthTeam(text, runId);
+  }
   const history = selectedThread()
     .filter((message) => message.text !== "Thinking...")
     .slice(-12)
@@ -4106,6 +4366,15 @@ function safeClientPublishError(error, fallback) {
 }
 
 async function publishYoutubeVideo(pending) {
+  if (pending.youtubeUploadGranted === false) {
+    const account = await defaultYoutubePublishAccount();
+    pending.accountId = account.id;
+    pending.accountLabel = account.label;
+    pending.youtubeUploadGranted = account.uploadGranted;
+    if (account.uploadGranted === false) {
+      throw new Error("Connect YouTube with publisher access before publishing this video.");
+    }
+  }
   const mediaUrl = publicYoutubeVideoUrl(pending.mediaUrl);
   if (!mediaUrl) {
     throw new Error("Enter a public HTTPS video URL before publishing to YouTube.");
@@ -4129,6 +4398,7 @@ async function publishYoutubeVideo(pending) {
       tool: "upload_youtube_video",
       arguments: {
         approved: true,
+        ...(pending.accountId ? { accountId: pending.accountId } : {}),
         mediaUrl,
         title,
         description,
@@ -4156,6 +4426,8 @@ async function publishYoutubeVideo(pending) {
 async function publishPendingMessage(chatId, message) {
   const pending = message.pendingPublish;
   if (!pending?.text) return;
+  let socialDispatchStarted = false;
+  let socialOutcomeConfirmed = false;
   pending.status = "publishing";
   pending.error = "";
   pending.resultUrl = "";
@@ -4181,6 +4453,7 @@ async function publishPendingMessage(chatId, message) {
       return;
     }
 
+    socialDispatchStarted = true;
     const response = await fetch(`${AUTH_API}/api/publish/social`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -4201,11 +4474,25 @@ async function publishPendingMessage(chatId, message) {
     if (!response.ok) {
       throw new Error(safePublishError(payload, response.status));
     }
-    if (Array.isArray(payload.results)) {
-      const failed = payload.results.filter((result) => !result.ok);
-      if (failed.length) {
-        throw new Error(failed.map((result) => `${platformLabel(result.platform)}: ${result.error || "failed"}`).join(" | "));
-      }
+    if (!Array.isArray(payload.results)
+      || payload.results.length !== platforms.length
+      || platforms.some((platform) => !payload.results.some((result) => result?.platform === platform))) {
+      throw new Error("The publish service returned an incomplete delivery result.");
+    }
+    socialOutcomeConfirmed = true;
+    const failed = payload.results.filter((result) => !result.ok);
+    const succeeded = payload.results.filter((result) => result.ok);
+    const reconciliationRequired = payload.reconciliation_required === true
+      || payload.results.some((result) => result?.reconciliation_required === true)
+      || (failed.length > 0 && succeeded.length > 0);
+    if (reconciliationRequired) {
+      markSocialReconciliationRequired(pending);
+      saveChatState();
+      renderChatMessages();
+      return;
+    }
+    if (failed.length) {
+      throw new Error(failed.map((result) => `${platformLabel(result.platform)}: ${result.error || "failed"}`).join(" | "));
     }
     pending.status = "published";
     saveChatState();
@@ -4217,8 +4504,12 @@ async function publishPendingMessage(chatId, message) {
       text: publishedText,
     });
   } catch (error) {
-    pending.status = "error";
-    pending.error = safeClientPublishError(error, "Social publish failed");
+    if (socialDispatchStarted && !socialOutcomeConfirmed) {
+      markSocialReconciliationRequired(pending);
+    } else {
+      pending.status = "error";
+      pending.error = safeClientPublishError(error, "Social publish failed");
+    }
     saveChatState();
     renderChatMessages();
   }
@@ -4305,6 +4596,10 @@ function notifyOfficeSelection(agentId) {
 function handleParentMessage(event) {
   if (event.origin !== window.location.origin) return;
   const data = event.data || {};
+  if (data.type === "rebly-office-set-theme") {
+    applyOfficeTheme(data.theme);
+    return;
+  }
   if (data.type === "rebly-office-open-conversation") {
     applyOfficeConversation(data.conversation);
     applyOfficeTeam(data.team);
@@ -5014,6 +5309,7 @@ const clockTimer = new THREE.Clock();
 
 if (renderer) {
   addOffice();
+  applyOfficeSceneTheme(window.__teamoraOfficeTheme);
   agents.forEach(createAgentModel);
 }
 loadChatState(accountKey);

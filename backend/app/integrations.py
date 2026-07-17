@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+from datetime import datetime, timezone
 import re
 from typing import Any
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,10 +14,25 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.connected_apps.service import create_scheduled_post, upsert_connected_account, write_activity
+from app.connected_apps.service import (
+    create_scheduled_post,
+    insert_unique_do_nothing,
+    upsert_connected_account,
+    write_activity,
+)
 from app.core_domain.service import set_task_completion_fields
 from app.db.session import get_db
-from app.models import InstagramIntegration, SocialPost, Task, TelegramBotIntegration, User
+from app.models import (
+    InstagramIntegration,
+    IntegrationAccount,
+    IntegrationProvider,
+    IntegrationToken,
+    SocialPost,
+    Task,
+    TelegramBotIntegration,
+    User,
+    UserIntegration,
+)
 from app.schemas import (
     InstagramConnectRequest,
     InstagramStatus,
@@ -36,6 +54,73 @@ TELEGRAM_CAPTION_LIMIT = 1024
 MEDIA_DATA_URL_RE = re.compile(r"^data:(?P<mime>[-\w.+/]+);base64,(?P<data>.+)$", re.DOTALL)
 IMAGE_URL_RE = re.compile(r"\.(?:avif|gif|jpe?g|png|webp)(?:[?#].*)?$", re.IGNORECASE)
 VIDEO_URL_RE = re.compile(r"\.(?:m4v|mov|mp4|mpeg|mpg|webm)(?:[?#].*)?$", re.IGNORECASE)
+SCHEDULED_PUBLISH_PLATFORMS = frozenset({"telegram", "instagram"})
+PUBLISH_OUTCOME_RECONCILIATION_ERROR = (
+    "The provider did not confirm the final delivery outcome. Check the target account manually before any retry."
+)
+
+
+class PublishOutcomeUnknown(HTTPException):
+    """The provider may have accepted a side effect but did not confirm it."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=PUBLISH_OUTCOME_RECONCILIATION_ERROR,
+        )
+
+
+def validate_scheduled_publish_request(
+    payload: PublishSocialRequest,
+    platforms: list[str],
+) -> datetime:
+    """Fail before enqueueing work the scheduler cannot deliver safely."""
+    unsupported = sorted(set(platforms) - SCHEDULED_PUBLISH_PLATFORMS)
+    if unsupported:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Scheduled publishing currently supports only Telegram and Instagram.",
+        )
+    if payload.repeat_rule:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Recurring scheduled publishing is not available yet.",
+        )
+    try:
+        ZoneInfo(payload.timezone)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="timezone must be a valid IANA timezone name.",
+        ) from exc
+    if payload.media_data_url:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Scheduled media must use a public HTTPS media URL.",
+        )
+
+    publish_at = payload.publish_at
+    if publish_at is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="publish_at is required.")
+    if publish_at.tzinfo is None or publish_at.utcoffset() is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="publish_at must include a UTC offset or Z suffix.",
+        )
+
+    if "instagram" in platforms:
+        parsed_media = urlsplit((payload.media_url or "").strip())
+        if (
+            parsed_media.scheme != "https"
+            or not parsed_media.hostname
+            or parsed_media.username is not None
+            or parsed_media.password is not None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Scheduled Instagram publishing requires a public HTTPS media URL.",
+            )
+    return publish_at.astimezone(timezone.utc)
 
 
 def telegram_status(integration: TelegramBotIntegration | None) -> TelegramBotStatus:
@@ -92,6 +177,74 @@ def telegram_credentials(
     )
 
 
+def connected_account_credentials(
+    db: Session,
+    *,
+    user_id: int,
+    platform: str,
+    account_id: int,
+) -> tuple[str, str]:
+    """Load credentials only for the exact connected account owned by a user."""
+    row = db.execute(
+        select(IntegrationAccount, IntegrationToken)
+        .join(UserIntegration, UserIntegration.id == IntegrationAccount.user_integration_id)
+        .join(IntegrationProvider, IntegrationProvider.id == IntegrationAccount.provider_id)
+        .outerjoin(IntegrationToken, IntegrationToken.integration_account_id == IntegrationAccount.id)
+        .where(
+            IntegrationAccount.id == account_id,
+            UserIntegration.user_id == user_id,
+            UserIntegration.status == "connected",
+            IntegrationProvider.key == platform,
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"The selected {platform} account is not connected.",
+        )
+    account, token = row
+    if token is None or not token.encrypted_access_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"The selected {platform} account must be reconnected.",
+        )
+    expires_at = token.expires_at
+    if expires_at is not None:
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"The selected {platform} account token has expired; reconnect it before publishing.",
+            )
+    return decrypt_token(token.encrypted_access_token), account.account_identifier
+
+
+def default_connected_account_id(
+    db: Session,
+    *,
+    user_id: int,
+    platform: str,
+) -> int | None:
+    """Return the user's deterministic default connected account for a provider."""
+    return db.scalar(
+        select(IntegrationAccount.id)
+        .join(UserIntegration, UserIntegration.id == IntegrationAccount.user_integration_id)
+        .join(IntegrationProvider, IntegrationProvider.id == IntegrationAccount.provider_id)
+        .where(
+            UserIntegration.user_id == user_id,
+            UserIntegration.status == "connected",
+            IntegrationProvider.key == platform,
+        )
+        .order_by(
+            IntegrationAccount.is_default.desc(),
+            IntegrationAccount.created_at.asc(),
+            IntegrationAccount.id.asc(),
+        )
+        .limit(1)
+    )
+
+
 def verify_telegram_bot(token: str) -> str | None:
     try:
         with httpx.Client(timeout=15) as client:
@@ -130,17 +283,13 @@ def send_telegram_message(token: str, chat_id: str, text: str) -> dict[str, Any]
                 },
             )
     except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Telegram publish request failed",
-        ) from exc
+        raise PublishOutcomeUnknown() from exc
     try:
         payload = response.json() if response.content else {}
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Telegram publish returned an invalid response",
-        ) from exc
+        raise PublishOutcomeUnknown() from exc
+    if response.status_code in {408, 409, 425, 429} or response.status_code >= 500:
+        raise PublishOutcomeUnknown()
     if response.status_code >= 400 or not payload.get("ok"):
         description = str(payload.get("description") or "Telegram rejected the message")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=description[:300])
@@ -227,17 +376,13 @@ def send_telegram_post(
                 files=files,
             )
     except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Telegram media publish request failed",
-        ) from exc
+        raise PublishOutcomeUnknown() from exc
     try:
         payload = response.json() if response.content else {}
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Telegram media publish returned an invalid response",
-        ) from exc
+        raise PublishOutcomeUnknown() from exc
+    if response.status_code in {408, 409, 425, 429} or response.status_code >= 500:
+        raise PublishOutcomeUnknown()
     if response.status_code >= 400 or not payload.get("ok"):
         description = str(payload.get("description") or "Telegram rejected the media")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=description[:300])
@@ -327,16 +472,12 @@ def send_instagram_post(access_token: str, ig_user_id: str, text: str, media_url
     except HTTPException:
         raise
     except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Instagram publish request failed",
-        ) from exc
+        raise PublishOutcomeUnknown() from exc
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Instagram publish returned an invalid response",
-        ) from exc
+        raise PublishOutcomeUnknown() from exc
 
+    if publish_response.status_code in {408, 409, 425, 429} or publish_response.status_code >= 500:
+        raise PublishOutcomeUnknown()
     if publish_response.status_code >= 400 or not isinstance(published, dict) or not published.get("id"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -435,7 +576,8 @@ def update_publish_task_from_results(
     if not task:
         return
     ok = all(result.ok for result in results)
-    task.status = "completed" if ok else "failed"
+    reconciliation_required = results_require_reconciliation(results)
+    task.status = "completed" if ok else ("reconciliation_required" if reconciliation_required else "failed")
     task.progress = 100 if ok else task.progress
     set_task_completion_fields(task)
     errors = [f"{result.platform}: {result.error}" for result in results if not result.ok and result.error]
@@ -445,7 +587,16 @@ def update_publish_task_from_results(
         **(task.result_json or {}),
         "publishResults": [result.model_dump() for result in results],
         "published": ok,
+        "reconciliationRequired": reconciliation_required,
     }
+
+
+def results_require_reconciliation(results: list[PublishTargetResult]) -> bool:
+    """A retry is unsafe after an unknown outcome or a partial success."""
+
+    return any(result.reconciliation_required for result in results) or (
+        any(result.ok for result in results) and not all(result.ok for result in results)
+    )
 
 
 def publish_to_platform(
@@ -460,10 +611,26 @@ def publish_to_platform(
     media_name: str | None,
     run_id: str | None,
     source: str | None,
+    account_id: int | None = None,
 ) -> PublishTargetResult:
     try:
+        effective_account_id = account_id
+        if effective_account_id is None:
+            effective_account_id = default_connected_account_id(
+                db,
+                user_id=user.id,
+                platform=platform,
+            )
         if platform == "telegram":
-            token, target_chat_id = telegram_credentials(get_telegram_integration(db, user.id))
+            if effective_account_id is not None:
+                token, target_chat_id = connected_account_credentials(
+                    db,
+                    user_id=user.id,
+                    platform="telegram",
+                    account_id=effective_account_id,
+                )
+            else:
+                token, target_chat_id = telegram_credentials(get_telegram_integration(db, user.id))
             result = send_telegram_post(
                 token,
                 target_chat_id,
@@ -480,19 +647,33 @@ def publish_to_platform(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Instagram requires a public image/video URL; uploaded chat files can publish to Telegram only",
                 )
-            integration = get_instagram_integration(db, user.id)
-            if not integration:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Instagram is not connected",
+            if effective_account_id is not None:
+                access_token, ig_user_id = connected_account_credentials(
+                    db,
+                    user_id=user.id,
+                    platform="instagram",
+                    account_id=effective_account_id,
                 )
-            access_token = decrypt_token(integration.encrypted_access_token)
-            result = send_instagram_post(access_token, integration.ig_user_id, text, media_url)
+            else:
+                integration = get_instagram_integration(db, user.id)
+                if not integration:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Instagram is not connected",
+                    )
+                access_token = decrypt_token(integration.encrypted_access_token)
+                ig_user_id = integration.ig_user_id
+            result = send_instagram_post(access_token, ig_user_id, text, media_url)
             external_id = result.get("id")
         else:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported platform")
     except HTTPException as exc:
-        detail = str(exc.detail or "Publish failed")[:500]
+        reconciliation_required = isinstance(exc, PublishOutcomeUnknown)
+        detail = (
+            PUBLISH_OUTCOME_RECONCILIATION_ERROR
+            if reconciliation_required
+            else str(exc.detail or "Publish failed")[:500]
+        )
         record_social_post(
             db,
             user_id=user.id,
@@ -501,10 +682,15 @@ def publish_to_platform(
             media_url=media_url or (f"uploaded:{media_name}" if media_data_url else None),
             source=source,
             run_id=run_id,
-            status_value="failed",
+            status_value="reconciliation_required" if reconciliation_required else "failed",
             error=detail,
         )
-        return PublishTargetResult(platform=platform, ok=False, error=detail)
+        return PublishTargetResult(
+            platform=platform,
+            ok=False,
+            error=detail,
+            reconciliation_required=reconciliation_required,
+        )
 
     record_social_post(
         db,
@@ -541,18 +727,26 @@ def connect_telegram_bot(
     target_chat_id = payload.target_chat_id.strip()
     bot_username = verify_telegram_bot(token)
     integration = get_telegram_integration(db, user.id)
-    if integration:
-        integration.encrypted_bot_token = encrypt_token(token)
-        integration.target_chat_id = target_chat_id
-        integration.bot_username = bot_username
-    else:
-        integration = TelegramBotIntegration(
-            user_id=user.id,
-            encrypted_bot_token=encrypt_token(token),
-            target_chat_id=target_chat_id,
-            bot_username=bot_username,
+    encrypted_token = encrypt_token(token)
+    if integration is None:
+        insert_unique_do_nothing(
+            db,
+            TelegramBotIntegration,
+            values={
+                "user_id": user.id,
+                "encrypted_bot_token": encrypted_token,
+                "target_chat_id": target_chat_id,
+                "bot_username": bot_username,
+            },
+            index_elements=["user_id"],
         )
-        db.add(integration)
+        db.flush()
+        integration = get_telegram_integration(db, user.id)
+        if integration is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Telegram connection changed; retry")
+    integration.encrypted_bot_token = encrypted_token
+    integration.target_chat_id = target_chat_id
+    integration.bot_username = bot_username
     upsert_connected_account(
         db,
         user_id=user.id,
@@ -582,18 +776,26 @@ def connect_instagram(
     ig_user_id = payload.ig_user_id.strip()
     username = verify_instagram_account(access_token, ig_user_id)
     integration = get_instagram_integration(db, user.id)
-    if integration:
-        integration.encrypted_access_token = encrypt_token(access_token)
-        integration.ig_user_id = ig_user_id
-        integration.username = username
-    else:
-        integration = InstagramIntegration(
-            user_id=user.id,
-            encrypted_access_token=encrypt_token(access_token),
-            ig_user_id=ig_user_id,
-            username=username,
+    encrypted_access_token = encrypt_token(access_token)
+    if integration is None:
+        insert_unique_do_nothing(
+            db,
+            InstagramIntegration,
+            values={
+                "user_id": user.id,
+                "encrypted_access_token": encrypted_access_token,
+                "ig_user_id": ig_user_id,
+                "username": username,
+            },
+            index_elements=["user_id"],
         )
-        db.add(integration)
+        db.flush()
+        integration = get_instagram_integration(db, user.id)
+        if integration is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Instagram connection changed; retry")
+    integration.encrypted_access_token = encrypted_access_token
+    integration.ig_user_id = ig_user_id
+    integration.username = username
     upsert_connected_account(
         db,
         user_id=user.id,
@@ -619,6 +821,11 @@ def publish_telegram(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PublishTelegramResponse:
+    if get_settings().is_production:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="This legacy endpoint is disabled in production; use the approval-based social publish flow.",
+        )
     integration = get_telegram_integration(db, user.id)
     token, target_chat_id = telegram_credentials(integration)
     result = send_telegram_message(token, target_chat_id, payload.text.strip())
@@ -657,17 +864,44 @@ def publish_social(
 ) -> PublishSocialResponse:
     text = payload.text.strip()
     platforms = list(dict.fromkeys(payload.platforms))
+    unsupported = sorted(set(platforms) - SCHEDULED_PUBLISH_PLATFORMS)
+    if unsupported:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Direct social publishing currently supports only Telegram and Instagram.",
+        )
+    if payload.account_id is not None and len(platforms) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="A selected account can be used with exactly one publishing platform.",
+        )
     if payload.publish_at:
+        publish_at = validate_scheduled_publish_request(payload, platforms)
         results: list[PublishTargetResult] = []
         for platform in platforms:
+            account_id = payload.account_id
+            if account_id is None:
+                account_id = default_connected_account_id(
+                    db,
+                    user_id=user.id,
+                    platform=platform,
+                )
+            if account_id is not None:
+                connected_account_credentials(
+                    db,
+                    user_id=user.id,
+                    platform=platform,
+                    account_id=account_id,
+                )
             post = create_scheduled_post(
                 db,
                 user_id=user.id,
                 platform=platform,
+                account_id=account_id,
                 content=text,
                 media_url=payload.media_url,
                 media_type=payload.media_type,
-                publish_at=payload.publish_at,
+                publish_at=publish_at,
                 timezone=payload.timezone,
                 repeat_rule=payload.repeat_rule,
                 source=payload.source,
@@ -676,7 +910,7 @@ def publish_social(
             results.append(PublishTargetResult(platform=platform, ok=True, external_id=f"scheduled:{post.id}"))
         update_publish_task_status(db, user, payload, results)
         db.commit()
-        return PublishSocialResponse(ok=True, results=results)
+        return PublishSocialResponse(ok=True, results=results, reconciliation_required=False)
     results = [
         publish_to_platform(
             db,
@@ -689,9 +923,14 @@ def publish_social(
             media_name=payload.media_name,
             run_id=payload.run_id,
             source=payload.source,
+            account_id=payload.account_id,
         )
         for platform in platforms
     ]
     update_publish_task_status(db, user, payload, results)
     db.commit()
-    return PublishSocialResponse(ok=all(result.ok for result in results), results=results)
+    return PublishSocialResponse(
+        ok=all(result.ok for result in results),
+        results=results,
+        reconciliation_required=results_require_reconciliation(results),
+    )

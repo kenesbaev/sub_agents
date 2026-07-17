@@ -1,13 +1,36 @@
-# Rebly AI
+# Teamora AI / Rebly AI
 
-Full-stack Rebly AI prototype with a Teamly-style landing page, real auth, a FastAPI backend, PostgreSQL, and the original 3D Agent Office embedded behind the dashboard `HIRE` button.
+Full-stack AI team workspace with a Next.js frontend, FastAPI API, PostgreSQL,
+authenticated AI Agent service, Connected Apps, YouTube Growth analysis, and the
+3D Agent Office.
 
 ## Stack
 
 - Frontend: Next.js App Router in `frontend/`
 - Backend: FastAPI in `backend/`
 - Database: PostgreSQL via Docker Compose
-- Legacy office: preserved in `frontend/public/office/`
+- AI runtime: authenticated Python Agent API with OpenRouter
+- Workers: YouTube snapshots and at-most-once scheduled social delivery
+- 3D Office: served from `frontend/public/office/`
+
+## Production
+
+Use [deploy/PRODUCTION.md](deploy/PRODUCTION.md) as the deployment and recovery
+runbook. Production uses `compose.production.yml`; it does not use the local
+development Compose file. Schema changes are owned only by Alembic, and
+PostgreSQL/backend/agent/frontend ports stay private behind Nginx; Redis is not
+deployed because no production runtime component currently uses it.
+
+Production intentionally disables local password registration, arbitrary link
+fetching/video downloads, the Codex CLI fallback, and YouTube URL upload. Those
+paths require stronger abuse controls or durable idempotent jobs before they can
+be enabled safely. Google login, AI chat/team runs, Connected Apps status,
+Google read actions, YouTube Growth analysis, approved Telegram/Instagram publishing,
+and the dedicated scheduled-post worker remain available when configured.
+The standalone Telegram bot bridge is excluded from production until it has an
+explicit application-user linking flow.
+Google write actions remain disabled until they have durable idempotency and
+unknown-outcome reconciliation.
 
 ## Local Run
 
@@ -43,11 +66,11 @@ http://localhost:3000
 
 This workspace was verified with Node 22 for Next.js build/start.
 
-## Local Codex Agent
+## Local Codex Agent CLI
 
-The local agent is a developer-only CLI. It is not connected to the frontend or
-any public backend endpoint. It uses the local Codex ChatGPT sign-in, works from
-the repository root, and uses the `workspace-write` sandbox.
+The separate local Codex helper is developer-only and is not used by the
+production Agent service. Production uses the configured provider API and keeps
+the CLI fallback disabled.
 
 From the project root, install its isolated dependency into the existing backend
 virtual environment:

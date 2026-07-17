@@ -83,13 +83,22 @@ def backfill_default_workspaces(db: Session) -> int:
 
 
 def get_workspace_context(db: Session, user: User, workspace_id: int | None = None) -> WorkspaceContext:
-    ensure_default_workspace(db, user)
-    db.flush()
-
     query = select(WorkspaceMember).where(WorkspaceMember.user_id == user.id)
     if workspace_id is not None:
         query = query.where(WorkspaceMember.workspace_id == workspace_id)
     member = db.scalar(query.order_by(WorkspaceMember.id))
+    if member is None and workspace_id is None:
+        # Registration/login normally creates and seeds the default workspace.
+        # Only run the expensive idempotent seed path when an older user truly
+        # has no membership; ordinary reads must stay read-only and cheap.
+        workspace = ensure_default_workspace(db, user)
+        db.flush()
+        member = db.scalar(
+            select(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == workspace.id,
+                WorkspaceMember.user_id == user.id,
+            )
+        )
     if not member:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace access denied")
 

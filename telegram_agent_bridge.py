@@ -345,15 +345,22 @@ def call_agent_payload(
     chat_id: str,
     message: str,
 ) -> dict[str, Any]:
+    internal_token = os.environ.get("AGENT_INTERNAL_TOKEN", "").strip()
+    headers = {"X-Agent-Internal-Token": internal_token} if internal_token else {}
     response = session.post(
         api_url,
+        headers=headers,
         json={
             "agentId": agent_id,
             "message": message,
             "history": [],
             "sessionId": session_id,
-            "accountId": "telegram",
+            # Keep chats isolated even in local/dev bridge use. This is not an
+            # application-user identity and the bridge remains disabled in
+            # production until an explicit account-linking flow exists.
+            "accountId": f"telegram-{re.sub(r'[^0-9A-Za-z_.-]+', '-', chat_id)[:60]}",
         },
+        timeout=(10, 240),
     )
     try:
         payload = response.json()
@@ -800,6 +807,10 @@ def run_bridge(*, api_url: str, drop_pending: bool) -> None:
 
 
 def main() -> None:
+    if os.environ.get("APP_ENV", "development").strip().lower() in {"prod", "production"}:
+        raise SystemExit(
+            "Telegram agent bridge is disabled in production until Telegram chats are linked to application users."
+        )
     parser = argparse.ArgumentParser(description="Bind Telegram bots to Rebly AI agents.")
     parser.add_argument(
         "--api-url",

@@ -22,7 +22,10 @@ yarn-error.log*
 *.sqlite
 *.sqlite3
 data/
+backups/
 test-results/
 playwright-report/
 dashboard-office-preview.png
 .codex_work/
+.teamora-operation.lock
+/frontend/public/office/vendor/three/

@@ -38,6 +38,14 @@ from app.security import (
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
+def require_local_password_auth() -> None:
+    if not get_settings().local_password_auth_runtime_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Password authentication is not available.",
+        )
+
+
 def serialize_user(user: User) -> UserResponse:
     return UserResponse(
         id=user.id,
@@ -108,6 +116,7 @@ def upsert_google_user(id_info: dict, db: Session) -> User:
 
 @router.post("/register", response_model=AuthResponse)
 def register(payload: RegisterRequest, response: Response, db: Session = Depends(get_db)) -> AuthResponse:
+    require_local_password_auth()
     existing = db.scalar(select(User).where(User.email == payload.email.lower()))
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
@@ -129,6 +138,7 @@ def register(payload: RegisterRequest, response: Response, db: Session = Depends
 
 @router.post("/login", response_model=AuthResponse)
 def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)) -> AuthResponse:
+    require_local_password_auth()
     user = db.scalar(select(User).where(User.email == payload.email.lower()))
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
@@ -207,7 +217,7 @@ async def google_callback(
 ) -> RedirectResponse:
     settings = get_settings()
     expected_state = request.cookies.get(OAUTH_STATE_COOKIE)
-    if not expected_state or expected_state != state:
+    if not expected_state or not secrets.compare_digest(expected_state, state):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state")
 
     token_data = await exchange_google_code(code=code, redirect_uri=settings.google_redirect_uri)

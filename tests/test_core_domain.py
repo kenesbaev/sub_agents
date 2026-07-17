@@ -65,7 +65,34 @@ class CoreDomainTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         teams = response.json()
         names = {team["name"] for team in teams}
-        self.assertTrue({"Social Posting Team", "Business AI Team", "Founder's COS", "Marketing Team", "Sales Team", "Support Team"}.issubset(names))
+        self.assertTrue(
+            {
+                "YouTube Growth Team",
+                "Social Posting Team",
+                "Business AI Team",
+                "Founder's COS",
+                "Marketing Team",
+                "Sales Team",
+                "Support Team",
+            }.issubset(names)
+        )
+        youtube_team = next(team for team in teams if team["slug"] == "youtube-growth-team")
+        self.assertEqual(8, len(youtube_team["agents"]))
+        self.assertEqual("Atlas", youtube_team["agents"][0]["agent"]["name"])
+        self.assertEqual(
+            {
+                "Trend Scout",
+                "Competitor Analyst",
+                "Video Analyst",
+                "Content Strategist",
+                "Creative Director",
+                "Growth Analyst",
+                "Publisher",
+            },
+            {item["agent"]["name"] for item in youtube_team["agents"][1:]},
+        )
+        self.assertTrue(any("never guarantees" in rule for rule in youtube_team["metadata_json"]["guardrails"]))
+        self.assertTrue(any("never automatic" in rule for rule in youtube_team["metadata_json"]["guardrails"]))
         social_team = next(team for team in teams if team["slug"] == "social-posting-team")
         self.assertIn("YouTube", social_team["metadata_json"]["tags"])
         self.assertIn("YouTube", social_team["metadata_json"]["output"])
@@ -92,7 +119,7 @@ class CoreDomainTest(unittest.TestCase):
             second_memberships = db.query(TeamAgent).count()
             refreshed_metadata = social_team.metadata_json
 
-        self.assertEqual(6, first_count)
+        self.assertEqual(7, first_count)
         self.assertEqual(first_count, second_count)
         self.assertGreater(first_memberships, 0)
         self.assertEqual(first_memberships, second_memberships)
@@ -260,7 +287,7 @@ class CoreDomainTest(unittest.TestCase):
             context.cleanup()
 
         self.assertEqual("phase2-social-run", result["runId"] if "runId" in result else "phase2-social-run")
-        self.assertTrue(result["pendingPublish"]["autoPublish"])
+        self.assertFalse(result["pendingPublish"]["autoPublish"])
         self.assertEqual("telegram", result["pendingPublish"]["platform"])
         task_id = result["pendingPublish"]["taskId"]
         self.assertIsNotNone(task_id)

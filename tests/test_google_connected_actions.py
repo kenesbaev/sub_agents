@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -252,6 +253,7 @@ class GoogleConnectedActionsTest(unittest.TestCase):
         execution = GoogleToolExecution(account_id=17, result={"messageId": "message-1"})
         with (
             patch("app.connected_apps.router.is_google_agent_tool", return_value=True),
+            patch("app.connected_apps.router.get_settings", return_value=SimpleNamespace(is_production=False)),
             patch("app.connected_apps.router.refresh_due_oauth_tokens", new=AsyncMock()),
             patch("app.connected_apps.router.execute_google_agent_tool", new=AsyncMock(return_value=execution)),
         ):
@@ -265,6 +267,27 @@ class GoogleConnectedActionsTest(unittest.TestCase):
         self.assertEqual({"ok": True, "result": {"messageId": "message-1"}}, result)
         db.commit.assert_called_once()
         db.add.assert_called_once()
+
+    def test_production_blocks_google_write_actions_before_dispatch(self) -> None:
+        db = MagicMock()
+        dispatcher = AsyncMock()
+        with (
+            patch("app.connected_apps.router.is_google_agent_tool", return_value=True),
+            patch("app.connected_apps.router.get_settings", return_value=SimpleNamespace(is_production=True)),
+            patch("app.connected_apps.router.execute_google_agent_tool", new=dispatcher),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(
+                    execute_agent_tool(
+                        AgentToolExecuteRequest(tool="send_gmail", arguments={"approved": True}),
+                        user=SimpleNamespace(id=4),
+                        db=db,
+                    )
+                )
+
+        self.assertEqual(403, raised.exception.status_code)
+        dispatcher.assert_not_awaited()
+        db.commit.assert_not_called()
 
 
 if __name__ == "__main__":

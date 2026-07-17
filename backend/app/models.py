@@ -219,6 +219,9 @@ class IntegrationProvider(Base):
 
 class UserIntegration(Base):
     __tablename__ = "user_integrations"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider_id", name="uq_user_integrations_user_provider"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
@@ -237,6 +240,13 @@ class UserIntegration(Base):
 
 class IntegrationAccount(Base):
     __tablename__ = "integration_accounts"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_integration_id",
+            "account_identifier",
+            name="uq_integration_accounts_integration_identifier",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     user_integration_id: Mapped[int] = mapped_column(
@@ -260,6 +270,13 @@ class IntegrationAccount(Base):
 
 class IntegrationToken(Base):
     __tablename__ = "integration_tokens"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_integration_id",
+            "integration_account_id",
+            name="uq_integration_tokens_integration_account",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     user_integration_id: Mapped[int] = mapped_column(
@@ -287,6 +304,9 @@ class IntegrationToken(Base):
 
 class IntegrationCapability(Base):
     __tablename__ = "integration_capabilities"
+    __table_args__ = (
+        UniqueConstraint("provider_id", "key", name="uq_integration_capabilities_provider_key"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     provider_id: Mapped[int] = mapped_column(ForeignKey("integration_providers.id", ondelete="CASCADE"), index=True, nullable=False)
@@ -300,6 +320,10 @@ class IntegrationCapability(Base):
 
 class ScheduledPost(Base):
     __tablename__ = "scheduled_posts"
+    __table_args__ = (
+        Index("ix_scheduled_posts_due", "status", "next_attempt_at", "publish_at"),
+        Index("ix_scheduled_posts_stale_claim", "status", "claimed_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
@@ -317,6 +341,9 @@ class ScheduledPost(Base):
     external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(96), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -354,3 +381,174 @@ class SocialPost(Base):
     external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class YouTubeAnalysisRun(Base):
+    __tablename__ = "youtube_analysis_runs"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "idempotency_key", name="uq_youtube_analysis_workspace_idempotency"),
+        Index("ix_youtube_analysis_workspace_status", "workspace_id", "status"),
+        Index("ix_youtube_analysis_workspace_kind", "workspace_id", "kind"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True, nullable=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True)
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"), index=True, nullable=True)
+    integration_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("integration_accounts.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
+    target_id: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    target_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(40), index=True, nullable=False, default="queued")
+    request_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    limitations_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    partial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class YouTubeAnalysisSource(Base):
+    __tablename__ = "youtube_analysis_sources"
+    __table_args__ = (
+        Index("ix_youtube_sources_workspace_analysis", "workspace_id", "analysis_id"),
+        Index("ix_youtube_sources_external", "source_type", "external_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True, nullable=False)
+    analysis_id: Mapped[int] = mapped_column(ForeignKey("youtube_analysis_runs.id", ondelete="CASCADE"), index=True, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    timestamp_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fact: Mapped[str | None] = mapped_column(Text, nullable=True)
+    facts_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class YouTubeContentPlan(Base):
+    __tablename__ = "youtube_content_plans"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "idempotency_key", name="uq_youtube_plan_workspace_idempotency"),
+        Index("ix_youtube_plans_workspace_status", "workspace_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True, nullable=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True)
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"), index=True, nullable=True)
+    source_analysis_id: Mapped[int | None] = mapped_column(
+        ForeignKey("youtube_analysis_runs.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    integration_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("integration_accounts.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    horizon_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    niche: Mapped[str] = mapped_column(String(300), nullable=False)
+    language: Mapped[str] = mapped_column(String(32), nullable=False)
+    region: Mapped[str] = mapped_column(String(100), nullable=False)
+    goal: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), index=True, nullable=False, default="queued")
+    request_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    limitations_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    repair_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    idempotency_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class YouTubeContentPlanItem(Base):
+    __tablename__ = "youtube_content_plan_items"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "position", name="uq_youtube_plan_items_position"),
+        Index("ix_youtube_plan_items_workspace_date", "workspace_id", "publish_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True, nullable=False)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("youtube_content_plans.id", ondelete="CASCADE"), index=True, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    publish_date: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
+    item_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    score_components_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    opportunity_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    confidence: Mapped[str] = mapped_column(String(20), nullable=False)
+    approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class YouTubeGrowthSnapshot(Base):
+    __tablename__ = "youtube_growth_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "integration_account_id", "video_id", "checkpoint",
+            name="uq_youtube_snapshot_workspace_account_video_checkpoint",
+        ),
+        Index("ix_youtube_snapshots_workspace_video", "workspace_id", "video_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True, nullable=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True)
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"), index=True, nullable=True)
+    integration_account_id: Mapped[int] = mapped_column(
+        ForeignKey("integration_accounts.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    video_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    checkpoint: Mapped[str] = mapped_column(String(8), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), index=True, nullable=False, default="queued")
+    metrics_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    baseline_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    recommendations_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    limitations_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class YouTubeApiCache(Base):
+    __tablename__ = "youtube_api_cache"
+    __table_args__ = (
+        Index("ix_youtube_cache_namespace_expiry", "namespace", "expires_at"),
+        Index("ix_youtube_cache_workspace", "workspace_id", "integration_account_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    cache_key: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    namespace: Mapped[str] = mapped_column(String(80), nullable=False)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True, nullable=True)
+    integration_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("integration_accounts.id", ondelete="CASCADE"), index=True, nullable=True
+    )
+    response_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    quota_cost: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

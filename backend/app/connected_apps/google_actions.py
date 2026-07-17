@@ -47,6 +47,16 @@ GOOGLE_AGENT_TOOLS = frozenset(
         "update_google_sheet_row",
     }
 )
+GOOGLE_WRITE_AGENT_TOOLS = frozenset(
+    {
+        "create_gmail_draft",
+        "send_gmail",
+        "reply_gmail",
+        "create_calendar_event",
+        "append_google_sheet_row",
+        "update_google_sheet_row",
+    }
+)
 
 GOOGLE_TOOL_SCOPES: dict[str, tuple[str, ...]] = {
     "search_gmail": (
