@@ -9,6 +9,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 
 from app.auth.router import router as auth_router
+from app.billing.router import router as billing_router
 from app.config import get_settings
 from app.connected_apps.router import router as connected_apps_router
 from app.core_domain.router import router as core_domain_router
@@ -110,6 +111,7 @@ def readyz() -> JSONResponse:
 
 
 app.include_router(auth_router)
+app.include_router(billing_router)
 app.include_router(integrations_router)
 app.include_router(connected_apps_router)
 app.include_router(core_domain_router)

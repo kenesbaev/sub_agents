@@ -179,6 +179,8 @@ class GenericOAuthConfig:
     userinfo_uri: str | None = None
     client_id_param: str = "client_id"
     token_auth: str = "body"
+    token_body_format: str = "form"
+    token_headers: dict[str, str] | None = None
     extra_params: dict[str, str] | None = None
     scope_delimiter: str = " "
     authorization_code_extra_params: dict[str, str] | None = None
@@ -226,12 +228,16 @@ GENERIC_OAUTH_DEFAULTS: dict[str, dict[str, Any]] = {
         "auth_uri": "https://slack.com/oauth/v2/authorize",
         "token_uri": "https://slack.com/api/oauth.v2.access",
         "account_type": "slack_workspace",
+        "token_auth": "basic",
+        "scope_delimiter": ",",
     },
     "notion": {
         "auth_uri": "https://api.notion.com/v1/oauth/authorize",
         "token_uri": "https://api.notion.com/v1/oauth/token",
         "account_type": "notion_workspace",
         "token_auth": "basic",
+        "token_body_format": "json",
+        "token_headers": {"Notion-Version": "2026-03-11"},
         "extra_params": {"owner": "user"},
     },
     "github": {
@@ -257,16 +263,150 @@ GENERIC_OAUTH_DEFAULTS: dict[str, dict[str, Any]] = {
         "auth_uri": "https://connect.stripe.com/oauth/authorize",
         "token_uri": "https://connect.stripe.com/oauth/token",
         "account_type": "stripe_account",
+        "token_auth": "secret_basic",
+        "include_redirect_uri_in_token_exchange": False,
+    },
+}
+
+GENERIC_OAUTH_ENDPOINT_HOSTS: dict[str, dict[str, frozenset[str]]] = {
+    "tiktok": {
+        "auth_uri": frozenset({"www.tiktok.com"}),
+        "token_uri": frozenset({"open.tiktokapis.com"}),
+        "userinfo_uri": frozenset({"open.tiktokapis.com"}),
+    },
+    "x": {
+        "auth_uri": frozenset({"x.com"}),
+        "token_uri": frozenset({"api.x.com"}),
+        "userinfo_uri": frozenset({"api.x.com"}),
+    },
+    "discord": {
+        "auth_uri": frozenset({"discord.com"}),
+        "token_uri": frozenset({"discord.com"}),
+        "userinfo_uri": frozenset({"discord.com"}),
+    },
+    "slack": {
+        "auth_uri": frozenset({"slack.com", "slack-gov.com"}),
+        "token_uri": frozenset({"slack.com", "slack-gov.com"}),
+    },
+    "notion": {
+        "auth_uri": frozenset({"api.notion.com"}),
+        "token_uri": frozenset({"api.notion.com"}),
+    },
+    "github": {
+        "auth_uri": frozenset({"github.com"}),
+        "token_uri": frozenset({"github.com"}),
+        "userinfo_uri": frozenset({"api.github.com"}),
+    },
+    "dropbox": {
+        "auth_uri": frozenset({"dropbox.com", "www.dropbox.com"}),
+        "token_uri": frozenset({"api.dropboxapi.com"}),
+        "userinfo_uri": frozenset({"api.dropboxapi.com"}),
+    },
+    "onedrive": {
+        "auth_uri": frozenset(
+            {"login.microsoftonline.com", "login.microsoftonline.us", "login.partner.microsoftonline.cn"}
+        ),
+        "token_uri": frozenset(
+            {"login.microsoftonline.com", "login.microsoftonline.us", "login.partner.microsoftonline.cn"}
+        ),
+        "userinfo_uri": frozenset(
+            {"graph.microsoft.com", "graph.microsoft.us", "microsoftgraph.chinacloudapi.cn"}
+        ),
+    },
+    "stripe": {
+        "auth_uri": frozenset({"connect.stripe.com"}),
+        "token_uri": frozenset({"connect.stripe.com"}),
     },
 }
 
 MANUAL_SECRET_PROVIDER_KEYS = {"openai", "claude", "zapier"}
+ZAPIER_CATCH_HOOK_PATH_PATTERN = re.compile(r"^/hooks/catch/[1-9]\d*/[A-Za-z0-9_-]+(?:/silent)?/?$")
 REQUIRED_OAUTH_SCOPES: dict[str, tuple[str, ...]] = {
     "x": ("offline.access",),
 }
 HTTPS_REDIRECT_PROVIDER_KEYS = {"linkedin", "tiktok"}
 SHOPIFY_SHOP_DOMAIN_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.myshopify\.com$")
 SHOPIFY_API_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}$")
+
+
+def oauth_endpoint_is_safe_for_production(
+    value: str,
+    *,
+    allowed_hosts: frozenset[str],
+    allow_query: bool = False,
+) -> bool:
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname in allowed_hosts
+        and port in {None, 443}
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.params
+        and not parsed.fragment
+        and bool(parsed.path and parsed.path.startswith("/"))
+        and (allow_query or not parsed.query)
+    )
+
+
+def generic_oauth_callback_is_safe_for_production(config: GenericOAuthConfig) -> bool:
+    settings = get_settings()
+    try:
+        backend = urlparse(str(settings.backend_url))
+        callback = urlparse(config.redirect_uri)
+        backend_port = backend.port or 443
+        callback_port = callback.port or 443
+    except ValueError:
+        return False
+    return bool(
+        backend.scheme == "https"
+        and callback.scheme == "https"
+        and callback.hostname == backend.hostname
+        and callback_port == backend_port
+        and callback.username is None
+        and callback.password is None
+        and not callback.params
+        and not callback.query
+        and not callback.fragment
+        and callback.path == f"/api/connected-apps/{config.provider_key}/callback"
+    )
+
+
+def validate_generic_oauth_production_endpoints(config: GenericOAuthConfig) -> None:
+    settings = get_settings()
+    if not settings.is_production:
+        return
+
+    if config.provider_key == "shopify":
+        allowed_by_endpoint = {
+            "auth_uri": frozenset({config.shop_domain or ""}),
+            "token_uri": frozenset({config.shop_domain or ""}),
+            "userinfo_uri": frozenset({config.shop_domain or ""}),
+        }
+    else:
+        allowed_by_endpoint = GENERIC_OAUTH_ENDPOINT_HOSTS.get(config.provider_key, {})
+
+    endpoints = {
+        "auth_uri": config.auth_uri,
+        "token_uri": config.token_uri,
+        "userinfo_uri": config.userinfo_uri,
+    }
+    valid = generic_oauth_callback_is_safe_for_production(config)
+    for endpoint_name, endpoint in endpoints.items():
+        if not endpoint:
+            continue
+        allowed_hosts = allowed_by_endpoint.get(endpoint_name, frozenset())
+        valid = valid and oauth_endpoint_is_safe_for_production(
+            endpoint,
+            allowed_hosts=allowed_hosts,
+            allow_query=endpoint_name == "userinfo_uri",
+        )
+    if not valid:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=PUBLIC_OAUTH_SETUP_ERROR)
 
 
 def oauth_redirect(provider_key: str) -> str:
@@ -394,7 +534,7 @@ def generic_oauth_config(provider_key: str, *, shop_domain: str | None = None) -
             detail=PUBLIC_OAUTH_SETUP_ERROR,
         )
 
-    return GenericOAuthConfig(
+    config = GenericOAuthConfig(
         provider_key=provider_key,
         auth_uri=auth_uri,
         token_uri=token_uri,
@@ -406,6 +546,8 @@ def generic_oauth_config(provider_key: str, *, shop_domain: str | None = None) -
         userinfo_uri=userinfo_uri or None,
         client_id_param=str(defaults.get("client_id_param") or "client_id"),
         token_auth=str(defaults.get("token_auth") or "body"),
+        token_body_format=str(defaults.get("token_body_format") or "form"),
+        token_headers=dict(defaults.get("token_headers") or {}),
         extra_params=dict(defaults.get("extra_params") or {}),
         scope_delimiter=str(defaults.get("scope_delimiter") or " "),
         authorization_code_extra_params=dict(defaults.get("authorization_code_extra_params") or {}),
@@ -413,6 +555,8 @@ def generic_oauth_config(provider_key: str, *, shop_domain: str | None = None) -
         include_redirect_uri_in_token_exchange=bool(defaults.get("include_redirect_uri_in_token_exchange", True)),
         shop_domain=effective_shop_domain,
     )
+    validate_generic_oauth_production_endpoints(config)
+    return config
 
 
 def build_generic_oauth_url(config: GenericOAuthConfig, *, state: str, code_verifier: str | None = None) -> str:
@@ -669,7 +813,7 @@ def unique_scopes(*groups: tuple[str, ...]) -> tuple[str, ...]:
 def meta_oauth_scopes(provider_key: Literal["instagram", "facebook"]) -> tuple[str, ...]:
     required = ("public_profile", "pages_show_list", "pages_read_engagement")
     if provider_key == "instagram":
-        required = (*required, "business_management")
+        required = (*required, "instagram_basic", "business_management")
     return unique_scopes(PROVIDERS[provider_key].scopes, required)
 
 
@@ -952,6 +1096,82 @@ async def verify_telegram_bot(token: str) -> str | None:
     return str(username) if username else None
 
 
+def is_official_zapier_catch_hook_url(value: str) -> bool:
+    try:
+        parsed = urlparse(value.strip())
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname == "hooks.zapier.com"
+        and port is None
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+        and ZAPIER_CATCH_HOOK_PATH_PATTERN.fullmatch(parsed.path)
+    )
+
+
+async def verify_manual_secret(provider_key: str, secret: str) -> None:
+    if provider_key == "zapier":
+        if not is_official_zapier_catch_hook_url(secret):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Enter a valid Zapier Catch Hook HTTPS URL.",
+            )
+        # Never trigger a customer automation merely to validate its URL.
+        return
+
+    if provider_key == "openai":
+        url = "https://api.openai.com/v1/models"
+        headers = {"Accept": "application/json", "Authorization": f"Bearer {secret}"}
+        provider_name = "OpenAI"
+    elif provider_key == "claude":
+        url = "https://api.anthropic.com/v1/models"
+        headers = {
+            "Accept": "application/json",
+            "anthropic-version": "2023-06-01",
+            "x-api-key": secret,
+        }
+        provider_name = "Claude"
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported credential provider")
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(url, headers=headers)
+            payload = response.json() if response.content else {}
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"{provider_name} credential verification timed out. Please try again.",
+        ) from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"{provider_name} credential verification is temporarily unavailable.",
+        ) from exc
+
+    if response.status_code in {status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{provider_name} rejected this credential.",
+        )
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"{provider_name} credential verification is temporarily unavailable.",
+        )
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"{provider_name} credential verification returned invalid data.",
+        )
+
+
 def token_access_token(config: GenericOAuthConfig, token_data: dict[str, Any]) -> str:
     if config.provider_key == "slack":
         authed_user = token_data.get("authed_user") if isinstance(token_data.get("authed_user"), dict) else {}
@@ -962,6 +1182,39 @@ def token_access_token(config: GenericOAuthConfig, token_data: dict[str, Any]) -
 def safe_token_metadata(token_data: dict[str, Any]) -> dict[str, Any]:
     sanitized = sanitize_metadata(token_data)
     return sanitized if isinstance(sanitized, dict) else {}
+
+
+def oauth_token_request_kwargs(config: GenericOAuthConfig, data: dict[str, str]) -> dict[str, Any]:
+    headers = {"Accept": "application/json", **(config.token_headers or {})}
+    auth: tuple[str, str] | None = None
+    if config.token_auth == "basic":
+        auth = (config.client_id, config.client_secret)
+    elif config.token_auth == "secret_basic":
+        # Stripe Connect authenticates its platform secret as the HTTP Basic
+        # username, with an empty password. The OAuth client id belongs only in
+        # the authorization request.
+        auth = (config.client_secret, "")
+    else:
+        if config.client_id_param == "client_key":
+            data["client_key"] = config.client_id
+        else:
+            data["client_id"] = config.client_id
+        data["client_secret"] = config.client_secret
+
+    request_kwargs: dict[str, Any] = {"headers": headers, "auth": auth}
+    if config.token_body_format == "json":
+        headers["Content-Type"] = "application/json"
+        request_kwargs["json"] = data
+    else:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        request_kwargs["data"] = data
+    return request_kwargs
+
+
+def oauth_token_payload_is_success(config: GenericOAuthConfig, payload: dict[str, Any]) -> bool:
+    if config.provider_key == "slack" and payload.get("ok") is False:
+        return False
+    return bool(token_access_token(config, payload))
 
 
 async def exchange_generic_oauth_code(
@@ -981,36 +1234,60 @@ async def exchange_generic_oauth_code(
         if not code_verifier:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth session expired. Please try again.")
         data["code_verifier"] = code_verifier
-    headers = {"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"}
-    auth: tuple[str, str] | None = None
-    if config.token_auth == "basic":
-        auth = (config.client_id, config.client_secret)
-    else:
-        if config.client_id_param == "client_key":
-            data["client_key"] = config.client_id
-        else:
-            data["client_id"] = config.client_id
-        data["client_secret"] = config.client_secret
-    async with httpx.AsyncClient(timeout=25) as client:
-        response = await client.post(
-            config.token_uri,
-            data=data,
-            headers=headers,
-            auth=auth,
-        )
+    provider_name = PROVIDERS[config.provider_key].name
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            response = await client.post(config.token_uri, **oauth_token_request_kwargs(config, data))
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"{provider_name} connection timed out. Please try again.",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"{provider_name} connection is temporarily unavailable.",
+        ) from exc
     try:
         payload = response.json() if response.content else {}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth token exchange returned invalid JSON") from exc
-    if response.status_code >= 400 or not isinstance(payload, dict) or not token_access_token(config, payload):
-        provider_name = PROVIDERS[config.provider_key].name
+    if response.status_code >= 400 or not isinstance(payload, dict) or not oauth_token_payload_is_success(config, payload):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{provider_name} token exchange failed")
     return payload
+
+
+def generic_userinfo_has_identity(config: GenericOAuthConfig, payload: dict[str, Any]) -> bool:
+    provider_key = config.provider_key
+    if provider_key == "shopify":
+        shop = payload.get("shop") if isinstance(payload.get("shop"), dict) else {}
+        domain = normalize_shopify_shop_domain(str(shop.get("myshopify_domain") or shop.get("domain") or ""))
+        return bool(domain and (not config.shop_domain or domain == config.shop_domain))
+    if provider_key == "tiktok":
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        if error and error.get("code") not in {None, "", "ok"}:
+            return False
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        user = data.get("user") if isinstance(data.get("user"), dict) else {}
+        return bool(user.get("open_id") or user.get("union_id"))
+    if provider_key == "x":
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        return bool(data.get("id") or data.get("username"))
+    if provider_key == "discord":
+        return bool(payload.get("id"))
+    if provider_key == "github":
+        return bool(payload.get("id") or payload.get("login"))
+    if provider_key == "dropbox":
+        return bool(payload.get("account_id") or payload.get("email"))
+    if provider_key == "onedrive":
+        return bool(payload.get("id") or payload.get("mail") or payload.get("userPrincipalName"))
+    return bool(payload)
 
 
 async def fetch_generic_userinfo(config: GenericOAuthConfig, access_token: str) -> dict[str, Any]:
     if not config.userinfo_uri:
         return {}
+    provider_name = PROVIDERS[config.provider_key].name
     headers = {"Accept": "application/json", "Authorization": f"Bearer {access_token}"}
     method = "GET"
     params: dict[str, str] | None = None
@@ -1028,9 +1305,22 @@ async def fetch_generic_userinfo(config: GenericOAuthConfig, access_token: str) 
             else:
                 response = await client.get(config.userinfo_uri, headers=headers, params=params)
             payload = response.json() if response.content else {}
-    except (httpx.HTTPError, ValueError):
-        return {}
-    return payload if response.status_code < 400 and isinstance(payload, dict) else {}
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"{provider_name} account verification timed out. Please try again.",
+        ) from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"{provider_name} account verification is temporarily unavailable.",
+        ) from exc
+    if response.status_code >= 400 or not isinstance(payload, dict) or not generic_userinfo_has_identity(config, payload):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{provider_name} account could not be verified. Please reconnect and try again.",
+        )
+    return payload
 
 
 def generic_account_identity(
@@ -1213,23 +1503,25 @@ async def exchange_refresh_token(config: GenericOAuthConfig, refresh_token: str)
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
     }
-    headers = {"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"}
-    auth: tuple[str, str] | None = None
-    if config.token_auth == "basic":
-        auth = (config.client_id, config.client_secret)
-    else:
-        if config.client_id_param == "client_key":
-            data["client_key"] = config.client_id
-        else:
-            data["client_id"] = config.client_id
-        data["client_secret"] = config.client_secret
-    async with httpx.AsyncClient(timeout=25) as client:
-        response = await client.post(config.token_uri, data=data, headers=headers, auth=auth)
+    provider_name = PROVIDERS[config.provider_key].name
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            response = await client.post(config.token_uri, **oauth_token_request_kwargs(config, data))
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"{provider_name} connection timed out. Please try again.",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"{provider_name} connection is temporarily unavailable.",
+        ) from exc
     try:
         payload = response.json() if response.content else {}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth refresh returned invalid JSON") from exc
-    if response.status_code >= 400 or not isinstance(payload, dict) or not token_access_token(config, payload):
+    if response.status_code >= 400 or not isinstance(payload, dict) or not oauth_token_payload_is_success(config, payload):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth refresh failed")
     return payload
 
@@ -1624,6 +1916,7 @@ async def connect_manual_secret_account(
     if provider_key not in MANUAL_SECRET_PROVIDER_KEYS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This provider does not support manual secret connection")
     secret = payload.secret.strip()
+    await verify_manual_secret(provider_key, secret)
     label = (payload.label or PROVIDERS[provider_key].name).strip()
     identifier = (payload.identifier or label or provider_key).strip()
     account = upsert_connected_account(
