@@ -6,7 +6,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from pydantic import ValidationError
-from sqlalchemy import create_engine, text
+from sqlalchemy import UniqueConstraint, create_engine, text
 
 from app import models
 from app.config import Settings, get_settings
@@ -52,6 +52,46 @@ def test_local_defaults_preserve_schema_bootstrap_compatibility() -> None:
     assert models.User.__tablename__ == "users"
     assert settings.auto_create_schema_enabled is True
     assert settings.startup_backfill_enabled is True
+
+
+@pytest.mark.parametrize(
+    ("table", "constraint_name", "columns"),
+    [
+        (models.User.__table__, "users_email_key", ("email",)),
+        (models.User.__table__, "users_google_sub_key", ("google_sub",)),
+        (
+            models.TelegramBotIntegration.__table__,
+            "telegram_bot_integrations_user_id_key",
+            ("user_id",),
+        ),
+        (
+            models.InstagramIntegration.__table__,
+            "instagram_integrations_user_id_key",
+            ("user_id",),
+        ),
+        (
+            models.IntegrationProvider.__table__,
+            "integration_providers_key_key",
+            ("key",),
+        ),
+    ],
+)
+def test_legacy_unique_constraints_match_postgres_schema(
+    table: object,
+    constraint_name: str,
+    columns: tuple[str, ...],
+) -> None:
+    constraints = {
+        constraint.name: tuple(column.name for column in constraint.columns)
+        for constraint in table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+
+    assert constraints[constraint_name] == columns
+    assert any(
+        index.unique and tuple(column.name for column in index.columns) == columns
+        for index in table.indexes
+    )
 
 
 def test_valid_production_settings_disable_implicit_mutations() -> None:

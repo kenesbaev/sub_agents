@@ -8,6 +8,10 @@ from app.db.base import Base
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("email", name="users_email_key"),
+        UniqueConstraint("google_sub", name="users_google_sub_key"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
@@ -160,6 +164,9 @@ class Task(Base):
 
 class TelegramBotIntegration(Base):
     __tablename__ = "telegram_bot_integrations"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="telegram_bot_integrations_user_id_key"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(
@@ -181,6 +188,9 @@ class TelegramBotIntegration(Base):
 
 class InstagramIntegration(Base):
     __tablename__ = "instagram_integrations"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="instagram_integrations_user_id_key"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(
@@ -202,6 +212,9 @@ class InstagramIntegration(Base):
 
 class IntegrationProvider(Base):
     __tablename__ = "integration_providers"
+    __table_args__ = (
+        UniqueConstraint("key", name="integration_providers_key_key"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     key: Mapped[str] = mapped_column(String(80), unique=True, index=True, nullable=False)

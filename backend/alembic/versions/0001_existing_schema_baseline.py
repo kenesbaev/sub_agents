@@ -44,8 +44,8 @@ def upgrade() -> None:
             sa.Column("avatar_url", sa.String(length=500), nullable=True),
             sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
             sa.PrimaryKeyConstraint("id"),
-            sa.UniqueConstraint("email"),
-            sa.UniqueConstraint("google_sub"),
+            sa.UniqueConstraint("email", name="users_email_key"),
+            sa.UniqueConstraint("google_sub", name="users_google_sub_key"),
         )
     _create_index("ix_users_id", "users", ["id"])
     _create_index("ix_users_email", "users", ["email"], unique=True)
@@ -63,7 +63,7 @@ def upgrade() -> None:
             sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
             sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
             sa.PrimaryKeyConstraint("id"),
-            sa.UniqueConstraint("user_id"),
+            sa.UniqueConstraint("user_id", name="telegram_bot_integrations_user_id_key"),
         )
     _create_index("ix_telegram_bot_integrations_id", "telegram_bot_integrations", ["id"])
     _create_index("ix_telegram_bot_integrations_user_id", "telegram_bot_integrations", ["user_id"], unique=True)
@@ -80,7 +80,7 @@ def upgrade() -> None:
             sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
             sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
             sa.PrimaryKeyConstraint("id"),
-            sa.UniqueConstraint("user_id"),
+            sa.UniqueConstraint("user_id", name="instagram_integrations_user_id_key"),
         )
     _create_index("ix_instagram_integrations_id", "instagram_integrations", ["id"])
     _create_index("ix_instagram_integrations_user_id", "instagram_integrations", ["user_id"], unique=True)
@@ -97,7 +97,7 @@ def upgrade() -> None:
             sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
             sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
             sa.PrimaryKeyConstraint("id"),
-            sa.UniqueConstraint("key"),
+            sa.UniqueConstraint("key", name="integration_providers_key_key"),
         )
     _create_index("ix_integration_providers_id", "integration_providers", ["id"])
     _create_index("ix_integration_providers_key", "integration_providers", ["key"], unique=True)
@@ -261,4 +261,3 @@ def downgrade() -> None:
     # This is a baseline migration for existing production data. Do not drop
     # legacy tables automatically.
     pass
-
