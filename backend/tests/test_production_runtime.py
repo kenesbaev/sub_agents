@@ -6,7 +6,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from pydantic import ValidationError
-from sqlalchemy import UniqueConstraint, create_engine, text
+from sqlalchemy import UniqueConstraint, create_engine, inspect, text
 
 from app import models
 from app.config import Settings, get_settings
@@ -179,6 +179,11 @@ def test_fresh_database_migrates_from_base_to_head(
 
     engine = create_engine(database_url)
     try:
+        inspector = inspect(engine)
+        assert "plan_code" in {column["name"] for column in inspector.get_columns("workspaces")}
+        assert "ck_workspaces_plan_code" in {
+            constraint.get("name") for constraint in inspector.get_check_constraints("workspaces")
+        }
         ready, report = readiness_report(engine)
     finally:
         engine.dispose()
@@ -186,6 +191,39 @@ def test_fresh_database_migrates_from_base_to_head(
 
     assert ready is True
     assert report["checks"]["migrations"]["current"] == sorted(migration_heads())
+
+
+def test_existing_0005_database_adds_nullable_plan_without_data_loss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'revision-0005.db'}"
+    config = migration_config(monkeypatch, database_url)
+    command.upgrade(config, "0005_schema_contract_guard")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO users (email) VALUES ('owner@example.com')"))
+        owner_id = connection.execute(text("SELECT id FROM users WHERE email = 'owner@example.com'")).scalar_one()
+        connection.execute(
+            text("INSERT INTO workspaces (name, slug, owner_id) VALUES ('Existing', 'existing', :owner_id)"),
+            {"owner_id": owner_id},
+        )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    command.check(config)
+
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(
+                text("SELECT name, slug, plan_code FROM workspaces WHERE slug = 'existing'")
+            ).one()
+            assert tuple(row) == ("Existing", "existing", None)
+    finally:
+        engine.dispose()
+        get_settings.cache_clear()
 
 
 def test_schema_contract_guard_rejects_incomplete_legacy_table(

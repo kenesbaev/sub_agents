@@ -71,6 +71,13 @@ def normalize_datetime(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
+def integration_token_is_usable(token: IntegrationToken, *, now: datetime | None = None) -> bool:
+    if not token.encrypted_access_token:
+        return False
+    expires_at = normalize_datetime(token.expires_at)
+    return expires_at is None or expires_at > (now or utc_now())
+
+
 STALE_CONNECTING_AFTER = timedelta(minutes=15)
 SENSITIVE_METADATA_KEYS = {
     "access_token",
@@ -88,6 +95,8 @@ SENSITIVE_METADATA_KEYS = {
     "code_verifier",
     "webhook",
     "webhook_url",
+    "incoming_webhook",
+    "response_url",
 }
 
 
@@ -95,7 +104,10 @@ def metadata_key_is_sensitive(key: object) -> bool:
     normalized = str(key).strip().lower().replace("-", "_")
     return (
         normalized in SENSITIVE_METADATA_KEYS
-        or normalized.endswith(("_token", "_secret", "_password", "_api_key", "_credential", "_credentials"))
+        or "webhook" in normalized
+        or normalized.endswith(
+            ("_token", "_secret", "_password", "_api_key", "_credential", "_credentials", "_response_url")
+        )
     )
 
 
@@ -124,21 +136,18 @@ def integration_connection_state(integration: UserIntegration | None, tokens: li
     if integration.status == "connecting":
         updated_at = normalize_datetime(integration.updated_at)
         if updated_at is not None and updated_at <= now - STALE_CONNECTING_AFTER:
-            integration.status = "error"
-            integration.last_error = integration.last_error or "Authorization was not completed. Try connecting again."
             return "error", "Error", False
         return "connecting", "Connecting", False
     if integration.status == "connected":
-        expired_tokens = [
-            token
-            for token in tokens
-            if (expires_at := normalize_datetime(token.expires_at)) is not None and expires_at <= now
-        ]
-        if expired_tokens:
-            integration.status = "reconnect_required" if any(token.encrypted_refresh_token for token in expired_tokens) else "expired"
-            integration.last_error = integration.last_error or "Authorization expired. Reconnect this app."
-        else:
+        credential_tokens = [token for token in tokens if token.encrypted_access_token]
+        usable_tokens = [token for token in credential_tokens if integration_token_is_usable(token, now=now)]
+        if usable_tokens:
             return "connected", "Connected", True
+        if not credential_tokens:
+            return "reconnect_required", "Reconnect Required", False
+        if any(token.encrypted_refresh_token for token in credential_tokens):
+            return "reconnect_required", "Reconnect Required", False
+        return "expired", "Expired", False
     if integration.status == "reconnect_required":
         return "reconnect_required", "Reconnect Required", False
     if integration.status == "expired":
@@ -546,6 +555,14 @@ def provider_status_payload(db: Session, user: User) -> dict[str, Any]:
             token.integration_account_id: granted_scope_values(token.scopes)
             for token in tokens
         }
+        token_by_account = {token.integration_account_id: token for token in tokens}
+        usable_account_ids = {
+            account_id
+            for account_id, token in token_by_account.items()
+            if integration is not None
+            and integration.status == "connected"
+            and integration_token_is_usable(token)
+        }
         default_account = account_records[0] if account_records else None
         granted_scopes = scopes_by_account.get(default_account.id, set()) if default_account else set()
         accounts = [
@@ -563,7 +580,7 @@ def provider_status_payload(db: Session, user: User) -> dict[str, Any]:
                     if capability_is_granted(
                         capability,
                         scopes_by_account.get(account.id, set()),
-                        connected=bool(connected),
+                        connected=account.id in usable_account_ids,
                     )
                 ],
             }
@@ -592,7 +609,11 @@ def provider_status_payload(db: Session, user: User) -> dict[str, Any]:
                         "description": capability.description,
                         "scope": "",
                         "accessLevel": capability.access_level,
-                        "granted": capability_is_granted(capability, granted_scopes, connected=bool(connected)),
+                        "granted": capability_is_granted(
+                            capability,
+                            granted_scopes,
+                            connected=bool(default_account and default_account.id in usable_account_ids),
+                        ),
                     }
                     for capability in definition.capabilities
                 ],

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { ArrowRight, Check } from "lucide-react";
 import { useState } from "react";
 
@@ -9,6 +8,7 @@ import styles from "./pricing-section.module.css";
 type BillingCycle = "monthly" | "yearly";
 
 type Plan = {
+  key: "start" | "plus" | "pro" | "custom";
   name: string;
   monthlyPrice: string;
   yearlyPrice?: string;
@@ -22,16 +22,18 @@ type Plan = {
 
 const plans: Plan[] = [
   {
-    name: "Starter",
+    key: "start",
+    name: "Start",
     monthlyPrice: "$29",
     yearlyPrice: "$23",
     description: "For founders and small teams starting with an AI office.",
     stats: ["1 workspace", "5 agents", "50k credits"],
     features: ["Coordinator AI", "Shared chat + task history", "Telegram integration", "Activity log"],
-    cta: "Start free",
+    cta: "Request Start",
   },
   {
-    name: "Business",
+    key: "plus",
+    name: "Plus",
     monthlyPrice: "$149",
     yearlyPrice: "$119",
     description: "For SMBs that want AI agents across sales, support and marketing.",
@@ -43,11 +45,12 @@ const plans: Plan[] = [
       "Custom agent instructions",
       "Priority email support",
     ],
-    cta: "Choose Business",
+    cta: "Request Plus",
     popular: true,
   },
   {
-    name: "Agency",
+    key: "pro",
+    name: "Pro",
     monthlyPrice: "$399",
     yearlyPrice: "$319",
     description: "For agencies and operators managing AI work for multiple clients.",
@@ -59,10 +62,11 @@ const plans: Plan[] = [
       "Role-based permissions",
       "Priority support",
     ],
-    cta: "Choose Agency",
+    cta: "Request Pro",
   },
   {
-    name: "Enterprise",
+    key: "custom",
+    name: "Custom",
     monthlyPrice: "Custom",
     description: "For companies that need custom AI teams, security and onboarding.",
     stats: ["Custom teams", "SLA support", "SSO ready"],
@@ -79,29 +83,18 @@ const plans: Plan[] = [
 ];
 
 function PlanAction({ plan }: { plan: Plan }) {
-  if (plan.enterprise) {
-    return (
-      <a
-        className={styles.cardAction}
-        href="mailto:support@teamly.to?subject=Teamora%20AI%20Enterprise%20inquiry"
-      >
-        {plan.cta}
-        <ArrowRight size={16} strokeWidth={2.25} aria-hidden="true" />
-      </a>
-    );
-  }
-
+  const subject = encodeURIComponent(`Teamora AI ${plan.name} plan request`);
   return (
-    <Link className={styles.cardAction} href="/auth?mode=signup">
+    <a className={styles.cardAction} href={`mailto:sales@teamorai.uz?subject=${subject}`}>
       {plan.cta}
       <ArrowRight size={16} strokeWidth={2.25} aria-hidden="true" />
-    </Link>
+    </a>
   );
 }
 
 /**
- * Landing-page pricing presentation. The billing toggle changes only displayed
- * prices; all non-enterprise calls to action retain the existing signup route.
+ * Pricing presentation. Plan requests intentionally go to the billing team
+ * until an authenticated checkout and webhook lifecycle are configured.
  */
 export function PricingSection() {
   const [billingCycle, setBillingCycle] = useState<BillingCycle>("monthly");
@@ -116,7 +109,7 @@ export function PricingSection() {
             An <span>AI team</span> that grows with you
           </h2>
           <p className={styles.description}>
-            Start focused, then scale your Teamora AI office as your business grows.
+            Choose the workspace capacity you need today and scale without rebuilding your AI office.
           </p>
 
           <div className={styles.billingControl} role="group" aria-label="Billing frequency">
@@ -187,7 +180,7 @@ export function PricingSection() {
 
         <p className={styles.footnote}>
           <Check size={15} strokeWidth={2.5} aria-hidden="true" />
-          No credit card required <span aria-hidden="true">·</span> Cancel anytime
+          Plan access is activated after confirmation from the Teamora billing team.
         </p>
       </div>
     </section>

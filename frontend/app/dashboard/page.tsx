@@ -3,43 +3,33 @@
 import Image from "next/image";
 import Link from "next/link";
 import {
-  Activity,
   ArrowLeft,
-  Bell,
   Bot,
   BriefcaseBusiness,
   Check,
   ChevronDown,
   Clock,
   CreditCard,
-  Database,
   Eye,
   LifeBuoy,
   ListTodo,
   Loader2,
   LogOut,
   Mail,
-  MessageCircle,
-  Moon,
-  MoreVertical,
   Grid3X3,
   List,
   PanelLeftClose,
   PanelLeftOpen,
-  Paperclip,
   Pencil,
   Plug,
   Plus,
   Rocket,
   Search,
-  Send,
   Settings,
   Share2,
-  Sun,
   Trash2,
   Video,
   X,
-  User,
   UsersRound
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -50,9 +40,9 @@ import { YouTubeGrowthPanel } from "./youtube-growth-panel";
 // Browser requests stay on the frontend origin. Next.js proxies /api server-side.
 const API_URL = "";
 
-type View = "office" | "youtube-growth" | "tasks" | "activity" | "my-teams" | "shared" | "settings" | "support";
+type View = "office" | "youtube-growth" | "tasks" | "activity" | "my-teams" | "settings" | "support";
 type TaskStatus = "Queued" | "Working" | "Done";
-type SettingsTab = "profile" | "general" | "billing" | "notifications" | "memory" | "connected" | "writing" | "completion" | "developer";
+type SettingsTab = "connected" | "billing";
 type TeamTab = "history" | "ready" | "mine";
 type TeamViewMode = "grid" | "list";
 type ThemeMode = "light" | "dark" | "auto";
@@ -65,7 +55,6 @@ interface UserData {
   first_name: string | null;
   last_name: string | null;
   avatar_url: string | null;
-  google_connected: boolean;
 }
 
 interface IntegrationsData {
@@ -113,6 +102,7 @@ interface ConnectedProvider {
   connected: boolean;
   connectedAt: string | null;
   lastError?: string | null;
+  runtimeState?: "available" | "connection_only" | string;
   accounts: ConnectedAccount[];
   capabilities: ConnectedCapability[];
 }
@@ -121,6 +111,16 @@ interface ConnectedAppsData {
   connectedCount: number;
   totalCount: number;
   providers: ConnectedProvider[];
+}
+
+interface BillingStatus {
+  workspaceId: number;
+  role: string;
+  plan: {
+    code: "start" | "plus" | "pro" | "custom" | string;
+    name: string;
+  } | null;
+  canUpgrade: boolean;
 }
 
 interface ConnectedAppCardData {
@@ -141,6 +141,7 @@ interface ConnectedAppCardData {
   connectionState?: "not_connected" | "connecting" | "connected" | "expired" | "reconnect_required" | "error" | "unavailable" | string;
   errorMessage?: string;
   statusDetail?: string;
+  runtimeState?: "available" | "connection_only" | string;
   connectLabel: string;
   action: "oauth" | "manual" | "secret" | "disabled";
 }
@@ -271,11 +272,49 @@ const DASHBOARD_VIEW_STORAGE_KEY = "rebly-dashboard-active-view";
 const DASHBOARD_TEAM_TAB_STORAGE_KEY = "rebly-dashboard-team-tab";
 const DASHBOARD_OFFICE_STORAGE_KEY = "rebly-dashboard-active-office";
 
-const dashboardViews: View[] = ["office", "youtube-growth", "tasks", "activity", "my-teams", "shared", "settings", "support"];
+const dashboardViews: View[] = ["office", "youtube-growth", "tasks", "activity", "my-teams", "settings", "support"];
+const settingsTabs: SettingsTab[] = ["connected", "billing"];
 const teamTabs: TeamTab[] = ["history", "ready", "mine"];
 
 function isDashboardView(value: string | null): value is View {
   return dashboardViews.includes(value as View);
+}
+
+function isSettingsTab(value: string | null): value is SettingsTab {
+  return settingsTabs.includes(value as SettingsTab);
+}
+
+function parseBillingStatus(payload: unknown): BillingStatus {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("Billing status response is invalid");
+  }
+  const value = payload as Record<string, unknown>;
+  const workspaceId = Number(value.workspaceId);
+  const role = typeof value.role === "string" ? value.role.trim().toLowerCase() : "";
+  if (!Number.isInteger(workspaceId) || workspaceId < 1 || !role || typeof value.canUpgrade !== "boolean") {
+    throw new Error("Billing status response is invalid");
+  }
+
+  let plan: BillingStatus["plan"] = null;
+  if (value.plan !== null) {
+    if (!value.plan || typeof value.plan !== "object") {
+      throw new Error("Billing status response is invalid");
+    }
+    const planValue = value.plan as Record<string, unknown>;
+    const code = typeof planValue.code === "string" ? planValue.code.trim().toLowerCase() : "";
+    const name = typeof planValue.name === "string" ? planValue.name.trim() : "";
+    if (!code || !name) {
+      throw new Error("Billing status response is invalid");
+    }
+    plan = { code, name };
+  }
+
+  return { workspaceId, role, plan, canUpgrade: value.canUpgrade };
+}
+
+function billingRoleLabel(role: string | null | undefined) {
+  if (!role) return "Account";
+  return role.slice(0, 1).toUpperCase() + role.slice(1).toLowerCase();
 }
 
 function isTeamTab(value: string | null): value is TeamTab {
@@ -670,30 +709,6 @@ const myTeams: TeamCardData[] = [
   }
 ];
 
-const sharedTeams: TeamCardData[] = [
-  {
-    id: "launch-room",
-    name: "Launch Room",
-    category: "Shared",
-    agents: "3 agents",
-    agentsCount: 3,
-    copy: "Общая launch-комната для ревью контента, задач запуска и коротких activity updates.",
-    modalCopy: "Launch Room помогает держать запуск в одном месте: ревью, открытые задачи, владельцы и сводки активности.",
-    output: "Launch activity report + список открытых действий",
-    tags: ["Shared", "Launch", "Review"],
-    icon: Share2,
-    roster: businessAgents.slice(0, 3),
-    workflow: [
-      "Sofia проверяет launch-запросы и approvals",
-      "Leo ведёт открытые action items"
-    ],
-    modalWorkflow: [
-      { agent: "Sofia", text: "Проверяет launch-запросы и отправляет нужные approval на ревью.", path: "workspace/launch/review.md" },
-      { agent: "Leo", text: "Следит за открытыми задачами, владельцами и сроками.", path: "workspace/launch/actions.md" }
-    ]
-  }
-];
-
 const teamIconMap: Record<string, LucideIcon> = {
   BriefcaseBusiness,
   LifeBuoy,
@@ -703,7 +718,7 @@ const teamIconMap: Record<string, LucideIcon> = {
 };
 
 function fallbackTeamBySlug(slug: string) {
-  return [...readyTeams, ...myTeams, ...sharedTeams].find((team) => team.id === slug) || null;
+  return [...readyTeams, ...myTeams].find((team) => team.id === slug) || null;
 }
 
 function mapApiTeamToCard(team: ApiTeam): TeamCardData {
@@ -838,7 +853,7 @@ export default function DashboardPage() {
   const [user, setUser] = useState<UserData | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeView, setActiveView] = useState<View>("office");
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("profile");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("connected");
   const [themeMode, setThemeMode] = useState<ThemeMode>("dark");
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
   const [teamTab, setTeamTab] = useState<TeamTab>("ready");
@@ -858,13 +873,9 @@ export default function DashboardPage() {
   const [teamsLoading, setTeamsLoading] = useState(false);
   const [teamsError, setTeamsError] = useState("");
   const [teamsLoaded, setTeamsLoaded] = useState(false);
-  const [supportCategory, setSupportCategory] = useState("Bug");
-  const [supportSubject, setSupportSubject] = useState("");
-  const [supportMessage, setSupportMessage] = useState("");
-  const [attachmentName, setAttachmentName] = useState("");
-  const [supportStatus, setSupportStatus] = useState("");
-  const [emailDigest, setEmailDigest] = useState(true);
-  const [memoryEnabled, setMemoryEnabled] = useState(true);
+  const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null);
+  const [billingLoading, setBillingLoading] = useState(true);
+  const [billingError, setBillingError] = useState("");
   const [telegramBotToken, setTelegramBotToken] = useState("");
   const [telegramBotTarget, setTelegramBotTarget] = useState("");
   const [telegramBotConnected, setTelegramBotConnected] = useState(false);
@@ -920,8 +931,15 @@ export default function DashboardPage() {
     const storedView = localStorage.getItem(DASHBOARD_VIEW_STORAGE_KEY);
     const storedTeamTab = localStorage.getItem(DASHBOARD_TEAM_TAB_STORAGE_KEY);
     const storedOffice = localStorage.getItem(DASHBOARD_OFFICE_STORAGE_KEY);
+    const query = new URLSearchParams(window.location.search);
+    const requestedSettingsTab = query.get("view") === "settings" && isSettingsTab(query.get("tab"))
+      ? query.get("tab") as SettingsTab
+      : null;
 
-    if (isDashboardView(storedView)) {
+    if (requestedSettingsTab) {
+      setActiveView("settings");
+      setSettingsTab(requestedSettingsTab);
+    } else if (isDashboardView(storedView)) {
       setActiveView(storedView);
     }
     if (isTeamTab(storedTeamTab)) {
@@ -990,6 +1008,7 @@ export default function DashboardPage() {
           loadIntegrations();
           loadTeams();
           loadTasks();
+          loadBillingStatus();
         }
       })
       .finally(() => setLoading(false));
@@ -1078,7 +1097,7 @@ export default function DashboardPage() {
   }
 
   function findTeamById(teamId: string): TeamCardData | null {
-    return [...readyTeamSource, ...myTeamSource, ...sharedTeams, ...readyTeams, ...myTeams].find((team) => team.id === teamId) || null;
+    return [...readyTeamSource, ...myTeamSource, ...readyTeams, ...myTeams].find((team) => team.id === teamId) || null;
   }
 
   function openConversationOffice(conversation: ActiveOfficeConversation) {
@@ -1187,6 +1206,24 @@ export default function DashboardPage() {
     }
   }
 
+  async function loadBillingStatus() {
+    setBillingLoading(true);
+    setBillingError("");
+    try {
+      const response = await fetch(`${API_URL}/api/billing/status`, { credentials: "include" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error("Billing status is unavailable");
+      }
+      setBillingStatus(parseBillingStatus(payload));
+    } catch (error) {
+      setBillingStatus(null);
+      setBillingError(error instanceof Error ? error.message : "Billing status is unavailable");
+    } finally {
+      setBillingLoading(false);
+    }
+  }
+
   async function loadTasks() {
     setTasksLoading(true);
     setTasksError("");
@@ -1261,15 +1298,6 @@ export default function DashboardPage() {
     setTasks((current) => current.map((task) => (task.id === id ? { ...task, status: nextStatus } : task)));
   }
 
-  function submitSupport(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!supportSubject.trim() || !supportMessage.trim()) return;
-    setSupportStatus("Support request queued. We will reply to your account email.");
-    setSupportSubject("");
-    setSupportMessage("");
-    setAttachmentName("");
-  }
-
   function openTeams(tab: TeamTab = "ready") {
     setTeamTab(tab);
     setExpandedTeam("");
@@ -1326,11 +1354,6 @@ export default function DashboardPage() {
     setSelectedOfficeAgent(agentId);
     sendOfficeTeam(selectedOfficeTeamPayload, activeConversation);
     sendOfficeSelection(agentId);
-  }
-
-  function changeTheme(mode: ThemeMode) {
-    setThemeMode(mode);
-    setResolvedTheme(applyThemeMode(mode));
   }
 
   async function loadIntegrations() {
@@ -1456,10 +1479,14 @@ export default function DashboardPage() {
 
   async function disconnectConnectedApp(providerKey: string) {
     try {
-      await fetch(`${API_URL}/api/connected-apps/${providerKey}/disconnect`, {
+      const response = await fetch(`${API_URL}/api/connected-apps/${providerKey}/disconnect`, {
         method: "POST",
         credentials: "include"
       });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.detail || "Disconnect failed");
+      }
       setOauthConnectingApps((current) => ({ ...current, [providerKey]: false }));
       setConnectedAppErrors((current) => {
         const next = { ...current };
@@ -1467,8 +1494,11 @@ export default function DashboardPage() {
         return next;
       });
       await loadIntegrations();
-    } catch {
-      // Keep the current card state; manual refresh is still available.
+    } catch (error) {
+      setConnectedAppErrors((current) => ({
+        ...current,
+        [providerKey]: error instanceof Error ? error.message : "Disconnect failed",
+      }));
     }
   }
 
@@ -1485,18 +1515,21 @@ export default function DashboardPage() {
   const navItems = [
     { id: "office" as View, label: "Office", icon: BriefcaseBusiness },
     { id: "youtube-growth" as View, label: "YouTube Growth", icon: Video },
-    { id: "tasks" as View, label: "Tasks", icon: ListTodo },
-    { id: "activity" as View, label: "Activity", icon: Activity },
-    { id: "my-teams" as View, label: "Your teams", icon: UsersRound },
-    { id: "shared" as View, label: "Shared with me", icon: UsersRound }
-  ];
-
-  const bottomItems = [
-    { id: "settings" as View, label: "Settings", icon: Settings },
-    { id: "support" as View, label: "Support", icon: LifeBuoy }
+    { id: "my-teams" as View, label: "Your teams", icon: UsersRound }
   ];
 
   const displayName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || user?.email || "Teamora user";
+  const billingLoaded = !billingLoading && !billingError && billingStatus !== null;
+  const billingPlanLabel = billingLoading
+    ? "Loading plan..."
+    : billingLoaded
+      ? billingStatus?.plan?.name || "No plan"
+      : "Plan unavailable";
+  const accountRoleLabel = billingLoading
+    ? "Loading role..."
+    : billingLoaded
+      ? billingRoleLabel(billingStatus?.role)
+      : "Role unavailable";
   const youtubeProvider = connectedApps?.providers.find((provider) => provider.key === "youtube");
   const youtubeAccount = youtubeProvider?.accounts?.find((account) => account.isDefault) || youtubeProvider?.accounts?.[0];
   const youtubeChannelLabel = youtubeAccount?.label || youtubeAccount?.identifier || "";
@@ -1524,13 +1557,6 @@ export default function DashboardPage() {
             {sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}
           </button>
         </div>
-
-        <button className="button new-team" type="button" title="New team" onClick={() => openTeams("ready")}>
-          <span>
-            <Plus size={15} /> New team
-          </span>
-          <ChevronDown size={15} />
-        </button>
 
         <nav className="side-nav" aria-label="Workspace">
           {navItems.map((item) => {
@@ -1594,38 +1620,48 @@ export default function DashboardPage() {
         )}
 
         <div className="sidebar-bottom">
-          {bottomItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                className={`side-link ${activeView === item.id ? "active" : ""}`}
-                key={item.id}
-                type="button"
-                title={item.label}
-                onClick={() => setActiveView(item.id)}
-              >
-                <Icon size={19} />
-                {item.label}
-              </button>
-            );
-          })}
+          <button
+            className={`side-link ${activeView === "settings" ? "active" : ""}`}
+            type="button"
+            title="Settings"
+            onClick={() => {
+              setSettingsTab("connected");
+              setActiveView("settings");
+            }}
+          >
+            <Settings size={19} />
+            Settings
+          </button>
+          {billingLoaded && billingStatus?.canUpgrade && (
+            <Link className="side-link sidebar-upgrade-link" href="/pricing" title="Upgrade">
+              <CreditCard size={19} />
+              Upgrade
+            </Link>
+          )}
+          <button
+            className={`side-link ${activeView === "support" ? "active" : ""}`}
+            type="button"
+            title="Support"
+            onClick={() => setActiveView("support")}
+          >
+            <LifeBuoy size={19} />
+            Support
+          </button>
+          <button className="side-link sidebar-logout" type="button" title="Log out" onClick={() => void logout()}>
+            <LogOut size={19} />
+            Log out
+          </button>
+          <div className="account-button sidebar-account-card" aria-label={`${displayName}, ${accountRoleLabel}, ${billingPlanLabel}`}>
+            <span className="brand-mark">{displayName.slice(0, 1).toUpperCase()}</span>
+            <span>
+              <strong>{displayName}</strong>
+              <small>{accountRoleLabel} · {billingPlanLabel}</small>
+            </span>
+          </div>
         </div>
       </aside>
 
       <section className={`dash-main ${activeView === "office" ? "dash-main-office" : ""}`}>
-        {activeView !== "office" && (
-          <div className="dash-top-account">
-            <button className="account-button top-account-button" type="button" onClick={logout}>
-              <span className="brand-mark">{displayName.slice(0, 1).toUpperCase()}</span>
-              <span>
-                <strong>{displayName}</strong>
-                <small>Owner · No plan</small>
-              </span>
-              <LogOut size={16} />
-            </button>
-          </div>
-        )}
-
         {activeView === "office" && (
           <section className="office-view" aria-label="Teamora AI Office">
             {selectedOfficeTeamPayload ? (
@@ -1912,22 +1948,6 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {activeView === "shared" && (
-          <section className="dashboard-view shared-view">
-            <div className="view-head">
-              <div>
-                <p className="eyebrow">Collaboration</p>
-                <h1>Shared with me</h1>
-              </div>
-            </div>
-            <div className="shared-panel">
-              <Share2 size={28} />
-              <strong>No shared teams yet</strong>
-              <p>When someone invites you to a team, it will appear here.</p>
-            </div>
-          </section>
-        )}
-
         {activeView === "settings" && (
           <section className="dashboard-view settings-view">
             <div className="view-head">
@@ -1939,12 +1959,8 @@ export default function DashboardPage() {
             <div className="settings-layout">
               <nav className="settings-tabs" aria-label="Settings sections">
                 {[
-                  { id: "profile" as SettingsTab, label: "Profile", icon: User },
-                  { id: "general" as SettingsTab, label: "General", icon: Settings },
-                  { id: "billing" as SettingsTab, label: "Billing", icon: CreditCard },
-                  { id: "notifications" as SettingsTab, label: "Notifications", icon: Bell },
-                  { id: "memory" as SettingsTab, label: "Memory", icon: Database },
-                  { id: "connected" as SettingsTab, label: "Connected Apps", icon: Plug }
+                  { id: "connected" as SettingsTab, label: "Connected Apps", icon: Plug },
+                  { id: "billing" as SettingsTab, label: "Billing", icon: CreditCard }
                 ].map((tab) => {
                   const Icon = tab.icon;
                   return (
@@ -1957,44 +1973,15 @@ export default function DashboardPage() {
                       <Icon size={17} />
                       {tab.label}
                     </button>
-                  );
-                })}
-                <div className="settings-divider" />
-                <button className="settings-group" type="button">
-                  <Settings size={17} />
-                  Advanced
-                  <ChevronDown size={15} />
-                </button>
-                {[
-                  { id: "writing" as SettingsTab, label: "Writing style", icon: MessageCircle },
-                  { id: "completion" as SettingsTab, label: "Completion checks", icon: Check },
-                  { id: "developer" as SettingsTab, label: "Developer access", icon: Plug }
-                ].map((tab) => {
-                  const Icon = tab.icon;
-                  return (
-                    <button
-                      className={`settings-subtab ${settingsTab === tab.id ? "active" : ""}`}
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setSettingsTab(tab.id)}
-                    >
-                      <Icon size={16} />
-                      {tab.label}
-                    </button>
-                  );
-                })}
+                    );
+                  })}
               </nav>
               <div className="settings-panel">
                 {renderSettingsPanel({
                   tab: settingsTab,
-                  displayName,
-                  user,
-                  emailDigest,
-                  setEmailDigest,
-                  memoryEnabled,
-                  setMemoryEnabled,
-                  themeMode,
-                  changeTheme,
+                  billingStatus,
+                  billingLoading,
+                  billingError,
                   telegramBotToken,
                   setTelegramBotToken,
                   telegramBotTarget,
@@ -2052,67 +2039,18 @@ export default function DashboardPage() {
             </button>
 
             <div className="support-contact-row">
-              <a className="support-contact" href="mailto:support@teamly.to">
+              <a className="support-contact" href="mailto:support@teamorai.uz">
                 <Mail size={20} />
                 <span>
                   <small>Email</small>
-                  support@teamly.to
-                </span>
-              </a>
-              <a className="support-contact" href="https://t.me/" target="_blank" rel="noreferrer">
-                <MessageCircle size={20} />
-                <span>
-                  <small>Telegram group</small>
-                  Join Support Group
+                  support@teamorai.uz
                 </span>
               </a>
             </div>
 
-            <form className="support-form" onSubmit={submitSupport}>
-              <label className="support-field">
-                Category
-                <select value={supportCategory} onChange={(event) => setSupportCategory(event.target.value)}>
-                  <option>Bug</option>
-                  <option>Billing</option>
-                  <option>Account</option>
-                  <option>Feature request</option>
-                </select>
-              </label>
-              <label className="support-field">
-                Subject
-                <input
-                  maxLength={200}
-                  value={supportSubject}
-                  onChange={(event) => setSupportSubject(event.target.value)}
-                  placeholder="Short summary of the issue"
-                />
-                <small>{supportSubject.length}/200</small>
-              </label>
-              <label className="support-field">
-                Message
-                <textarea
-                  maxLength={5000}
-                  value={supportMessage}
-                  onChange={(event) => setSupportMessage(event.target.value)}
-                  placeholder="What happened? Steps to reproduce, what you expected, anything else helpful."
-                />
-                <small>{supportMessage.length}/5000</small>
-              </label>
-              <div className="support-actions">
-                <label className="button attach-button">
-                  <Paperclip size={16} /> Attach
-                  <input
-                    type="file"
-                    onChange={(event) => setAttachmentName(event.target.files?.[0]?.name || "")}
-                  />
-                </label>
-                <button className="button solid" type="submit" disabled={!supportSubject.trim() || !supportMessage.trim()}>
-                  <Send size={16} /> Send
-                </button>
-              </div>
-              {attachmentName && <p className="support-note">Attached: {attachmentName}</p>}
-              {supportStatus && <p className="support-success">{supportStatus}</p>}
-            </form>
+            <p className="support-note">
+              Send the issue, affected workspace and reproduction steps by email. The support team will reply to you there.
+            </p>
           </section>
         )}
       </section>
@@ -2379,14 +2317,9 @@ function TeamDetailsModal({ team, onClose, onHire }: { team: TeamCardData; onClo
 
 function renderSettingsPanel({
   tab,
-  displayName,
-  user,
-  emailDigest,
-  setEmailDigest,
-  memoryEnabled,
-  setMemoryEnabled,
-  themeMode,
-  changeTheme,
+  billingStatus,
+  billingLoading,
+  billingError,
   telegramBotToken,
   setTelegramBotToken,
   telegramBotTarget,
@@ -2418,14 +2351,9 @@ function renderSettingsPanel({
   loadIntegrations
 }: {
   tab: SettingsTab;
-  displayName: string;
-  user: UserData | null;
-  emailDigest: boolean;
-  setEmailDigest: (value: boolean) => void;
-  memoryEnabled: boolean;
-  setMemoryEnabled: (value: boolean) => void;
-  themeMode: ThemeMode;
-  changeTheme: (mode: ThemeMode) => void;
+  billingStatus: BillingStatus | null;
+  billingLoading: boolean;
+  billingError: string;
   telegramBotToken: string;
   setTelegramBotToken: (value: string) => void;
   telegramBotTarget: string;
@@ -2456,185 +2384,34 @@ function renderSettingsPanel({
   disconnectConnectedApp: (providerKey: string) => void | Promise<void>;
   loadIntegrations: () => void | Promise<void>;
 }) {
-  if (tab === "profile") {
-    return (
-      <div className="settings-page">
-        <div className="settings-page-head">
-          <h1>Profile</h1>
-          <p>Account details and business context</p>
-        </div>
-        <section className="settings-hero-card">
-          <span className="settings-avatar">{displayName.slice(0, 1).toUpperCase()}</span>
-          <div>
-            <h2>{displayName}</h2>
-            <p>Owner · Team Lead</p>
-            <span className="active-badge">Active</span>
-          </div>
-        </section>
-        <section className="settings-block about-block">
-          <div className="settings-block-head">
-            <Image src="/images/member-man.png" width={608} height={608} alt="" />
-            <div>
-              <h2>About you</h2>
-              <p>Help your agents understand your business</p>
-            </div>
-            <button className="button" type="button">
-              <Paperclip size={15} /> Edit
-            </button>
-          </div>
-          {["Your role", "What does your company do?", "Website", "Goals & challenges"].map((label) => (
-            <div className="settings-line" key={label}>
-              <span>{label}</span>
-              <strong>-</strong>
-            </div>
-          ))}
-        </section>
-        <section className="settings-block">
-          <h2>Account details</h2>
-          <div className="settings-line">
-            <span>Email</span>
-            <strong>{user?.email || "-"}</strong>
-          </div>
-          <div className="settings-line">
-            <span>Plan</span>
-            <strong>No plan</strong>
-          </div>
-          <div className="settings-line">
-            <span>Teams</span>
-            <strong>0 / 0</strong>
-          </div>
-          <div className="settings-line">
-            <span>Role</span>
-            <strong>Owner</strong>
-          </div>
-        </section>
-      </div>
-    );
-  }
-
-  if (tab === "general") {
-    return (
-      <div className="settings-page">
-        <div className="settings-page-head">
-          <h1>General</h1>
-          <p>Team name, appearance, and follow-up behavior</p>
-        </div>
-        <section className="settings-block">
-          <h2>Identity</h2>
-          <p>Choose how this team appears in your workspace.</p>
-          <label className="settings-field">
-            Team name
-            <input defaultValue="My Team" />
-          </label>
-        </section>
-        <section className="settings-block">
-          <h2>Team status</h2>
-          <span className="warning-badge">Not connected</span>
-        </section>
-        <section className="settings-block appearance-block">
-          <h2>Appearance</h2>
-          <div className="theme-segment">
-            <button className={themeMode === "light" ? "active" : ""} type="button" onClick={() => changeTheme("light")}>
-              <Sun size={15} /> Light
-            </button>
-            <button className={themeMode === "dark" ? "active" : ""} type="button" onClick={() => changeTheme("dark")}>
-              <Moon size={15} /> Dark
-            </button>
-            <button className={themeMode === "auto" ? "active" : ""} type="button" onClick={() => changeTheme("auto")}>
-              <Clock size={15} /> Auto
-            </button>
-          </div>
-          <div className="theme-caption">
-            <strong>Theme</strong>
-            <span>Currently {themeMode} mode</span>
-          </div>
-        </section>
-        <section className="settings-block">
-          <h2>Agent follow-up</h2>
-          <label className="settings-field small-field">
-            Check for new work
-            <select defaultValue="30 min">
-              <option>15 min</option>
-              <option>30 min</option>
-              <option>1 hour</option>
-            </select>
-          </label>
-          <label className="toggle-row plain-toggle">
-            <span>
-              <strong>Work without prompting</strong>
-              <small>Agents wait for your next message</small>
-            </span>
-            <input type="checkbox" />
-          </label>
-        </section>
-      </div>
-    );
-  }
-
   if (tab === "billing") {
+    const planLabel = billingLoading
+      ? "Loading plan..."
+      : billingError
+        ? "Plan unavailable"
+        : billingStatus?.plan?.name || "No plan";
+    const roleLabel = billingLoading || billingError ? "Unavailable" : billingRoleLabel(billingStatus?.role);
+    const billingActionLabel = billingStatus?.plan ? "View plans" : "Explore plans";
     return (
       <div className="settings-page">
         <div className="settings-page-head">
           <h1>Billing</h1>
-          <p>Plan and payment details</p>
+          <p>Workspace plan and account access</p>
         </div>
         <section className="settings-block">
           <h2>Current plan</h2>
           <div className="settings-line">
             <span>Plan</span>
-            <strong>No plan</strong>
+            <strong>{planLabel}</strong>
           </div>
           <div className="settings-line">
-            <span>Credits</span>
-            <strong>$0</strong>
+            <span>Workspace role</span>
+            <strong>{roleLabel}</strong>
           </div>
-          <button className="button solid" type="button">
-            Manage billing
-          </button>
-        </section>
-      </div>
-    );
-  }
-
-  if (tab === "notifications") {
-    return (
-      <div className="settings-page">
-        <div className="settings-page-head">
-          <h1>Notifications</h1>
-          <p>Email updates for team activity</p>
-        </div>
-        <section className="settings-block notification-block">
-          <div>
-            <h2>My team updates</h2>
-            <p>Request and readiness emails for custom teams</p>
-          </div>
-          <label className="switch">
-            <input type="checkbox" checked={emailDigest} onChange={(event) => setEmailDigest(event.target.checked)} />
-            <span />
-          </label>
-          <strong>{emailDigest ? "Enabled" : "Disabled"}</strong>
-        </section>
-      </div>
-    );
-  }
-
-  if (tab === "memory") {
-    return (
-      <div className="settings-page">
-        <div className="settings-page-head">
-          <h1>Memory</h1>
-          <p>Reusable business context for agents</p>
-        </div>
-        <section className="settings-block notification-block">
-          <div>
-            <h2>Workspace memory</h2>
-            <p>Keep useful context for future Business AI work</p>
-          </div>
-          <label className="switch">
-            <input type="checkbox" checked={memoryEnabled} onChange={(event) => setMemoryEnabled(event.target.checked)} />
-            <span />
-          </label>
-          <strong>{memoryEnabled ? "Enabled" : "Disabled"}</strong>
+          {billingError && <p role="alert">{billingError}. You can still review the available plans.</p>}
+          <Link className="button solid" href="/pricing">
+            {billingActionLabel}
+          </Link>
         </section>
       </div>
     );
@@ -2643,7 +2420,7 @@ function renderSettingsPanel({
   if (tab === "connected") {
     const providerCards: ConnectedProvider[] =
       connectedApps?.providers ?? [
-        { key: "google", name: "Google", authType: "oauth2", status: user?.google_connected ? "Connected" : "Not Connected", connected: Boolean(user?.google_connected), connectedAt: null, accounts: [], capabilities: [] },
+        { key: "google", name: "Google", authType: "oauth2", status: "Not Connected", connected: false, connectedAt: null, accounts: [], capabilities: [] },
         { key: "telegram", name: "Telegram", authType: "bot_token", status: telegramBotConnected ? "Connected" : "Not Connected", connected: telegramBotConnected, connectedAt: null, accounts: [], capabilities: [] },
         { key: "instagram", name: "Instagram", authType: "meta_oauth2", status: instagramConnected ? "Connected" : "Not Connected", connected: instagramConnected, connectedAt: null, accounts: [], capabilities: [] },
         { key: "facebook", name: "Facebook", authType: "meta_oauth2", status: "Not Connected", connected: false, connectedAt: null, accounts: [], capabilities: [] },
@@ -2653,10 +2430,8 @@ function renderSettingsPanel({
       ];
     const providersByKey = new Map(providerCards.map((provider) => [provider.key, provider]));
     const appCards = buildConnectedAppCards(providersByKey, {
-      google: Boolean(user?.google_connected || providersByKey.get("google")?.connected),
       telegram: Boolean(telegramBotConnected || providersByKey.get("telegram")?.connected),
       instagram: Boolean(instagramConnected || providersByKey.get("instagram")?.connected),
-      userEmail: user?.email || "",
       telegramTarget: telegramBotTarget,
       telegramStatus: telegramBotStatus,
       instagramStatus,
@@ -2720,7 +2495,7 @@ function renderSettingsPanel({
               spellCheck={false}
             />
           </label>
-          <div className="connected-filter" role="tablist" aria-label="Connected apps filter">
+          <div className="connected-filter" role="group" aria-label="Connected apps filter">
             {[
               ["all", "All"],
               ["connected", "Connected"],
@@ -2730,19 +2505,12 @@ function renderSettingsPanel({
                 className={connectedAppsFilter === value ? "active" : ""}
                 key={value}
                 type="button"
+                aria-pressed={connectedAppsFilter === value}
                 onClick={() => setConnectedAppsFilter(value as ConnectedAppsFilter)}
               >
                 {label}
               </button>
             ))}
-          </div>
-          <div className="connected-view-toggle" aria-label="Connected apps view">
-            <button className="active" type="button" aria-pressed="true" title="Grid view">
-              <Grid3X3 size={15} />
-            </button>
-            <button type="button" aria-pressed="false" title="List view">
-              <List size={16} />
-            </button>
           </div>
         </div>
         <div className="connected-app-list">
@@ -2803,9 +2571,6 @@ function renderSettingsPanel({
             <strong>Your data is safe and secure</strong>
             <p>OAuth tokens are encrypted on the backend. The frontend never receives access tokens.</p>
           </div>
-          <button className="connected-security-link" type="button">
-            Learn more
-          </button>
         </section>
         {secretModalCard && (
           <ApiKeyConnectModal
@@ -2832,50 +2597,7 @@ function renderSettingsPanel({
     );
   }
 
-  if (tab === "writing") {
-    return (
-      <div className="settings-page">
-        <div className="settings-page-head">
-          <h1>Writing style</h1>
-          <p>Choose how agents format replies by default</p>
-        </div>
-        <section className="settings-block">
-          <h2>Writing style</h2>
-          <p>Choose how agents format replies by default, without changing the team setup.</p>
-        </section>
-        <div className="writing-grid">
-          {[
-            ["Default", "Use the team's normal instructions."],
-            ["Terse", "Short answers without preamble."],
-            ["Verbose", "Explain reasoning and tradeoffs clearly."],
-            ["Formal", "Use a formal register."],
-            ["Custom", "Use your own markdown instructions."]
-          ].map(([name, copy], index) => (
-            <button className={`writing-card ${index === 0 ? "active" : ""}`} type="button" key={name}>
-              <h2>{name} {index === 0 && <Check size={16} />}</h2>
-              <p>{copy}</p>
-            </button>
-          ))}
-        </div>
-        <button className="button solid save-writing" type="button">
-          Save
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="settings-page">
-      <div className="settings-page-head">
-        <h1>{tab === "completion" ? "Completion checks" : "Developer access"}</h1>
-        <p>{tab === "completion" ? "Review rules before work is marked done" : "API keys and technical controls"}</p>
-      </div>
-      <section className="settings-block">
-        <h2>{tab === "completion" ? "Checks" : "Access"}</h2>
-        <p>{tab === "completion" ? "Require agents to confirm output quality before closing work." : "Developer controls will appear here when enabled."}</p>
-      </section>
-    </div>
-  );
+  return null;
 }
 
 function formatConnectedDate(value: string | null) {
@@ -2935,10 +2657,8 @@ function telegramBotFromStatus(statusText: string) {
 function buildConnectedAppCards(
   providers: Map<string, ConnectedProvider>,
   overrides: {
-    google: boolean;
     telegram: boolean;
     instagram: boolean;
-    userEmail: string;
     telegramTarget: string;
     telegramStatus: string;
     instagramStatus: string;
@@ -2947,7 +2667,6 @@ function buildConnectedAppCards(
   }
 ): ConnectedAppCardData[] {
   const providerConnected = (key: string) => {
-    if (key === "google") return overrides.google;
     if (key === "telegram") return overrides.telegram;
     if (key === "instagram") return overrides.instagram;
     return Boolean(providers.get(key)?.connected);
@@ -2985,7 +2704,7 @@ function buildConnectedAppCards(
       connected: providerConnected("google"),
       connectedAt: connectedAt("google"),
       connectedLabel: "Connected as",
-      connectedValue: accountValue(googleAccount, overrides.userEmail),
+      connectedValue: accountValue(googleAccount),
       connectLabel: "Connect with Google",
       action: "oauth"
     },
@@ -3289,6 +3008,7 @@ function buildConnectedAppCards(
     ...card,
     connectionState: connectionState(card.providerKey),
     errorMessage: connectionError(card.providerKey),
+    runtimeState: providers.get(card.providerKey)?.runtimeState,
   }));
 }
 
@@ -3515,9 +3235,6 @@ function ConnectionCard({
   const extraCapabilities = Math.max(card.capabilities.length - visibleCapabilities.length, 0);
   return (
     <article className="connected-card">
-      <button className="connected-card-menu" type="button" aria-label={`${card.title} menu`}>
-        <MoreVertical size={17} />
-      </button>
       <div className="connected-card-top">
         <span className={`app-logo app-logo-${card.logoTone}`}>
           <img
@@ -3540,6 +3257,13 @@ function ConnectionCard({
       </div>
       <div className="connected-card-main">
         <p>{card.description}</p>
+        {card.runtimeState === "connection_only" && (
+          <small className="connected-runtime-note">
+            {card.connected
+              ? "Connected for account access; agent actions are not available yet."
+              : "Account connection is available; agent actions are not available yet."}
+          </small>
+        )}
         {card.requirements && card.requirements.length > 0 && !card.connected && (
           <div className="requirement-list" aria-label={`${card.title} requirements`}>
             <strong>Requirements</strong>
