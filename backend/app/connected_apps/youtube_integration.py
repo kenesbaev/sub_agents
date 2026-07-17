@@ -19,8 +19,16 @@ from app.models import IntegrationAccount, IntegrationToken
 from app.token_crypto import decrypt_token
 
 PROVIDER_KEY = "youtube"
-CAPABILITIES = ("youtube.upload", "youtube.edit", "youtube.analytics")
-TOOLS = ("upload_youtube_video", "schedule_social_post", "get_social_analytics")
+CAPABILITIES = ("youtube.research", "youtube.analytics", "youtube.upload")
+TOOLS = (
+    "youtube_search_trends",
+    "youtube_analyze_competitors",
+    "youtube_analyze_video",
+    "youtube_create_content_plan",
+    "youtube_create_creative_package",
+    "youtube_analyze_growth",
+    "upload_youtube_video",
+)
 
 YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 YOUTUBE_RESUMABLE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import AliasChoices, BaseModel, EmailStr, Field
 
 
 class RegisterRequest(BaseModel):
@@ -91,6 +91,11 @@ class PublishSocialRequest(BaseModel):
     media_data_url: str | None = None
     media_type: str | None = Field(default=None, max_length=120)
     media_name: str | None = Field(default=None, max_length=255)
+    account_id: int | None = Field(
+        default=None,
+        gt=0,
+        validation_alias=AliasChoices("account_id", "accountId"),
+    )
     publish_at: datetime | None = None
     timezone: str = Field(default="UTC", max_length=80)
     repeat_rule: str | None = Field(default=None, max_length=160)
@@ -105,8 +110,10 @@ class PublishTargetResult(BaseModel):
     external_id: str | int | None = None
     url: str | None = Field(default=None, max_length=2048)
     error: str | None = None
+    reconciliation_required: bool = False
 
 
 class PublishSocialResponse(BaseModel):
     ok: bool
     results: list[PublishTargetResult]
+    reconciliation_required: bool = False

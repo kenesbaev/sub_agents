@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -12,6 +14,15 @@ from typing import Any, Iterator
 from kaliya.text_safety import redact_sensitive_text
 
 
+try:
+    CRM_MAX_INTERACTIONS = max(100, min(20_000, int(os.environ.get("AGENT_CRM_MAX_INTERACTIONS", "5000"))))
+except ValueError:
+    CRM_MAX_INTERACTIONS = 5000
+
+_SCHEMA_INITIALIZATION_LOCK = threading.Lock()
+_INITIALIZED_DATABASES: set[Path] = set()
+
+
 @dataclass(frozen=True)
 class CRMContext:
     text: str
@@ -19,11 +30,14 @@ class CRMContext:
 
 class LocalCRM:
     def __init__(self, data_dir: Path, *, account_id: str = "local") -> None:
-        self.data_dir = data_dir.resolve()
+        self.data_dir = canonical_path(data_dir)
         self.account_id = safe_part(account_id)
-        self.database_path = (self.data_dir / "crm" / f"{self.account_id}.sqlite3").resolve()
+        self.database_path = canonical_path(self.data_dir / "crm" / f"{self.account_id}.sqlite3")
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_schema()
+        with _SCHEMA_INITIALIZATION_LOCK:
+            if self.database_path not in _INITIALIZED_DATABASES:
+                self._init_schema()
+                _INITIALIZED_DATABASES.add(self.database_path)
 
     def note_interaction(
         self,
@@ -66,6 +80,16 @@ class LocalCRM:
                     now_iso(),
                     json.dumps(metadata or {}, ensure_ascii=False),
                 ),
+            )
+            db.execute(
+                """
+                delete from interactions
+                where id < coalesce(
+                    (select id from interactions order by id desc limit 1 offset ?),
+                    0
+                )
+                """,
+                (CRM_MAX_INTERACTIONS - 1,),
             )
 
     def context_for_query(self, query: str, *, max_chars: int = 2000) -> str:
@@ -110,7 +134,7 @@ class LocalCRM:
         return output[:max_chars].rstrip()
 
     def _init_schema(self) -> None:
-        with self._connect() as db:
+        with self._connect(configure_wal=True) as db:
             db.executescript(
                 """
                 create table if not exists clients (
@@ -167,20 +191,35 @@ class LocalCRM:
             )
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.database_path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("pragma foreign_keys = on")
-        connection.execute("pragma journal_mode = wal")
-        connection.execute("pragma busy_timeout = 5000")
+    def _connect(self, *, configure_wal: bool = False) -> Iterator[sqlite3.Connection]:
+        connection: sqlite3.Connection | None = None
         try:
+            connection = sqlite3.connect(self.database_path, timeout=10)
+            connection.row_factory = sqlite3.Row
+            connection.execute("pragma busy_timeout = 5000")
+            connection.execute("pragma foreign_keys = on")
+            if configure_wal:
+                connection.execute("pragma journal_mode = wal")
             yield connection
             connection.commit()
         except Exception:
-            connection.rollback()
+            if connection is not None:
+                connection.rollback()
             raise
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
+
+
+def canonical_path(path: Path) -> Path:
+    value = str(path.resolve(strict=False))
+    if os.name == "nt":
+        if value.startswith("\\\\?\\UNC\\"):
+            value = "\\\\" + value[8:]
+        elif value.startswith("\\\\?\\"):
+            value = value[4:]
+        value = os.path.normcase(value)
+    return Path(value)
 
 
 def safe_part(value: str) -> str:

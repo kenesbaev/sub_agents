@@ -90,11 +90,10 @@ def build_turn_context(
                 f"Attachment image: {attachment.name} ({attachment.content_type}, {attachment.size} bytes)"
             )
         elif is_csv_attachment(attachment):
-            saved_path = persist_dataset_file(attachment, data_dir=data_dir)
             context_blocks.append(
                 "CSV context:\n"
                 + summarize_csv(attachment.path, attachment.name)
-                + f"\nSaved dataset: {saved_path}"
+                + "\nDataset scope: this request only; the uploaded file is deleted after completion."
             )
         elif is_video_attachment(attachment) or is_audio_attachment(attachment):
             context_blocks.append(media_file_context(attachment))
@@ -363,14 +362,6 @@ def summarize_csv(path: Path, filename: str) -> str:
         values = [f"{header[i] if i < len(header) else f'col_{i+1}'}={row[i]}" for i in range(min(len(row), 12))]
         lines.append("- " + "; ".join(values))
     return "\n".join(lines)
-
-
-def persist_dataset_file(attachment: UploadedAttachment, *, data_dir: Path) -> Path:
-    dataset_dir = data_dir / "tables" / "local"
-    dataset_dir.mkdir(parents=True, exist_ok=True)
-    target = unique_path(dataset_dir / safe_filename(attachment.name))
-    target.write_bytes(attachment.path.read_bytes())
-    return target
 
 
 def is_image_attachment(attachment: UploadedAttachment) -> bool:

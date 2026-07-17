@@ -37,6 +37,7 @@ import {
   Share2,
   Sun,
   Trash2,
+  Video,
   X,
   User,
   UsersRound
@@ -44,14 +45,18 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { type CSSProperties, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+import { YouTubeGrowthPanel } from "./youtube-growth-panel";
 
-type View = "office" | "tasks" | "activity" | "my-teams" | "shared" | "settings" | "support";
+// Browser requests stay on the frontend origin. Next.js proxies /api server-side.
+const API_URL = "";
+
+type View = "office" | "youtube-growth" | "tasks" | "activity" | "my-teams" | "shared" | "settings" | "support";
 type TaskStatus = "Queued" | "Working" | "Done";
 type SettingsTab = "profile" | "general" | "billing" | "notifications" | "memory" | "connected" | "writing" | "completion" | "developer";
 type TeamTab = "history" | "ready" | "mine";
 type TeamViewMode = "grid" | "list";
 type ThemeMode = "light" | "dark" | "auto";
+type ResolvedTheme = "light" | "dark";
 type ConnectedAppsFilter = "all" | "connected" | "not_connected";
 
 interface UserData {
@@ -84,6 +89,7 @@ interface ConnectedCapability {
   description: string;
   scope: string;
   accessLevel: string;
+  granted?: boolean;
 }
 
 interface ConnectedAccount {
@@ -94,6 +100,7 @@ interface ConnectedAccount {
   isDefault: boolean;
   connectedAt: string | null;
   metadata?: Record<string, string | number | boolean | null>;
+  grantedCapabilities?: string[];
 }
 
 interface ConnectedProvider {
@@ -264,7 +271,7 @@ const DASHBOARD_VIEW_STORAGE_KEY = "rebly-dashboard-active-view";
 const DASHBOARD_TEAM_TAB_STORAGE_KEY = "rebly-dashboard-team-tab";
 const DASHBOARD_OFFICE_STORAGE_KEY = "rebly-dashboard-active-office";
 
-const dashboardViews: View[] = ["office", "tasks", "activity", "my-teams", "shared", "settings", "support"];
+const dashboardViews: View[] = ["office", "youtube-growth", "tasks", "activity", "my-teams", "shared", "settings", "support"];
 const teamTabs: TeamTab[] = ["history", "ready", "mine"];
 
 function isDashboardView(value: string | null): value is View {
@@ -289,7 +296,9 @@ function createConversationId(teamId: string) {
 
 function loadConversationSummaries(ownerId: string): ConversationSummary[] {
   try {
-    const raw = localStorage.getItem(conversationStorageKey(ownerId));
+    const key = conversationStorageKey(ownerId);
+    localStorage.removeItem(key);
+    const raw = sessionStorage.getItem(key);
     const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
     return parsed
@@ -315,7 +324,7 @@ function loadConversationSummaries(ownerId: string): ConversationSummary[] {
 
 function saveConversationSummaries(ownerId: string, conversations: ConversationSummary[]) {
   try {
-    localStorage.setItem(conversationStorageKey(ownerId), JSON.stringify(conversations.slice(0, 80)));
+    sessionStorage.setItem(conversationStorageKey(ownerId), JSON.stringify(conversations.slice(0, 80)));
   } catch {
     // Keep the dashboard usable when browser storage is unavailable.
   }
@@ -344,6 +353,17 @@ const officeAgents = [
 
 const officeRuntimeAgents = officeAgents.filter((agent) => agent.id !== "all");
 
+const youtubeGrowthRuntimeIds: Record<string, string> = {
+  Atlas: "coordinator",
+  "Trend Scout": "youtube-trend-scout",
+  "Competitor Analyst": "youtube-competitor-analyst",
+  "Video Analyst": "youtube-video-analyst",
+  "Content Strategist": "youtube-content-strategist",
+  "Creative Director": "youtube-creative-director",
+  "Growth Analyst": "youtube-growth-analyst",
+  Publisher: "youtube-publisher",
+};
+
 function buildOfficeTeamPayload(team: TeamCardData): OfficeTeamPayload {
   const source = team.roster.length ? team.roster : [{ name: team.name, role: team.category, accent: "#4F5BD5" }];
   const socialRuntimeIds: Record<string, string> = {
@@ -353,13 +373,19 @@ function buildOfficeTeamPayload(team: TeamCardData): OfficeTeamPayload {
     Dex: "dev",
     Echo: "nova",
   };
+  const runtimeLimit = team.id === "youtube-growth-team" ? 8 : officeRuntimeAgents.length;
   return {
     id: team.id,
     name: team.name,
-    agents: source.slice(0, officeRuntimeAgents.length).map((agent, index) => {
-      const fallback = officeRuntimeAgents[index] || officeRuntimeAgents[0];
+    agents: source.slice(0, runtimeLimit).map((agent, index) => {
+      const fallback = officeRuntimeAgents[index % officeRuntimeAgents.length] || officeRuntimeAgents[0];
+      const youtubeRuntimeId = youtubeGrowthRuntimeIds[agent.name];
       return {
-        id: team.id === "social-posting-team" ? socialRuntimeIds[agent.name] || fallback.id : fallback.id,
+        id: team.id === "youtube-growth-team"
+          ? youtubeRuntimeId || `youtube-agent-${index + 1}`
+          : team.id === "social-posting-team"
+            ? socialRuntimeIds[agent.name] || fallback.id
+            : fallback.id,
         name: agent.name,
         role: agent.role || team.category,
         avatar: agent.avatar || fallback.image,
@@ -414,6 +440,47 @@ const businessModalWorkflow: WorkflowData[] = [
   { agent: "Coordinator", text: "Собирает финальный отчёт: что делать дальше, кто отвечает и где результат.", path: "workspace/business-ai/final-report.md" }
 ];
 
+const youtubeGrowthTeam: TeamCardData = {
+  id: "youtube-growth-team",
+  name: "YouTube Growth Team",
+  category: "Growth",
+  agents: "8 agents",
+  agentsCount: 8,
+  copy: "A source-backed YouTube research, content planning, creative, and channel learning team. It estimates opportunity without promising a specific number of views.",
+  modalCopy: "Atlas coordinates seven internal YouTube growth roles. The team uses permitted YouTube APIs, clearly separates facts from AI interpretation, validates content plans, and asks for explicit confirmation before any publishing action.",
+  output: "Video analysis + competitor synthesis + validated 7/30-day content plan + channel-specific growth recommendations",
+  tags: ["YouTube", "Growth", "Research", "Content"],
+  icon: Rocket,
+  roster: [
+    { name: "Atlas", role: "Coordinator", avatar: "/images/agents/coordinator.png", accent: "#4F5BD5" },
+    { name: "Trend Scout", role: "Trends and content gaps", avatar: "/images/agents/scout.png", accent: "#0EA5E9" },
+    { name: "Competitor Analyst", role: "Competitive research", avatar: "/images/member-woman.png", accent: "#14B8A6" },
+    { name: "Video Analyst", role: "Metadata and transcript analysis", avatar: "/images/agents/dev.png", accent: "#2563EB" },
+    { name: "Content Strategist", role: "7/30-day plans", avatar: "/images/agents/nova.png", accent: "#8B5CF6" },
+    { name: "Creative Director", role: "Titles, hooks, scripts, thumbnails", avatar: "/images/member-woman.png", accent: "#EC4899" },
+    { name: "Growth Analyst", role: "Channel baselines and recommendations", avatar: "/images/member-man.png", accent: "#F59E0B" },
+    { name: "Publisher", role: "Approval-controlled publishing", avatar: "/images/agents/dev.png", accent: "#10B981" },
+  ],
+  workflow: [
+    "Atlas validates the request and delegates only the required specialist roles",
+    "Trend Scout and Competitor Analyst collect permitted public evidence and source URLs",
+    "Video Analyst reports metadata, available captions, comments, and explicit limitations",
+    "Content Strategist and Creative Director build schema-validated ideas and packaging",
+    "Growth Analyst compares owned-channel results with that channel's own baseline",
+    "Publisher remains a controlled capability and never publishes without explicit approval",
+  ],
+  modalWorkflow: [
+    { agent: "Trend Scout", text: "Finds current videos, rising channels, trends, and content gaps with source URLs.", path: "youtube-growth/research" },
+    { agent: "Competitor Analyst", text: "Compares relevant videos and separates observed facts from AI interpretation.", path: "youtube-growth/competitors" },
+    { agent: "Video Analyst", text: "Analyzes metadata, available transcripts, comments, structure, hooks, and limitations.", path: "youtube-growth/video-analysis" },
+    { agent: "Content Strategist", text: "Creates a validated 7-day or 30-day content plan for the channel context.", path: "youtube-growth/content-plan" },
+    { agent: "Creative Director", text: "Creates title, hook, thumbnail, script, CTA, chapter, and Shorts variants.", path: "youtube-growth/creative" },
+    { agent: "Growth Analyst", text: "Compares post-publish checkpoints with the channel's own historical baseline.", path: "youtube-growth/recommendations" },
+    { agent: "Publisher", text: "Prepares a publishing preview and waits for explicit user confirmation.", path: "youtube-growth/publisher" },
+    { agent: "Atlas", text: "Combines artifacts, preserves sources, and requests approval before publishing.", path: "youtube-growth/final" },
+  ],
+};
+
 const socialPostingTeam: TeamCardData = {
   id: "social-posting-team",
   name: "Social Posting Team",
@@ -449,6 +516,7 @@ const socialPostingTeam: TeamCardData = {
 };
 
 const readyTeams: TeamCardData[] = [
+  youtubeGrowthTeam,
   socialPostingTeam,
   {
     id: "business-ai-team",
@@ -753,10 +821,17 @@ const agentToolRoles = [
   }
 ];
 
-function applyThemeMode(mode: ThemeMode) {
+function resolveThemeMode(mode: ThemeMode): ResolvedTheme {
   const dark = mode === "dark" || (mode === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  return dark ? "dark" : "light";
+}
+
+function applyThemeMode(mode: ThemeMode): ResolvedTheme {
+  const resolved = resolveThemeMode(mode);
+  document.documentElement.dataset.theme = resolved;
+  document.documentElement.style.colorScheme = resolved;
   localStorage.setItem("rebly-theme", mode);
+  return resolved;
 }
 
 export default function DashboardPage() {
@@ -764,7 +839,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [activeView, setActiveView] = useState<View>("office");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("profile");
-  const [themeMode, setThemeMode] = useState<ThemeMode>("light");
+  const [themeMode, setThemeMode] = useState<ThemeMode>("dark");
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
   const [teamTab, setTeamTab] = useState<TeamTab>("ready");
   const [teamViewMode, setTeamViewMode] = useState<TeamViewMode>("grid");
   const [teamSearch, setTeamSearch] = useState("");
@@ -896,9 +972,9 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const storedTheme = localStorage.getItem("rebly-theme");
-    const nextTheme: ThemeMode = storedTheme === "dark" || storedTheme === "auto" ? storedTheme : "light";
+    const nextTheme: ThemeMode = storedTheme === "light" || storedTheme === "auto" ? storedTheme : "dark";
     setThemeMode(nextTheme);
-    applyThemeMode(nextTheme);
+    setResolvedTheme(applyThemeMode(nextTheme));
 
     fetch(`${API_URL}/api/auth/me`, { credentials: "include" })
       .then(async (response) => {
@@ -922,7 +998,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (themeMode !== "auto") return;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const update = () => applyThemeMode("auto");
+    const update = () => setResolvedTheme(applyThemeMode("auto"));
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
   }, [themeMode]);
@@ -938,7 +1014,7 @@ export default function DashboardPage() {
       const data = event.data as { type?: string; agentId?: string; conversation?: OfficeConversationUpdate };
       if (data?.type === "rebly-office-agent-selected") {
         const agentId = String(data.agentId || "");
-        if (officeAgents.some((agent) => agent.id === agentId)) {
+        if (visibleOfficeAgents.some((agent) => agent.id === agentId)) {
           setSelectedOfficeAgent(agentId);
         }
         return;
@@ -950,13 +1026,14 @@ export default function DashboardPage() {
 
     window.addEventListener("message", handleOfficeMessage);
     return () => window.removeEventListener("message", handleOfficeMessage);
-  }, [activeConversation, conversationOwnerId]);
+  }, [activeConversation, conversationOwnerId, visibleOfficeAgents]);
 
   useEffect(() => {
     if (activeView !== "office") return;
     sendOfficeTeam(selectedOfficeTeamPayload, activeConversation);
     sendOfficeSelection(selectedOfficeAgent);
-  }, [activeConversation, activeView, selectedOfficeAgent, selectedOfficeTeamPayload]);
+    sendOfficeTheme(resolvedTheme);
+  }, [activeConversation, activeView, resolvedTheme, selectedOfficeAgent, selectedOfficeTeamPayload]);
 
   const visibleHistory = useMemo(() => {
     const query = teamSearch.trim().toLowerCase();
@@ -1082,6 +1159,14 @@ export default function DashboardPage() {
 
   async function logout() {
     await fetch(`${API_URL}/api/auth/logout`, { method: "POST", credentials: "include" });
+    for (const storage of [window.sessionStorage, window.localStorage]) {
+      for (let index = storage.length - 1; index >= 0; index -= 1) {
+        const key = storage.key(index);
+        if (key?.startsWith("rebly-office-") || key?.startsWith("rebly-team-conversations-")) {
+          storage.removeItem(key);
+        }
+      }
+    }
     window.location.href = "/";
   }
 
@@ -1226,6 +1311,16 @@ export default function DashboardPage() {
     );
   }
 
+  function sendOfficeTheme(theme: ResolvedTheme) {
+    officeFrameRef.current?.contentWindow?.postMessage(
+      {
+        type: "rebly-office-set-theme",
+        theme,
+      },
+      window.location.origin,
+    );
+  }
+
   function selectOfficeAgent(agentId: string) {
     setActiveView("office");
     setSelectedOfficeAgent(agentId);
@@ -1235,7 +1330,7 @@ export default function DashboardPage() {
 
   function changeTheme(mode: ThemeMode) {
     setThemeMode(mode);
-    applyThemeMode(mode);
+    setResolvedTheme(applyThemeMode(mode));
   }
 
   async function loadIntegrations() {
@@ -1389,6 +1484,7 @@ export default function DashboardPage() {
 
   const navItems = [
     { id: "office" as View, label: "Office", icon: BriefcaseBusiness },
+    { id: "youtube-growth" as View, label: "YouTube Growth", icon: Video },
     { id: "tasks" as View, label: "Tasks", icon: ListTodo },
     { id: "activity" as View, label: "Activity", icon: Activity },
     { id: "my-teams" as View, label: "Your teams", icon: UsersRound },
@@ -1401,6 +1497,13 @@ export default function DashboardPage() {
   ];
 
   const displayName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || user?.email || "Teamora user";
+  const youtubeProvider = connectedApps?.providers.find((provider) => provider.key === "youtube");
+  const youtubeAccount = youtubeProvider?.accounts?.find((account) => account.isDefault) || youtubeProvider?.accounts?.[0];
+  const youtubeChannelLabel = youtubeAccount?.label || youtubeAccount?.identifier || "";
+  const youtubePublishingEnabled = Boolean(
+    youtubeProvider?.capabilities.some((capability) => capability.key === "youtube.upload" && capability.granted)
+      || youtubeAccount?.grantedCapabilities?.includes("youtube.upload")
+  );
 
   return (
     <main className={`dashboard ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -1535,11 +1638,12 @@ export default function DashboardPage() {
                 <iframe
                   ref={officeFrameRef}
                   className="office-full-frame"
-                  src={`/office/index.html?embed=dashboard&apiUrl=${encodeURIComponent(API_URL)}`}
+                  src="/office/index.html?embed=dashboard&theme=dark"
                   title="Business AI office"
                   onLoad={() => {
                     sendOfficeTeam(selectedOfficeTeamPayload, activeConversation);
                     sendOfficeSelection(selectedOfficeAgent);
+                    sendOfficeTheme(resolvedTheme);
                   }}
                 />
               </>
@@ -1555,6 +1659,27 @@ export default function DashboardPage() {
                 </section>
               </div>
             )}
+          </section>
+        )}
+
+        {activeView === "youtube-growth" && (
+          <section className="dashboard-view youtube-growth-view">
+            <YouTubeGrowthPanel
+              connected={Boolean(youtubeProvider?.connected)}
+              accountId={youtubeAccount?.id}
+              connectionState={youtubeProvider?.connectionState}
+              channelLabel={youtubeChannelLabel}
+              publishingEnabled={youtubePublishingEnabled}
+              onConnect={() => void connectOAuthProvider("youtube", { youtubeAccess: "growth" })}
+              onEnablePublishing={() => void connectOAuthProvider("youtube", { youtubeAccess: "publisher" })}
+              onManageConnection={() => {
+                setActiveView("settings");
+                setSettingsTab("connected");
+                setConnectedAppsSearch("YouTube");
+                setConnectedAppsFilter("all");
+              }}
+              onOpenTeam={() => openTeamOffice(findTeamById("youtube-growth-team") || youtubeGrowthTeam)}
+            />
           </section>
         )}
 
@@ -2937,8 +3062,8 @@ function buildConnectedAppCards(
       key: "youtube",
       providerKey: "youtube",
       title: "YouTube",
-      description: "Connect a YouTube channel for video publishing, metadata updates, thumbnails, and analytics.",
-      capabilities: ["Upload", "Metadata", "Analytics", "Thumbnails"],
+      description: "Connect a YouTube channel for source-backed research and owned-channel analytics. Publishing is an explicit permission upgrade.",
+      capabilities: ["Research", "Channel analytics", "Approved upload"],
       logo: "YT",
       logoUrl: "https://cdn.simpleicons.org/youtube",
       logoTone: "youtube",

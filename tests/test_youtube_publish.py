@@ -325,6 +325,44 @@ class YouTubePublishTest(unittest.TestCase):
         self.assertIn("upload permission", task_update["results"][0].error)
         db.commit.assert_called_once()
 
+    def test_agent_tool_reuses_a_completed_task_result_instead_of_uploading_twice(self) -> None:
+        db = MagicMock()
+        user = SimpleNamespace(id=4)
+        task = SimpleNamespace(
+            result_json={
+                "published": True,
+                "publishResults": [
+                    {
+                        "platform": "youtube",
+                        "ok": True,
+                        "external_id": "video-existing",
+                        "url": "https://www.youtube.com/watch?v=video-existing",
+                    }
+                ],
+            }
+        )
+        refresh = AsyncMock()
+        with (
+            patch("app.connected_apps.router.find_publish_task", return_value=task),
+            patch("app.connected_apps.router.refresh_due_oauth_tokens", new=refresh),
+            patch("app.connected_apps.router.publish_youtube_video") as publish,
+        ):
+            response = asyncio.run(
+                execute_agent_tool(
+                    AgentToolExecuteRequest(
+                        tool="upload_youtube_video",
+                        arguments={"approved": True, "runId": "run-42", "taskId": 91},
+                    ),
+                    user=user,
+                    db=db,
+                )
+            )
+
+        publish.assert_not_called()
+        refresh.assert_not_awaited()
+        self.assertTrue(response["result"]["idempotentReplay"])
+        self.assertEqual("video-existing", response["result"]["videoId"])
+
 
 if __name__ == "__main__":
     unittest.main()

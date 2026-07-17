@@ -126,11 +126,32 @@ LINKEDIN_CAPABILITIES = (
     CapabilityDefinition("linkedin.analytics", "Analytics", "Read post analytics when available.", "read", "r_member_social"),
 )
 
+YOUTUBE_DATA_READ_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
+YOUTUBE_ANALYTICS_READ_SCOPE = "https://www.googleapis.com/auth/yt-analytics.readonly"
+YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
+
 YOUTUBE_CAPABILITIES = (
-    CapabilityDefinition("youtube.upload", "Upload Videos", "Upload videos through YouTube Data API.", "publish", "https://www.googleapis.com/auth/youtube.upload"),
-    CapabilityDefinition("youtube.edit", "Edit Metadata", "Update title, description, tags, status, and thumbnails.", "write", "https://www.googleapis.com/auth/youtube"),
-    CapabilityDefinition("youtube.thumbnails", "Thumbnails", "Upload and update video thumbnails.", "write", "https://www.googleapis.com/auth/youtube"),
-    CapabilityDefinition("youtube.analytics", "Channel Analytics", "Read channel and video analytics.", "read", "https://www.googleapis.com/auth/youtube.readonly"),
+    CapabilityDefinition(
+        "youtube.research",
+        "Channel & Video Research",
+        "Read the connected channel, videos, playlists, comments, and caption-track availability.",
+        "read",
+        YOUTUBE_DATA_READ_SCOPE,
+    ),
+    CapabilityDefinition(
+        "youtube.analytics",
+        "Channel Analytics",
+        "Read available first-party YouTube Analytics metrics for the connected channel.",
+        "read",
+        f"{YOUTUBE_DATA_READ_SCOPE} {YOUTUBE_ANALYTICS_READ_SCOPE}",
+    ),
+    CapabilityDefinition(
+        "youtube.upload",
+        "Upload Videos",
+        "Upload videos through YouTube Data API after explicit approval.",
+        "publish",
+        YOUTUBE_UPLOAD_SCOPE,
+    ),
 )
 
 SHOPIFY_CAPABILITIES = (
@@ -267,7 +288,7 @@ PROVIDERS: dict[str, ProviderDefinition] = {
         "YouTube",
         "oauth2",
         "/images/providers/youtube.svg",
-        "https://developers.google.com/youtube/v3/docs/videos/insert",
+        "https://developers.google.com/youtube/v3",
         YOUTUBE_CAPABILITIES,
     ),
     "shopify": ProviderDefinition(

@@ -11,9 +11,27 @@ export const metadata: Metadata = {
   },
 };
 
+const themeBootstrap = `
+  (() => {
+    try {
+      const stored = localStorage.getItem("rebly-theme");
+      const mode = stored === "light" || stored === "auto" ? stored : "dark";
+      const dark = mode === "dark" || (mode === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+      document.documentElement.style.colorScheme = dark ? "dark" : "light";
+    } catch {
+      document.documentElement.dataset.theme = "dark";
+      document.documentElement.style.colorScheme = "dark";
+    }
+  })();
+`;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" data-theme="dark" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
+      </head>
       <body>{children}</body>
     </html>
   );

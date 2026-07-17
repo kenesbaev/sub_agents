@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -10,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from urllib.parse import urlencode, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -20,25 +22,38 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.connected_apps.google_oauth import (
+    YouTubeAccessMode,
     exchange_google_code,
     google_connected_scopes,
     store_google_oauth_accounts,
 )
-from app.connected_apps.google_actions import execute_google_agent_tool, is_google_agent_tool
+from app.connected_apps.google_actions import (
+    GOOGLE_WRITE_AGENT_TOOLS,
+    execute_google_agent_tool,
+    is_google_agent_tool,
+)
 from app.connected_apps.providers import OAuthUrlBuilder, PROVIDERS
 from app.connected_apps.youtube_integration import YouTubePublishError, publish_youtube_video
 from app.connected_apps.service import (
     create_scheduled_post,
     disconnect_provider,
+    get_provider_record,
+    get_user_integration,
     list_activity,
     list_scheduled_posts,
     provider_status_payload,
+    sanitize_metadata,
     set_user_integration_status,
     upsert_connected_account,
     write_activity,
 )
 from app.db.session import get_db
-from app.integrations import update_publish_task_from_results
+from app.integrations import (
+    connected_account_credentials,
+    default_connected_account_id,
+    find_publish_task,
+    update_publish_task_from_results,
+)
 from app.models import (
     IntegrationAccount,
     IntegrationProvider,
@@ -77,29 +92,11 @@ class OAuthConnectRequest(BaseModel):
     # A store domain is account data, not OAuth client configuration. It lets a
     # merchant connect their own shop without exposing administrator credentials.
     shop_domain: str | None = Field(default=None, alias="shopDomain", min_length=1, max_length=255)
+    youtube_access: YouTubeAccessMode = Field(default="growth", alias="youtubeAccess")
 
 
 class ScheduledPostCreateRequest(BaseModel):
-    platform: Literal[
-        "telegram",
-        "instagram",
-        "facebook",
-        "linkedin",
-        "youtube",
-        "shopify",
-        "tiktok",
-        "x",
-        "discord",
-        "slack",
-        "notion",
-        "github",
-        "dropbox",
-        "onedrive",
-        "stripe",
-        "openai",
-        "claude",
-        "zapier",
-    ]
+    platform: Literal["telegram", "instagram"]
     content: str = Field(min_length=1, max_length=4096)
     publish_at: datetime
     timezone: str = Field(default="UTC", max_length=80)
@@ -109,6 +106,49 @@ class ScheduledPostCreateRequest(BaseModel):
     account_id: int | None = None
     source: str | None = Field(default=None, max_length=80)
     run_id: str | None = Field(default=None, max_length=80)
+
+
+SCHEDULED_DELIVERY_PLATFORMS = frozenset({"telegram", "instagram"})
+
+
+def validate_scheduler_fields(
+    *,
+    platform: str,
+    publish_at: datetime,
+    repeat_rule: str | None,
+    media_url: str | None,
+    timezone_name: str = "UTC",
+) -> datetime:
+    if platform not in SCHEDULED_DELIVERY_PLATFORMS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Scheduled publishing currently supports only Telegram and Instagram.",
+        )
+    if repeat_rule:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Recurring scheduled publishing is not available yet.",
+        )
+    try:
+        ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="timezone must be a valid IANA timezone name.",
+        ) from exc
+    if publish_at.tzinfo is None or publish_at.utcoffset() is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="publish_at must include a UTC offset or Z suffix.",
+        )
+    if platform == "instagram":
+        parsed = urlparse((media_url or "").strip())
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Scheduled Instagram publishing requires a public HTTPS media URL.",
+            )
+    return publish_at.astimezone(UTC)
 
 
 class ActivityWriteRequest(BaseModel):
@@ -439,7 +479,7 @@ def set_shopify_shop_cookie(response: Response, shop_domain: str | None) -> None
 
 def validate_state(request: Request, state: str) -> None:
     expected_state = request.cookies.get(INTEGRATION_STATE_COOKIE)
-    if not expected_state or expected_state != state:
+    if not expected_state or not hmac.compare_digest(expected_state, state):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state")
 
 
@@ -520,20 +560,38 @@ def mark_oauth_connection_status(
     connection_status: str,
     detail: str | None = None,
 ) -> None:
-    set_user_integration_status(
-        db,
-        user_id=user.id,
-        provider_key=provider_key,
-        status=connection_status,
-        last_error=detail if connection_status == "error" else None,
+    provider = get_provider_record(db, provider_key)
+    existing = get_user_integration(db, user_id=user.id, provider_id=provider.id)
+    existing_tokens = (
+        db.scalars(select(IntegrationToken).where(IntegrationToken.user_integration_id == existing.id)).all()
+        if existing is not None
+        else []
     )
+    preserve_connection = bool(
+        existing is not None
+        and existing.status == "connected"
+        and any(token.encrypted_access_token for token in existing_tokens)
+        and connection_status in {"connecting", "error"}
+    )
+    activity_status = connection_status
+    if preserve_connection and existing is not None:
+        existing.last_error = detail if connection_status == "error" else None
+        activity_status = "upgrade_error" if connection_status == "error" else "upgrade_pending"
+    else:
+        set_user_integration_status(
+            db,
+            user_id=user.id,
+            provider_key=provider_key,
+            status=connection_status,
+            last_error=detail if connection_status == "error" else None,
+        )
     write_activity(
         db,
         user_id=user.id,
         agent="system",
         service=provider_key,
         action="oauth_connection",
-        status=connection_status,
+        status=activity_status,
         error=detail if connection_status == "error" else None,
     )
 
@@ -902,20 +960,8 @@ def token_access_token(config: GenericOAuthConfig, token_data: dict[str, Any]) -
 
 
 def safe_token_metadata(token_data: dict[str, Any]) -> dict[str, Any]:
-    blocked = {"access_token", "refresh_token", "id_token", "webhook", "webhook_url"}
-    metadata: dict[str, Any] = {}
-    for key, value in token_data.items():
-        if key in blocked:
-            continue
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            metadata[key] = value
-        elif isinstance(value, dict):
-            metadata[key] = {
-                nested_key: nested_value
-                for nested_key, nested_value in value.items()
-                if isinstance(nested_value, (str, int, float, bool)) or nested_value is None
-            }
-    return metadata
+    sanitized = sanitize_metadata(token_data)
+    return sanitized if isinstance(sanitized, dict) else {}
 
 
 async def exchange_generic_oauth_code(
@@ -1192,17 +1238,44 @@ async def refresh_due_oauth_tokens(db: Session, user: User) -> None:
     now = datetime.now(UTC)
     refresh_before = now + timedelta(minutes=5)
     integrations = db.scalars(select(UserIntegration).where(UserIntegration.user_id == user.id)).all()
+    provider_ids = {integration.provider_id for integration in integrations}
+    providers = {
+        provider.id: provider
+        for provider in (
+            db.scalars(select(IntegrationProvider).where(IntegrationProvider.id.in_(provider_ids))).all()
+            if provider_ids
+            else []
+        )
+    }
+    integration_ids = [integration.id for integration in integrations]
+    token_records = (
+        db.scalars(select(IntegrationToken).where(IntegrationToken.user_integration_id.in_(integration_ids))).all()
+        if integration_ids
+        else []
+    )
+    tokens_by_integration: dict[int, list[IntegrationToken]] = {}
+    for token in token_records:
+        tokens_by_integration.setdefault(token.user_integration_id, []).append(token)
+    account_ids = {token.integration_account_id for token in token_records}
+    accounts = {
+        account.id: account
+        for account in (
+            db.scalars(select(IntegrationAccount).where(IntegrationAccount.id.in_(account_ids))).all()
+            if account_ids
+            else []
+        )
+    }
+
+    due: list[tuple[UserIntegration, IntegrationToken, datetime, GenericOAuthConfig]] = []
     for integration in integrations:
         if integration.status not in {"connected", "expired", "reconnect_required"}:
             continue
-        provider = db.get(IntegrationProvider, integration.provider_id)
+        provider = providers.get(integration.provider_id)
         if provider is None or provider.key in {"telegram", "instagram", "facebook"}:
             continue
         if provider.auth_type in {"api_key", "webhook", "bot_token"}:
             continue
-        tokens = db.scalars(
-            select(IntegrationToken).where(IntegrationToken.user_integration_id == integration.id)
-        ).all()
+        tokens = tokens_by_integration.get(integration.id, [])
         for token in tokens:
             expires_at = normalized_datetime(token.expires_at)
             if expires_at is None or expires_at > refresh_before:
@@ -1212,45 +1285,63 @@ async def refresh_due_oauth_tokens(db: Session, user: User) -> None:
                     integration.status = "expired"
                     integration.last_error = "Authorization expired. Reconnect this app."
                 continue
-            try:
-                account = db.get(IntegrationAccount, token.integration_account_id)
-                config = refresh_config_for_provider(
-                    provider.key,
-                    shop_domain=shopify_shop_domain_for_account(account) if provider.key == "shopify" else None,
-                )
-                if config is None:
-                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="OAuth refresh is not configured")
-                refreshed = await exchange_refresh_token(config, decrypt_token(token.encrypted_refresh_token))
-            except HTTPException:
+            account = accounts.get(token.integration_account_id)
+            config = refresh_config_for_provider(
+                provider.key,
+                shop_domain=shopify_shop_domain_for_account(account) if provider.key == "shopify" else None,
+            )
+            if config is None:
                 if expires_at <= now:
                     integration.status = "reconnect_required"
                     integration.last_error = "Authorization could not be refreshed. Reconnect this app."
                 continue
-            access_token = token_access_token(config, refreshed)
-            if access_token:
-                token.encrypted_access_token = encrypt_token(access_token)
-            refreshed_refresh_token = str(refreshed.get("refresh_token") or "")
-            if refreshed_refresh_token:
-                token.encrypted_refresh_token = encrypt_token(refreshed_refresh_token)
-            refreshed_expires_at = token_expires_at(refreshed)
-            if refreshed_expires_at:
-                token.expires_at = refreshed_expires_at
-            token.token_type = refreshed.get("token_type") or token.token_type
-            token.scopes = refreshed.get("scope") or token.scopes
-            integration.status = "connected"
-            integration.last_error = None
-            integration.disconnected_at = None
+            due.append((integration, token, expires_at, config))
+
+    semaphore = asyncio.Semaphore(4)
+
+    async def refresh_one(
+        item: tuple[UserIntegration, IntegrationToken, datetime, GenericOAuthConfig],
+    ) -> tuple[tuple[UserIntegration, IntegrationToken, datetime, GenericOAuthConfig], dict[str, Any] | None]:
+        _integration, token, _expires_at, config = item
+        try:
+            async with semaphore:
+                refreshed = await exchange_refresh_token(config, decrypt_token(token.encrypted_refresh_token or ""))
+            return item, refreshed
+        except (HTTPException, httpx.HTTPError):
+            return item, None
+
+    results = await asyncio.gather(*(refresh_one(item) for item in due)) if due else []
+    for (integration, token, expires_at, config), refreshed in results:
+        if refreshed is None:
+            if expires_at <= now:
+                integration.status = "reconnect_required"
+                integration.last_error = "Authorization could not be refreshed. Reconnect this app."
+            continue
+        access_token = token_access_token(config, refreshed)
+        if access_token:
+            token.encrypted_access_token = encrypt_token(access_token)
+        refreshed_refresh_token = str(refreshed.get("refresh_token") or "")
+        if refreshed_refresh_token:
+            token.encrypted_refresh_token = encrypt_token(refreshed_refresh_token)
+        refreshed_expires_at = token_expires_at(refreshed)
+        if refreshed_expires_at:
+            token.expires_at = refreshed_expires_at
+        token.token_type = refreshed.get("token_type") or token.token_type
+        token.scopes = refreshed.get("scope") or token.scopes
+        integration.status = "connected"
+        integration.last_error = None
+        integration.disconnected_at = None
 
 
 @router.get("/api/connected-apps")
-async def connected_apps(
+def connected_apps(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    await refresh_due_oauth_tokens(db, user)
-    payload = with_provider_setup_status(provider_status_payload(db, user))
-    db.commit()
-    return payload
+    # Status reads must stay bounded and side-effect free. Token refresh runs
+    # only immediately before an action that needs the token; provider network
+    # latency must never hold the Dashboard status request or its DB session.
+    return with_provider_setup_status(provider_status_payload(db, user))
 
 
 def oauth_authorization_url(
@@ -1258,6 +1349,7 @@ def oauth_authorization_url(
     user: User,
     *,
     shop_domain: str | None = None,
+    youtube_access: YouTubeAccessMode = "growth",
 ) -> tuple[str, str, str | None, str | None]:
     if provider_key not in PROVIDERS:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown provider")
@@ -1277,7 +1369,7 @@ def oauth_authorization_url(
             auth_uri=settings.google_auth_uri,
             client_id=settings.google_client_id,
             redirect_uri=oauth_redirect(provider_key),
-            scopes=google_connected_scopes(provider_key),
+            scopes=google_connected_scopes(provider_key, youtube_access=youtube_access),
             extra_params={"access_type": "offline", "prompt": "consent select_account"},
         )
     elif provider_key in {"instagram", "facebook"}:
@@ -1320,10 +1412,12 @@ def connect_oauth_provider(
     db: Session = Depends(get_db),
 ) -> JSONResponse:
     requested_shop_domain = payload.shop_domain if provider_key == "shopify" and payload else None
+    youtube_access = payload.youtube_access if provider_key == "youtube" and payload else "growth"
     authorization_url, state, code_verifier, expected_shop_domain = oauth_authorization_url(
         provider_key,
         user,
         shop_domain=requested_shop_domain,
+        youtube_access=youtube_access,
     )
     mark_oauth_connection_status(db, user=user, provider_key=provider_key, connection_status="connecting")
     db.commit()
@@ -1581,7 +1675,7 @@ def activity_logs(
                 "status": log.status,
                 "externalId": log.external_id,
                 "error": log.error,
-                "metadata": log.metadata_json or {},
+                "metadata": sanitize_metadata(log.metadata_json or {}),
                 "createdAt": log.created_at,
             }
             for log in logs
@@ -1645,15 +1739,36 @@ def create_scheduler_post(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    publish_at = validate_scheduler_fields(
+        platform=payload.platform,
+        publish_at=payload.publish_at,
+        repeat_rule=payload.repeat_rule,
+        media_url=payload.media_url,
+        timezone_name=payload.timezone,
+    )
+    account_id = payload.account_id
+    if account_id is None:
+        account_id = default_connected_account_id(
+            db,
+            user_id=user.id,
+            platform=payload.platform,
+        )
+    if account_id is not None:
+        connected_account_credentials(
+            db,
+            user_id=user.id,
+            platform=payload.platform,
+            account_id=account_id,
+        )
     post = create_scheduled_post(
         db,
         user_id=user.id,
         platform=payload.platform,
-        account_id=payload.account_id,
+        account_id=account_id,
         content=payload.content.strip(),
         media_url=payload.media_url,
         media_type=payload.media_type,
-        publish_at=payload.publish_at,
+        publish_at=publish_at,
         timezone=payload.timezone,
         repeat_rule=payload.repeat_rule,
         source=payload.source,
@@ -1699,6 +1814,41 @@ def youtube_publish_task_id(arguments: dict[str, Any]) -> int | None:
     return task_id if task_id > 0 else None
 
 
+def prior_youtube_publish_result(
+    db: Session,
+    user: User,
+    *,
+    task_id: int | None,
+    run_id: str | None,
+) -> dict[str, Any] | None:
+    """Return a completed YouTube result for a safe sequential retry.
+
+    Office publish actions carry a durable Task/run id. Reusing its successful
+    result avoids uploading the same video twice when the browser retries after
+    a lost response.
+    """
+
+    if task_id is None and not run_id:
+        return None
+    task = find_publish_task(db, user, task_id=task_id, run_id=run_id)
+    result_json = task.result_json if task is not None and isinstance(task.result_json, dict) else {}
+    results = result_json.get("publishResults") if isinstance(result_json.get("publishResults"), list) else []
+    for result in results:
+        if not isinstance(result, dict) or result.get("platform") != "youtube" or result.get("ok") is not True:
+            continue
+        video_id = str(result.get("external_id") or result.get("externalId") or "")
+        if not video_id:
+            continue
+        return {
+            "platform": "youtube",
+            "videoId": video_id,
+            "url": str(result.get("url") or f"https://www.youtube.com/watch?v={video_id}"),
+            "privacyStatus": "private",
+            "idempotentReplay": True,
+        }
+    return None
+
+
 @router.post("/api/agent-tools/execute")
 async def execute_agent_tool(
     payload: AgentToolExecuteRequest,
@@ -1712,11 +1862,24 @@ async def execute_agent_tool(
         tool == "publish_social_post" and "youtube" in requested_platforms
     )
     if should_upload_youtube:
+        if not get_settings().youtube_upload_runtime_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "YouTube upload is temporarily disabled until durable idempotency "
+                    "and DNS-pinned media downloads are enabled."
+                ),
+            )
         if tool == "publish_social_post" and requested_platforms != {"youtube"}:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Publish a YouTube video as a separate agent action.",
             )
+        task_id = youtube_publish_task_id(args)
+        run_id = str(args.get("run_id") or args.get("runId") or "")[:80] or None
+        prior_result = prior_youtube_publish_result(db, user, task_id=task_id, run_id=run_id)
+        if prior_result is not None:
+            return {"ok": True, "result": prior_result}
         await refresh_due_oauth_tokens(db, user)
         try:
             request, result = publish_youtube_video(db, user_id=user.id, arguments=args)
@@ -1792,6 +1955,14 @@ async def execute_agent_tool(
             },
         }
     if is_google_agent_tool(tool):
+        if get_settings().is_production and tool in GOOGLE_WRITE_AGENT_TOOLS:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Google write actions are disabled in production until durable idempotency "
+                    "and unknown-outcome reconciliation are available."
+                ),
+            )
         await refresh_due_oauth_tokens(db, user)
         try:
             execution = await execute_google_agent_tool(db, user_id=user.id, tool=tool, arguments=args)
@@ -1855,22 +2026,70 @@ async def execute_agent_tool(
         platforms = args.get("platforms") or [args.get("platform") or "telegram"]
         if not isinstance(platforms, list):
             platforms = [platforms]
+        platforms = [str(platform).strip().lower() for platform in platforms]
+        if not platforms or any(not platform for platform in platforms):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one platform is required")
+        content = str(args.get("content") or args.get("text") or "").strip()
+        if not content:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Scheduled content is required")
+        repeat_rule = args.get("repeat_rule") or args.get("repeatRule")
+        media_url = args.get("media_url") or args.get("mediaUrl")
+        raw_account_id = args.get("account_id") or args.get("accountId")
+        account_id: int | None = None
+        if raw_account_id is not None:
+            try:
+                account_id = int(raw_account_id)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="accountId must be an integer") from exc
+            if account_id <= 0 or len(platforms) != 1:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A selected account requires exactly one publishing platform.",
+                )
+            connected_account_credentials(
+                db,
+                user_id=user.id,
+                platform=platforms[0],
+                account_id=account_id,
+            )
         created = []
         for platform in platforms:
+            normalized_publish_at = validate_scheduler_fields(
+                platform=platform,
+                publish_at=publish_dt,
+                repeat_rule=str(repeat_rule) if repeat_rule else None,
+                media_url=str(media_url) if media_url else None,
+                timezone_name=str(args.get("timezone") or "UTC"),
+            )
+            post_account_id = account_id
+            if post_account_id is None:
+                post_account_id = default_connected_account_id(
+                    db,
+                    user_id=user.id,
+                    platform=platform,
+                )
+                if post_account_id is not None:
+                    connected_account_credentials(
+                        db,
+                        user_id=user.id,
+                        platform=platform,
+                        account_id=post_account_id,
+                    )
             post = create_scheduled_post(
                 db,
                 user_id=user.id,
-                platform=str(platform),
-                content=str(args.get("content") or args.get("text") or ""),
-                media_url=args.get("media_url") or args.get("mediaUrl"),
+                platform=platform,
+                account_id=post_account_id,
+                content=content,
+                media_url=media_url,
                 media_type=args.get("media_type") or args.get("mediaType"),
-                publish_at=publish_dt,
+                publish_at=normalized_publish_at,
                 timezone=str(args.get("timezone") or "UTC"),
-                repeat_rule=args.get("repeat_rule") or args.get("repeatRule"),
+                repeat_rule=repeat_rule,
                 source=str(args.get("source") or "agent_tool"),
                 run_id=args.get("run_id") or args.get("runId"),
             )
-            created.append({"id": post.id, "platform": str(platform)})
+            created.append({"id": post.id, "platform": platform})
         db.commit()
         return {"ok": True, "result": {"scheduled": created}}
     if tool == "publish_social_post":

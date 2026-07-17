@@ -5,12 +5,15 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 from email import policy
 from email.parser import BytesParser
+import hmac
+import http.client
 import json
 import logging
 import mimetypes
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -20,9 +23,12 @@ import urllib.error
 import urllib.request
 import uuid
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+import jwt
 
 ROOT = Path(__file__).resolve().parent
 KALIYA_CORE_SRC = ROOT / "kaliya-core" / "src"
@@ -45,7 +51,6 @@ from kaliya.agent_tool_registry import (  # noqa: E402
 )
 from kaliya.agent_tools import TurnContext, build_turn_context  # noqa: E402
 from kaliya.local_crm import LocalCRM  # noqa: E402
-from kaliya.text_safety import redact_sensitive_text  # noqa: E402
 
 DATA_DIR = ROOT / "data"
 MEMORY_ROOT = DATA_DIR / "agent-memory"
@@ -74,23 +79,115 @@ def load_local_env(path: Path) -> None:
 load_local_env(ROOT / ".env")
 load_local_env(ROOT / "backend" / ".env")
 
+
+def env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+APP_ENV = (os.environ.get("APP_ENV") or os.environ.get("ENVIRONMENT") or "development").strip().lower()
+IS_PRODUCTION = APP_ENV in {"prod", "production"}
+if IS_PRODUCTION:
+    # The current link reader validates DNS before httpx resolves again, so a
+    # DNS-rebinding window remains. Keep all user-controlled URL fetching and
+    # video downloading disabled until connection pinning is implemented.
+    os.environ.setdefault("KALIYA_LINK_FETCH_ENABLED", "false")
+    os.environ.setdefault("KALIYA_VIDEO_LINK_DOWNLOAD_ENABLED", "false")
+AGENT_REQUIRE_AUTH = env_bool("AGENT_REQUIRE_AUTH", IS_PRODUCTION)
+AGENT_AUTH_COOKIE = os.environ.get("AGENT_AUTH_COOKIE", "rebly_session").strip() or "rebly_session"
+AGENT_ALLOWED_ORIGINS = {
+    item.strip().rstrip("/")
+    for item in os.environ.get(
+        "AGENT_ALLOWED_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000" if not IS_PRODUCTION else "",
+    ).split(",")
+    if item.strip()
+}
+AGENT_FRONTEND_URL = os.environ.get("FRONTEND_PUBLIC_URL", "http://localhost:3000").strip().rstrip("/")
+AGENT_MAX_REQUEST_BYTES = env_int(
+    "AGENT_MAX_REQUEST_BYTES",
+    32 * 1024 * 1024,
+    minimum=64 * 1024,
+    maximum=64 * 1024 * 1024,
+)
+AGENT_MAX_MESSAGE_CHARS = env_int("AGENT_MAX_MESSAGE_CHARS", 20_000, minimum=1_000, maximum=100_000)
+AGENT_MAX_CONCURRENT_REQUESTS = env_int("AGENT_MAX_CONCURRENT_REQUESTS", 8, minimum=1, maximum=64)
+AGENT_REQUEST_QUEUE_TIMEOUT_SECONDS = env_float(
+    "AGENT_REQUEST_QUEUE_TIMEOUT_SECONDS", 0.25, minimum=0.0, maximum=5.0
+)
+AGENT_RATE_LIMIT_PER_MINUTE = env_int("AGENT_RATE_LIMIT_PER_MINUTE", 30, minimum=1, maximum=600)
+AGENT_TEAM_RATE_COST = env_int("AGENT_TEAM_RATE_COST", 8, minimum=2, maximum=20)
+AGENT_PROVIDER_MAX_CONCURRENCY = env_int("AGENT_PROVIDER_MAX_CONCURRENCY", 8, minimum=1, maximum=64)
+AGENT_PROVIDER_MAX_CONCURRENCY_PER_ACCOUNT = env_int(
+    "AGENT_PROVIDER_MAX_CONCURRENCY_PER_ACCOUNT",
+    min(4, AGENT_PROVIDER_MAX_CONCURRENCY),
+    minimum=1,
+    maximum=AGENT_PROVIDER_MAX_CONCURRENCY,
+)
+AGENT_PROVIDER_QUEUE_TIMEOUT_SECONDS = env_float(
+    "AGENT_PROVIDER_QUEUE_TIMEOUT_SECONDS", 1.0, minimum=0.0, maximum=30.0
+)
+AGENT_RUN_TIMEOUT_SECONDS = env_float("AGENT_RUN_TIMEOUT_SECONDS", 150.0, minimum=15.0, maximum=600.0)
+PENDING_TEAM_RUN_TTL_SECONDS = env_float(
+    "PENDING_TEAM_RUN_TTL_SECONDS", 900.0, minimum=60.0, maximum=86400.0
+)
+PENDING_TEAM_RUN_MAX_ENTRIES = env_int("PENDING_TEAM_RUN_MAX_ENTRIES", 1000, minimum=10, maximum=10000)
+PENDING_TEAM_RUN_MAX_PER_ACCOUNT = env_int("PENDING_TEAM_RUN_MAX_PER_ACCOUNT", 20, minimum=1, maximum=100)
+OPENROUTER_TIMEOUT_SECONDS = env_float("OPENROUTER_TIMEOUT_SECONDS", 45.0, minimum=3.0, maximum=180.0)
+OPENROUTER_WEB_MAX_RESULTS = env_int("OPENROUTER_WEB_MAX_RESULTS", 5, minimum=1, maximum=10)
+OPENROUTER_WEB_MAX_TOTAL_RESULTS = env_int("OPENROUTER_WEB_MAX_TOTAL_RESULTS", 10, minimum=1, maximum=25)
+CODEX_TIMEOUT_SECONDS = env_float("CODEX_TIMEOUT_SECONDS", 120.0, minimum=5.0, maximum=600.0)
+CODEX_FALLBACK_ENABLED = env_bool("AGENT_CODEX_FALLBACK_ENABLED", not IS_PRODUCTION)
+OPENROUTER_CIRCUIT_FAILURE_THRESHOLD = env_int(
+    "OPENROUTER_CIRCUIT_FAILURE_THRESHOLD", 3, minimum=1, maximum=20
+)
+OPENROUTER_CIRCUIT_COOLDOWN_SECONDS = env_float(
+    "OPENROUTER_CIRCUIT_COOLDOWN_SECONDS", 30.0, minimum=1.0, maximum=600.0
+)
+
 ACCOUNT_ID = os.environ.get("N1N_ACCOUNT_ID", DEFAULT_ACCOUNT_ID).strip() or DEFAULT_ACCOUNT_ID
 AGENT_MODEL_OVERRIDES = {
-    "coordinator": "openai/gpt-5.5",
-    "dev": "openai/gpt-5.5",
-    "scout": "google/gemini-3.1-pro-preview",
-    "mika": "openai/gpt-5.4",
-    "nova": "google/gemini-3.1-flash-lite",
+    "coordinator": os.environ.get("OPENROUTER_MODEL_COORDINATOR", "openai/gpt-5.5"),
+    "dev": os.environ.get("OPENROUTER_MODEL_DEV", "openai/gpt-5.5"),
+    "scout": os.environ.get("OPENROUTER_MODEL_SCOUT", "google/gemini-3.1-pro-preview"),
+    "mika": os.environ.get("OPENROUTER_MODEL_MIKA", "openai/gpt-5.4"),
+    "nova": os.environ.get("OPENROUTER_MODEL_NOVA", "google/gemini-3.1-flash-lite"),
 }
 CODEX_MODEL_OVERRIDES = {
-    "coordinator": "gpt-5.5",
-    "dev": "gpt-5.5",
-    "scout": "gpt-5.4",
-    "mika": "gpt-5.4",
-    "nova": "gpt-5.4-mini",
+    "coordinator": os.environ.get("CODEX_MODEL_COORDINATOR", "gpt-5.5"),
+    "dev": os.environ.get("CODEX_MODEL_DEV", "gpt-5.5"),
+    "scout": os.environ.get("CODEX_MODEL_SCOUT", "gpt-5.4"),
+    "mika": os.environ.get("CODEX_MODEL_MIKA", "gpt-5.4"),
+    "nova": os.environ.get("CODEX_MODEL_NOVA", "gpt-5.4-mini"),
 }
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MAX_TOKENS = 1024
+OPENROUTER_API_URL = os.environ.get(
+    "OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions"
+).strip()
+OPENROUTER_MAX_TOKENS = env_int("OPENROUTER_MAX_TOKENS", 1024, minimum=128, maximum=8192)
 CODEX_REASONING_EFFORT = "xhigh"
 AI_BACKEND_UNAVAILABLE_MESSAGE = "AI service is temporarily unavailable. Please try again in a minute."
 AI_BACKEND_UNAVAILABLE_CODE = "agent_unavailable"
@@ -198,8 +295,18 @@ GOOGLE_RFC3339_RE = re.compile(
     re.IGNORECASE,
 )
 PENDING_TEAM_RUNS: dict[str, dict[str, Any]] = {}
+PENDING_TEAM_RUNS_LOCK = threading.Lock()
 ACTIVE_AGENT_RUNS: dict[str, dict[str, Any]] = {}
 ACTIVE_AGENT_RUNS_LOCK = threading.Lock()
+AGENT_REQUEST_SEMAPHORE = threading.BoundedSemaphore(AGENT_MAX_CONCURRENT_REQUESTS)
+AGENT_PROVIDER_SEMAPHORE = threading.BoundedSemaphore(AGENT_PROVIDER_MAX_CONCURRENCY)
+AGENT_PROVIDER_ACCOUNT_SEMAPHORES_LOCK = threading.Lock()
+AGENT_PROVIDER_ACCOUNT_SEMAPHORES: dict[str, threading.BoundedSemaphore] = {}
+AGENT_PROVIDER_OVERFLOW_SEMAPHORE = threading.BoundedSemaphore(AGENT_PROVIDER_MAX_CONCURRENCY_PER_ACCOUNT)
+AGENT_RATE_LIMIT_LOCK = threading.Lock()
+AGENT_RATE_LIMIT_BUCKETS: dict[str, tuple[int, int]] = {}
+OPENROUTER_CIRCUIT_LOCK = threading.Lock()
+OPENROUTER_CIRCUITS: dict[str, dict[str, Any]] = {}
 SOCIAL_POSTING_TEAM_SLUG = "social-posting-team"
 SOCIAL_POSTING_AGENT_CHAIN = (
     {
@@ -252,8 +359,201 @@ class AgentRunCancelled(RuntimeError):
         self.run_id = run_id
 
 
+class AgentRunTimedOut(RuntimeError):
+    def __init__(self, run_id: str) -> None:
+        super().__init__("The AI run exceeded its time budget.")
+        self.run_id = run_id
+
+
 class AgentBackendUnavailable(RuntimeError):
     """A safe public error for failures across all AI providers."""
+
+
+class AgentHTTPError(ValueError):
+    def __init__(self, status: HTTPStatus, message: str, code: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
+
+
+def production_config_errors() -> list[str]:
+    if not IS_PRODUCTION:
+        return []
+
+    errors: list[str] = []
+    jwt_secret = os.environ.get("JWT_SECRET", "").strip()
+    jwt_algorithm = os.environ.get("JWT_ALGORITHM", "HS256").strip()
+    internal_token = os.environ.get("AGENT_INTERNAL_TOKEN", "").strip()
+    if not AGENT_REQUIRE_AUTH:
+        errors.append("AGENT_REQUIRE_AUTH must be enabled")
+    if len(jwt_secret) < 32 or jwt_secret == "change-me-in-local-env":
+        errors.append("JWT_SECRET must be a unique secret of at least 32 characters")
+    if jwt_algorithm not in {"HS256", "HS384", "HS512"}:
+        errors.append("JWT_ALGORITHM must use an approved HMAC algorithm")
+    if len(internal_token) < 32:
+        errors.append("AGENT_INTERNAL_TOKEN must contain at least 32 characters")
+    if internal_token and hmac.compare_digest(internal_token, jwt_secret):
+        errors.append("AGENT_INTERNAL_TOKEN must differ from JWT_SECRET")
+    if not AGENT_ALLOWED_ORIGINS:
+        errors.append("AGENT_ALLOWED_ORIGINS must list the production frontend origin")
+    if "*" in AGENT_ALLOWED_ORIGINS:
+        errors.append("AGENT_ALLOWED_ORIGINS cannot contain a wildcard")
+    if env_bool("KALIYA_LINK_FETCH_ENABLED", False):
+        errors.append("KALIYA_LINK_FETCH_ENABLED must remain false until DNS-safe fetch pinning is available")
+    if env_bool("KALIYA_VIDEO_LINK_DOWNLOAD_ENABLED", False):
+        errors.append("KALIYA_VIDEO_LINK_DOWNLOAD_ENABLED must remain false in production")
+    if env_bool("TELEGRAM_AUTO_PUBLISH", False):
+        errors.append("TELEGRAM_AUTO_PUBLISH must remain false in production")
+    if not os.environ.get("OPENROUTER_API_KEY", "").strip() and not CODEX_FALLBACK_ENABLED:
+        errors.append("OPENROUTER_API_KEY is required when the Codex fallback is disabled")
+    return errors
+
+
+def decode_session_account_id(cookie_header: str) -> str:
+    cookies = SimpleCookie()
+    try:
+        cookies.load(cookie_header or "")
+    except Exception as exc:
+        raise AgentHTTPError(HTTPStatus.UNAUTHORIZED, "Invalid session", "invalid_session") from exc
+    morsel = cookies.get(AGENT_AUTH_COOKIE)
+    if morsel is None or not morsel.value:
+        raise AgentHTTPError(HTTPStatus.UNAUTHORIZED, "Not authenticated", "not_authenticated")
+
+    secret = os.environ.get("JWT_SECRET", "").strip()
+    algorithm = os.environ.get("JWT_ALGORITHM", "HS256").strip()
+    if not secret or algorithm not in {"HS256", "HS384", "HS512"}:
+        raise AgentHTTPError(HTTPStatus.SERVICE_UNAVAILABLE, "Authentication is unavailable", "auth_unavailable")
+    try:
+        payload = jwt.decode(
+            morsel.value,
+            secret,
+            algorithms=[algorithm],
+            options={"require": ["sub", "exp"]},
+        )
+        user_id = int(payload["sub"])
+    except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
+        raise AgentHTTPError(HTTPStatus.UNAUTHORIZED, "Invalid session", "invalid_session") from exc
+    if user_id <= 0:
+        raise AgentHTTPError(HTTPStatus.UNAUTHORIZED, "Invalid session", "invalid_session")
+    return f"user-{user_id}"
+
+
+def consume_agent_rate_limit(account_id: str, *, cost: int = 1) -> tuple[bool, int]:
+    now = time.monotonic()
+    minute = int(now // 60)
+    key = account_id or "anonymous"
+    with AGENT_RATE_LIMIT_LOCK:
+        bucket_minute, count = AGENT_RATE_LIMIT_BUCKETS.get(key, (minute, 0))
+        if bucket_minute != minute:
+            bucket_minute, count = minute, 0
+        charge = max(1, cost)
+        if count + charge > AGENT_RATE_LIMIT_PER_MINUTE:
+            return False, max(1, 60 - int(now % 60))
+        AGENT_RATE_LIMIT_BUCKETS[key] = (bucket_minute, count + charge)
+        if len(AGENT_RATE_LIMIT_BUCKETS) > 10_000:
+            stale = [item_key for item_key, item in AGENT_RATE_LIMIT_BUCKETS.items() if item[0] != minute]
+            for item_key in stale[:5_000]:
+                AGENT_RATE_LIMIT_BUCKETS.pop(item_key, None)
+    return True, 0
+
+
+def provider_account_for_run(run_id: str) -> str:
+    if run_id:
+        with ACTIVE_AGENT_RUNS_LOCK:
+            run = ACTIVE_AGENT_RUNS.get(run_id)
+            account_id = str(run.get("accountId") or "") if run else ""
+            if account_id:
+                return account_id
+    return "unscoped"
+
+
+def provider_account_semaphore(account_id: str) -> threading.BoundedSemaphore:
+    key = account_id or "unscoped"
+    with AGENT_PROVIDER_ACCOUNT_SEMAPHORES_LOCK:
+        semaphore = AGENT_PROVIDER_ACCOUNT_SEMAPHORES.get(key)
+        if semaphore is not None:
+            return semaphore
+        if len(AGENT_PROVIDER_ACCOUNT_SEMAPHORES) >= 10_000:
+            return AGENT_PROVIDER_OVERFLOW_SEMAPHORE
+        semaphore = threading.BoundedSemaphore(AGENT_PROVIDER_MAX_CONCURRENCY_PER_ACCOUNT)
+        AGENT_PROVIDER_ACCOUNT_SEMAPHORES[key] = semaphore
+        return semaphore
+
+
+def _prune_pending_team_runs_locked(now: float) -> None:
+    expired = [
+        key
+        for key, entry in PENDING_TEAM_RUNS.items()
+        if now - float(entry.get("createdMonotonic") or 0.0) >= PENDING_TEAM_RUN_TTL_SECONDS
+    ]
+    for key in expired:
+        PENDING_TEAM_RUNS.pop(key, None)
+
+    overflow = len(PENDING_TEAM_RUNS) - PENDING_TEAM_RUN_MAX_ENTRIES
+    if overflow > 0:
+        oldest = sorted(
+            PENDING_TEAM_RUNS,
+            key=lambda key: float(PENDING_TEAM_RUNS[key].get("createdMonotonic") or 0.0),
+        )
+        for key in oldest[:overflow]:
+            PENDING_TEAM_RUNS.pop(key, None)
+
+
+def store_pending_team_run(pending_key: str, *, account_id: str, run_id: str, message: str) -> None:
+    now = time.monotonic()
+    with PENDING_TEAM_RUNS_LOCK:
+        _prune_pending_team_runs_locked(now)
+        account_entries = sorted(
+            (
+                (key, entry)
+                for key, entry in PENDING_TEAM_RUNS.items()
+                if entry.get("accountId") == account_id and key != pending_key
+            ),
+            key=lambda item: float(item[1].get("createdMonotonic") or 0.0),
+        )
+        excess = len(account_entries) - PENDING_TEAM_RUN_MAX_PER_ACCOUNT + 1
+        for key, _entry in account_entries[: max(0, excess)]:
+            PENDING_TEAM_RUNS.pop(key, None)
+        PENDING_TEAM_RUNS[pending_key] = {
+            "runId": run_id,
+            "message": message[:AGENT_MAX_MESSAGE_CHARS],
+            "accountId": account_id,
+            "createdMonotonic": now,
+        }
+        _prune_pending_team_runs_locked(now)
+
+
+def openrouter_circuit_allows_request(model: str) -> bool:
+    with OPENROUTER_CIRCUIT_LOCK:
+        state = OPENROUTER_CIRCUITS.setdefault(
+            model,
+            {"failures": 0, "openUntil": 0.0, "halfOpenProbe": False},
+        )
+        now = time.monotonic()
+        if now < float(state["openUntil"]):
+            return False
+        if float(state["openUntil"]) > 0:
+            if bool(state["halfOpenProbe"]):
+                return False
+            state["halfOpenProbe"] = True
+        return True
+
+
+def record_openrouter_success(model: str) -> None:
+    with OPENROUTER_CIRCUIT_LOCK:
+        OPENROUTER_CIRCUITS[model] = {"failures": 0, "openUntil": 0.0, "halfOpenProbe": False}
+
+
+def record_openrouter_failure(model: str) -> None:
+    with OPENROUTER_CIRCUIT_LOCK:
+        state = OPENROUTER_CIRCUITS.setdefault(
+            model,
+            {"failures": 0, "openUntil": 0.0, "halfOpenProbe": False},
+        )
+        state["failures"] = int(state["failures"]) + 1
+        state["halfOpenProbe"] = False
+        if int(state["failures"]) >= OPENROUTER_CIRCUIT_FAILURE_THRESHOLD:
+            state["openUntil"] = time.monotonic() + OPENROUTER_CIRCUIT_COOLDOWN_SECONDS
 
 
 def elapsed_seconds(start: float) -> float:
@@ -334,6 +634,39 @@ def load_domain_modules() -> dict[str, Any] | None:
         "Team": Team,
         "User": User,
     }
+
+
+def authenticated_user_exists(account_id: str) -> bool:
+    user_id = user_id_from_account_id(account_id)
+    modules = load_domain_modules()
+    if not user_id or not modules:
+        return False
+    SessionLocal = modules["SessionLocal"]
+    User = modules["User"]
+    try:
+        with SessionLocal() as db:
+            return db.get(User, user_id) is not None
+    except Exception:
+        LOGGER.exception("agent_auth_database_check_failed")
+        raise AgentHTTPError(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "Authentication is temporarily unavailable",
+            "auth_unavailable",
+        ) from None
+
+
+def agent_readiness() -> tuple[bool, list[str]]:
+    errors = production_config_errors()
+    try:
+        from sqlalchemy import text  # type: ignore
+
+        from app.db.session import engine  # type: ignore
+
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception:
+        errors.append("database is unavailable")
+    return not errors, errors
 
 
 class SocialTaskBridge:
@@ -503,12 +836,18 @@ def start_agent_run(
     message: str,
 ) -> None:
     with ACTIVE_AGENT_RUNS_LOCK:
+        existing = ACTIVE_AGENT_RUNS.get(run_id)
+        if existing:
+            if existing.get("accountId") != account_id:
+                raise ValueError("Run identifier is already in use.")
+            raise ValueError("This run is already active.")
         ACTIVE_AGENT_RUNS[run_id] = {
             "runId": run_id,
             "agentId": agent_id,
             "sessionId": session_id,
             "accountId": account_id,
             "message": message[:500],
+            "deadline": time.monotonic() + AGENT_RUN_TIMEOUT_SECONDS,
             "cancel": threading.Event(),
             "processes": set(),
         }
@@ -519,10 +858,12 @@ def finish_agent_run(run_id: str) -> None:
         ACTIVE_AGENT_RUNS.pop(run_id, None)
 
 
-def request_agent_run_cancel(run_id: str) -> bool:
+def request_agent_run_cancel(run_id: str, *, account_id: str | None = None) -> bool:
     with ACTIVE_AGENT_RUNS_LOCK:
         run = ACTIVE_AGENT_RUNS.get(run_id)
         if not run:
+            return False
+        if account_id and run.get("accountId") != account_id:
             return False
         run["cancel"].set()
         processes = list(run.get("processes") or [])
@@ -540,9 +881,23 @@ def is_agent_run_cancelled(run_id: str) -> bool:
         return bool(run and run["cancel"].is_set())
 
 
+def agent_run_remaining_seconds(run_id: str) -> float | None:
+    if not run_id:
+        return None
+    with ACTIVE_AGENT_RUNS_LOCK:
+        run = ACTIVE_AGENT_RUNS.get(run_id)
+        if not run:
+            return None
+        deadline = float(run.get("deadline") or 0.0)
+    return max(0.0, deadline - time.monotonic())
+
+
 def check_agent_run_cancelled(run_id: str) -> None:
     if is_agent_run_cancelled(run_id):
         raise AgentRunCancelled(run_id)
+    remaining = agent_run_remaining_seconds(run_id)
+    if remaining is not None and remaining <= 0:
+        raise AgentRunTimedOut(run_id)
 
 
 def register_agent_process(run_id: str, process: subprocess.Popen[str]) -> None:
@@ -857,25 +1212,81 @@ NOVA_REPORT_RULE_LINES = (
 
 
 class AgentHandler(SimpleHTTPRequestHandler):
+    def log_message(self, _format: str, *args: object) -> None:
+        status = args[1] if len(args) > 1 else "-"
+        LOGGER.info(
+            "agent_http client=%s method=%s path=%s status=%s",
+            self.client_address[0],
+            getattr(self, "command", ""),
+            getattr(self, "path", "").split("?", 1)[0],
+            status,
+        )
+
     def translate_path(self, path: str) -> str:
         original = super().translate_path(path)
         relative = Path(original).relative_to(Path.cwd())
         return str(ROOT / relative)
 
     def end_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = (self.headers.get("Origin") or "").strip().rstrip("/")
+        if origin and origin in AGENT_ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Agent-Internal-Token")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         super().end_headers()
 
     def do_OPTIONS(self) -> None:
+        origin = (self.headers.get("Origin") or "").strip().rstrip("/")
+        if origin and origin not in AGENT_ALLOWED_ORIGINS:
+            self._send_json(
+                {"error": "Origin is not allowed", "code": "origin_not_allowed"},
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return
         self.send_response(HTTPStatus.NO_CONTENT)
         self.end_headers()
+
+    def _request_identity(self) -> tuple[str | None, bool] | None:
+        origin = (self.headers.get("Origin") or "").strip().rstrip("/")
+        if origin and origin not in AGENT_ALLOWED_ORIGINS:
+            self._send_json(
+                {"error": "Origin is not allowed", "code": "origin_not_allowed"},
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return None
+
+        provided_internal_token = (self.headers.get("X-Agent-Internal-Token") or "").strip()
+        expected_internal_token = os.environ.get("AGENT_INTERNAL_TOKEN", "").strip()
+        if provided_internal_token:
+            if expected_internal_token and hmac.compare_digest(provided_internal_token, expected_internal_token):
+                return None, True
+            self._send_json(
+                {"error": "Invalid internal credentials", "code": "invalid_internal_credentials"},
+                status=HTTPStatus.UNAUTHORIZED,
+            )
+            return None
+
+        if not AGENT_REQUIRE_AUTH:
+            return None, False
+
+        try:
+            account_id = decode_session_account_id(self.headers.get("Cookie", ""))
+            if env_bool("AGENT_VALIDATE_USER_DB", IS_PRODUCTION) and not authenticated_user_exists(account_id):
+                raise AgentHTTPError(HTTPStatus.UNAUTHORIZED, "User not found", "invalid_session")
+            return account_id, False
+        except AgentHTTPError as exc:
+            self._send_json({"error": str(exc), "code": exc.code}, status=exc.status)
+            return None
 
     def _redirect_old_agents_page(self) -> bool:
         if self.path in {"/", "/agents.html"}:
             self.send_response(HTTPStatus.FOUND)
-            self.send_header("Location", "http://localhost:3000/office/index.html?embed=dashboard")
+            self.send_header("Location", f"{AGENT_FRONTEND_URL}/office/index.html?embed=dashboard")
             self.end_headers()
             return True
         return False
@@ -883,23 +1294,53 @@ class AgentHandler(SimpleHTTPRequestHandler):
     def do_HEAD(self) -> None:
         if self._redirect_old_agents_page():
             return
+        if IS_PRODUCTION:
+            self.send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
+            return
         super().do_HEAD()
 
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
+        if path in {"/healthz", "/api/agents/healthz"}:
+            self._send_json({"ok": True, "service": "agent"})
+            return
+        if path in {"/readyz", "/api/agents/readyz"}:
+            ready, errors = agent_readiness()
+            self._send_json(
+                {"ok": ready, "service": "agent", "checks": [] if ready else errors},
+                status=HTTPStatus.OK if ready else HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
         if path == "/api/agents/capabilities":
+            if self._request_identity() is None:
+                return
             self._send_json(get_agent_capabilities())
             return
         if self._redirect_old_agents_page():
+            return
+        if IS_PRODUCTION:
+            self.send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
             return
         super().do_GET()
 
     def do_POST(self) -> None:
         path = self.path.split("?", 1)[0]
         cancel_match = re.fullmatch(r"/api/agents/runs/([^/]+)/cancel", path)
+        if path != "/api/agents/chat" and not cancel_match:
+            self.send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
+            return
+
+        identity = self._request_identity()
+        if identity is None:
+            return
+        authenticated_account_id, is_internal = identity
+
         if cancel_match:
             run_id = normalize_run_id(cancel_match.group(1))
-            found = request_agent_run_cancel(run_id)
+            found = request_agent_run_cancel(
+                run_id,
+                account_id=None if is_internal else authenticated_account_id,
+            )
             self._send_json(
                 {
                     "ok": True,
@@ -909,8 +1350,14 @@ class AgentHandler(SimpleHTTPRequestHandler):
             )
             return
 
-        if path != "/api/agents/chat":
-            self.send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
+        if not AGENT_REQUEST_SEMAPHORE.acquire(timeout=AGENT_REQUEST_QUEUE_TIMEOUT_SECONDS):
+            self._send_json(
+                {
+                    "error": "AI service is busy. Please retry shortly.",
+                    "code": "agent_busy",
+                },
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
             return
 
         turn_context: TurnContext | None = None
@@ -920,11 +1367,31 @@ class AgentHandler(SimpleHTTPRequestHandler):
             payload, upload_parts = self._read_payload()
             agent_id = str(payload.get("agentId", "all"))
             message = str(payload.get("message", "")).strip()
-            session_id = str(payload.get("sessionId", "")).strip() or "local-browser"
-            account_id = normalize_account_id(str(payload.get("accountId", "")).strip() or ACCOUNT_ID)
+            if len(message) > AGENT_MAX_MESSAGE_CHARS:
+                raise AgentHTTPError(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    "Message is too long",
+                    "message_too_long",
+                )
+            session_id = normalize_run_id(str(payload.get("sessionId", "")).strip() or "local-browser")
+            requested_account_id = normalize_account_id(str(payload.get("accountId", "")).strip() or ACCOUNT_ID)
+            account_id = authenticated_account_id or requested_account_id
+            team_id = str(payload.get("teamId", "")).strip()[:120]
+            rate_cost = AGENT_TEAM_RATE_COST if agent_id == "all" else 1
+            rate_allowed, retry_after = consume_agent_rate_limit(account_id, cost=rate_cost)
+            if not rate_allowed:
+                self._send_json(
+                    {
+                        "error": "Too many AI requests. Please retry shortly.",
+                        "code": "rate_limited",
+                        "retryAfter": retry_after,
+                    },
+                    status=HTTPStatus.TOO_MANY_REQUESTS,
+                    headers={"Retry-After": str(retry_after)},
+                )
+                return
             run_id = normalize_run_id(payload.get("runId"))
-            team_id = str(payload.get("teamId", "")).strip()
-            team_name = str(payload.get("teamName", "")).strip()
+            team_name = str(payload.get("teamName", "")).strip()[:160]
             history = clean_client_history(payload.get("history", []), current_message=message)
             raw_attachments = payload.get("attachments", [])
             if not isinstance(raw_attachments, list):
@@ -969,6 +1436,15 @@ class AgentHandler(SimpleHTTPRequestHandler):
             result = run_direct_agent_chat(session_id, account_id, agent_id, turn_context, history, run_id=run_id)
             result["runId"] = run_id
             self._send_json(result)
+        except AgentRunTimedOut as exc:
+            self._send_json(
+                {
+                    "error": "The AI run took too long. Please retry with a smaller task.",
+                    "code": "agent_timeout",
+                    "runId": exc.run_id,
+                },
+                status=HTTPStatus.GATEWAY_TIMEOUT,
+            )
         except AgentRunCancelled as exc:
             self._send_json(
                 {
@@ -989,6 +1465,8 @@ class AgentHandler(SimpleHTTPRequestHandler):
                     ],
                 }
             )
+        except AgentHTTPError as exc:
+            self._send_json({"error": str(exc), "code": exc.code}, status=exc.status)
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:
@@ -1010,22 +1488,49 @@ class AgentHandler(SimpleHTTPRequestHandler):
                 turn_context.cleanup()
             if run_started:
                 finish_agent_run(run_id)
+            AGENT_REQUEST_SEMAPHORE.release()
 
     def _read_payload(self) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        size = int(self.headers.get("Content-Length", "0"))
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise AgentHTTPError(HTTPStatus.BAD_REQUEST, "Invalid Content-Length", "invalid_content_length") from exc
+        if size < 0:
+            raise AgentHTTPError(HTTPStatus.BAD_REQUEST, "Invalid Content-Length", "invalid_content_length")
+        if size > AGENT_MAX_REQUEST_BYTES:
+            raise AgentHTTPError(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "Request body is too large",
+                "payload_too_large",
+            )
         raw = self.rfile.read(size)
         if not raw:
             return {}, []
         content_type = self.headers.get("Content-Type", "")
-        if content_type.startswith("multipart/form-data"):
+        normalized_content_type = content_type.lower()
+        if normalized_content_type.startswith("multipart/form-data"):
             return parse_multipart_payload(raw, content_type)
+        if not normalized_content_type.startswith("application/json"):
+            raise AgentHTTPError(
+                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                "Content-Type must be application/json or multipart/form-data",
+                "unsupported_media_type",
+            )
         return json.loads(raw.decode("utf-8")), []
 
-    def _send_json(self, payload: dict[str, Any], *, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _send_json(
+        self,
+        payload: dict[str, Any],
+        *,
+        status: HTTPStatus = HTTPStatus.OK,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -1274,7 +1779,9 @@ def run_team_chat(
 ) -> dict[str, Any]:
     check_agent_run_cancelled(run_id)
     pending_key = f"{account_id}:{session_id}"
-    pending = PENDING_TEAM_RUNS.pop(pending_key, None)
+    with PENDING_TEAM_RUNS_LOCK:
+        _prune_pending_team_runs_locked(time.monotonic())
+        pending = PENDING_TEAM_RUNS.pop(pending_key, None)
     effective_message = turn_context.message
     if pending:
         effective_message = (
@@ -1333,11 +1840,12 @@ def run_team_chat(
     if action == "ask_user" or needs_user_input:
         questions = normalize_user_questions(decision.get("userQuestions"))
         reply = coordinator_note or "\n".join(questions)
-        PENDING_TEAM_RUNS[pending_key] = {
-            "runId": run_id,
-            "message": effective_message,
-            "decision": decision,
-        }
+        store_pending_team_run(
+            pending_key,
+            account_id=account_id,
+            run_id=run_id,
+            message=effective_message,
+        )
         coordinator.add_message(
             role="assistant",
             author=AGENTS["coordinator"]["name"],
@@ -1647,7 +2155,7 @@ def run_social_posting_team_chat(
             runtime_id = assignment["agentId"]
             current_phase = f"agent_{runtime_id}"
             current_agent = assignment.get("displayName", display_agent_name(runtime_id))
-            working_status = statuses.set(
+            statuses.set(
                 runtime_id,
                 "working",
                 db_slug=assignment.get("dbSlug", ""),
@@ -1721,7 +2229,7 @@ def run_social_posting_team_chat(
             final_reply,
             publish_text,
             run_id=run_id,
-            force_auto_publish=True,
+            force_auto_publish=False,
             task_id=bridge.task_id,
         )
         task_payload = bridge.update_task(
@@ -1875,22 +2383,12 @@ def safe_social_coordinator_decision(
             effective_message=effective_message,
             history=history,
         )
-    except AgentRunCancelled:
+    except (AgentRunCancelled, AgentRunTimedOut):
         raise
-    except RuntimeError:
-        decision = keyword_decision(effective_message)
-        decision.update(
-            {
-                "action": "delegate",
-                "coordinatorMessage": "Atlas selected the Social Posting Team route.",
-                "needsUserInput": False,
-                "userQuestions": [],
-                "runId": run_id,
-                "providerFallback": True,
-                "providerError": AI_BACKEND_UNAVAILABLE_MESSAGE,
-            }
-        )
-        return decision
+    except RuntimeError as exc:
+        # A routing template is not an AI result. Never turn a provider outage
+        # into a publishable draft or a completed Social Team task.
+        raise AgentBackendUnavailable(AI_BACKEND_UNAVAILABLE_MESSAGE) from exc
 
 
 def run_social_assignment_report_safe(
@@ -1912,10 +2410,10 @@ def run_social_assignment_report_safe(
             account_id,
             history,
         )
-    except AgentRunCancelled:
+    except (AgentRunCancelled, AgentRunTimedOut):
         raise
-    except RuntimeError:
-        return fallback_social_assignment_report(assignment, effective_message, run_id)
+    except RuntimeError as exc:
+        raise AgentBackendUnavailable(AI_BACKEND_UNAVAILABLE_MESSAGE) from exc
 
 
 def run_social_final_reply_safe(
@@ -1945,10 +2443,10 @@ def run_social_final_reply_safe(
             search_enabled=False,
             run_id=run_id,
         )
-    except AgentRunCancelled:
+    except (AgentRunCancelled, AgentRunTimedOut):
         raise
-    except RuntimeError:
-        return fallback_social_final_reply(effective_message, reports)
+    except RuntimeError as exc:
+        raise AgentBackendUnavailable(AI_BACKEND_UNAVAILABLE_MESSAGE) from exc
 
 
 def fallback_social_assignment_report(
@@ -3279,7 +3777,9 @@ def _pending_google_action(
     agent_id: str,
     title: str,
     detail: str,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
+    if IS_PRODUCTION and tool in GOOGLE_WRITE_ACTION_TOOLS:
+        return None
     return {
         "tool": tool,
         "arguments": arguments,
@@ -3439,16 +3939,10 @@ def build_pending_publish(
     if is_youtube_publish:
         separate_platforms = [platform for platform in platforms if platform != "youtube"]
         platforms = ["youtube"]
-    env_auto_publish = (
-        os.environ.get("TELEGRAM_AUTO_PUBLISH", "false").strip().lower()
-        not in {
-            "0",
-            "false",
-            "no",
-            "off",
-        }
-    )
+    env_auto_publish = False if IS_PRODUCTION else env_bool("TELEGRAM_AUTO_PUBLISH", False)
     auto_publish = (
+        not IS_PRODUCTION
+        and
         not is_youtube_publish
         and (force_auto_publish or env_auto_publish)
         and "instagram" not in platforms
@@ -3507,6 +4001,33 @@ def run_ai(
     search_enabled: bool | None = None,
     run_id: str = "",
 ) -> str:
+    account_semaphore = provider_account_semaphore(provider_account_for_run(run_id))
+    if not account_semaphore.acquire(timeout=AGENT_PROVIDER_QUEUE_TIMEOUT_SECONDS):
+        raise AgentBackendUnavailable("This account has too many AI requests in progress. Please retry shortly.")
+    if not AGENT_PROVIDER_SEMAPHORE.acquire(timeout=AGENT_PROVIDER_QUEUE_TIMEOUT_SECONDS):
+        account_semaphore.release()
+        raise AgentBackendUnavailable("AI service is busy. Please try again shortly.")
+    try:
+        return _run_ai_with_fallback(
+            prompt,
+            agent_id=agent_id,
+            image_paths=image_paths,
+            search_enabled=search_enabled,
+            run_id=run_id,
+        )
+    finally:
+        AGENT_PROVIDER_SEMAPHORE.release()
+        account_semaphore.release()
+
+
+def _run_ai_with_fallback(
+    prompt: str,
+    *,
+    agent_id: str = "coordinator",
+    image_paths: list[Path] | None = None,
+    search_enabled: bool | None = None,
+    run_id: str = "",
+) -> str:
     check_agent_run_cancelled(run_id)
     try:
         reply = run_openrouter(
@@ -3514,11 +4035,21 @@ def run_ai(
             agent_id=agent_id,
             image_paths=image_paths or [],
             search_enabled=search_enabled,
+            run_id=run_id,
         )
         check_agent_run_cancelled(run_id)
         return reply
+    except (AgentRunCancelled, AgentRunTimedOut):
+        raise
     except RuntimeError as openrouter_error:
         check_agent_run_cancelled(run_id)
+        if not CODEX_FALLBACK_ENABLED:
+            LOGGER.error(
+                "agent_primary_backend_unavailable agentId=%s errorType=%s fallbackEnabled=false",
+                agent_id,
+                openrouter_error.__class__.__name__,
+            )
+            raise AgentBackendUnavailable(AI_BACKEND_UNAVAILABLE_MESSAGE) from None
         LOGGER.warning(
             "agent_openrouter_failed agentId=%s errorType=%s; using Codex fallback",
             agent_id,
@@ -3532,7 +4063,7 @@ def run_ai(
                 search_enabled=search_enabled,
                 run_id=run_id,
             )
-        except AgentRunCancelled:
+        except (AgentRunCancelled, AgentRunTimedOut):
             raise
         except RuntimeError as codex_error:
             LOGGER.error(
@@ -3550,13 +4081,18 @@ def run_openrouter(
     agent_id: str,
     image_paths: list[Path],
     search_enabled: bool | None,
+    run_id: str = "",
 ) -> str:
+    check_agent_run_cancelled(run_id)
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not configured")
+    model = AGENT_MODEL_OVERRIDES.get(agent_id, AGENT_MODEL_OVERRIDES["coordinator"])
+    if not openrouter_circuit_allows_request(model):
+        raise RuntimeError("OpenRouter circuit breaker is open")
 
     payload: dict[str, Any] = {
-        "model": AGENT_MODEL_OVERRIDES.get(agent_id, AGENT_MODEL_OVERRIDES["coordinator"]),
+        "model": model,
         "messages": [{"role": "user", "content": openrouter_content(prompt, image_paths)}],
         "max_tokens": OPENROUTER_MAX_TOKENS,
     }
@@ -3564,7 +4100,16 @@ def run_openrouter(
         AGENT_SEARCH_ENABLED.get(agent_id, False) if search_enabled is None else bool(search_enabled)
     )
     if effective_search_enabled:
-        payload["tools"] = [{"type": "openrouter:web_search"}]
+        payload["tools"] = [
+            {
+                "type": "openrouter:web_search",
+                "parameters": {
+                    "max_results": OPENROUTER_WEB_MAX_RESULTS,
+                    "max_total_results": OPENROUTER_WEB_MAX_TOTAL_RESULTS,
+                    "search_context_size": "low",
+                },
+            }
+        ]
 
     request = urllib.request.Request(
         OPENROUTER_API_URL,
@@ -3572,30 +4117,52 @@ def run_openrouter(
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:3000",
+            "HTTP-Referer": AGENT_FRONTEND_URL,
             "X-OpenRouter-Title": "Rebly AI Agent Team",
         },
         method="POST",
     )
+    remaining = agent_run_remaining_seconds(run_id)
+    if remaining is not None and remaining <= 0:
+        raise AgentRunTimedOut(run_id)
+    request_timeout = min(OPENROUTER_TIMEOUT_SECONDS, remaining) if remaining is not None else OPENROUTER_TIMEOUT_SECONDS
     try:
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(request, timeout=max(1.0, request_timeout)) as response:
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
+        if exc.code in {408, 409, 425, 429} or exc.code >= 500:
+            record_openrouter_failure(model)
+        else:
+            # 4xx request/auth/billing errors do not indicate provider
+            # availability and must not trip the breaker for other users.
+            record_openrouter_success(model)
         detail = exc.read().decode("utf-8", errors="replace")[-1200:]
         raise RuntimeError(f"OpenRouter HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"OpenRouter request failed: {exc.reason}") from exc
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        ConnectionError,
+        http.client.IncompleteRead,
+        ssl.SSLError,
+        OSError,
+        UnicodeError,
+    ) as exc:
+        record_openrouter_failure(model)
+        raise RuntimeError("OpenRouter transport request failed") from exc
 
     try:
         data = json.loads(raw)
         message = data["choices"][0]["message"]
         content = message.get("content", "")
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        record_openrouter_failure(model)
         raise RuntimeError("OpenRouter returned an unexpected response") from exc
 
     reply = normalize_openrouter_content(content)
     if not reply:
+        record_openrouter_failure(model)
         raise RuntimeError("OpenRouter returned an empty response")
+    record_openrouter_success(model)
     return reply
 
 
@@ -3666,6 +4233,8 @@ def run_codex(
                 search_enabled=attempt_search,
                 **kwargs,
             )
+        except AgentRunTimedOut:
+            raise
         except RuntimeError as exc:
             check_agent_run_cancelled(run_id)
             detail = str(exc).lower()
@@ -3736,6 +4305,12 @@ def _run_codex_once(
         pending_input: str | None = prompt
         stdout = ""
         stderr = ""
+        remaining = agent_run_remaining_seconds(run_id)
+        if remaining is not None and remaining <= 0:
+            raise AgentRunTimedOut(run_id)
+        deadline = time.monotonic() + (
+            min(CODEX_TIMEOUT_SECONDS, remaining) if remaining is not None else CODEX_TIMEOUT_SECONDS
+        )
         try:
             while True:
                 try:
@@ -3744,6 +4319,11 @@ def _run_codex_once(
                 except subprocess.TimeoutExpired:
                     pending_input = None
                     check_agent_run_cancelled(run_id)
+                    if time.monotonic() >= deadline:
+                        kill_process(process)
+                        if run_id and (agent_run_remaining_seconds(run_id) or 0.0) <= 0:
+                            raise AgentRunTimedOut(run_id) from None
+                        raise RuntimeError("Codex CLI request timed out") from None
         finally:
             unregister_agent_process(run_id, process)
         check_agent_run_cancelled(run_id)
@@ -3771,16 +4351,33 @@ def codex_environment() -> dict[str, str]:
     return env
 
 
+class ProductionAgentHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = 128
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=4173)
     args = parser.parse_args()
 
+    config_errors = production_config_errors()
+    if config_errors:
+        for error in config_errors:
+            LOGGER.error("agent_configuration_error %s", error)
+        raise SystemExit("Agent server production configuration is invalid.")
+
     os.chdir(ROOT)
-    server = ThreadingHTTPServer((args.host, args.port), AgentHandler)
+    server = ProductionAgentHTTPServer((args.host, args.port), AgentHandler)
     print(f"Serving AI agent API on http://{args.host}:{args.port}/api/agents/chat", flush=True)
-    server.serve_forever()
+    try:
+        server.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

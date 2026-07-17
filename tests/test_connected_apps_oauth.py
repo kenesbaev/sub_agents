@@ -35,6 +35,7 @@ from app.connected_apps.router import (  # noqa: E402
     linkedin_oauth_scopes,
     normalize_shopify_shop_domain,
     refresh_config_for_provider,
+    safe_token_metadata,
     shopify_shop_domain_for_account,
     shopify_oauth_is_configured,
     validate_shopify_callback,
@@ -72,6 +73,25 @@ class CapturingAsyncClient:
 
 
 class ConnectedAppsOAuthTest(unittest.TestCase):
+    def test_token_metadata_is_recursively_redacted(self) -> None:
+        metadata = safe_token_metadata(
+            {
+                "access_token": "top-level-secret",
+                "expires_in": 3600,
+                "profile": {
+                    "name": "Ada",
+                    "refresh_token": "nested-secret",
+                    "credentials": {"api_key": "deep-secret"},
+                },
+            }
+        )
+
+        self.assertEqual(3600, metadata["expires_in"])
+        self.assertEqual("Ada", metadata["profile"]["name"])
+        self.assertNotIn("access_token", metadata)
+        self.assertNotIn("refresh_token", metadata["profile"])
+        self.assertNotIn("credentials", metadata["profile"])
+
     provider_env = {
         "BACKEND_URL": "https://api.example.com",
         "SHOPIFY_CLIENT_ID": "shopify-client-id",

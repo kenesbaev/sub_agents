@@ -112,6 +112,211 @@ a {
   box-shadow: inset 0 -6px 0 rgba(255, 255, 255, 0.18);
 }
 
+/* Cosmic dark palette shared by the authenticated workspace. Color-only overrides
+   intentionally preserve the existing dashboard geometry and interaction model. */
+[data-theme="dark"] body {
+  background: #020817;
+}
+
+[data-theme="dark"] .dashboard {
+  background:
+    radial-gradient(circle at 92% -12%, rgba(22, 131, 242, 0.17), transparent 34%),
+    radial-gradient(circle at -12% 78%, rgba(23, 212, 231, 0.08), transparent 31%),
+    #020817;
+  color: #f3f8ff;
+}
+
+[data-theme="dark"] .sidebar {
+  border-color: rgba(139, 185, 242, 0.14);
+  background:
+    linear-gradient(180deg, rgba(8, 20, 39, 0.97), rgba(4, 13, 28, 0.96)),
+    #071226;
+  box-shadow: 18px 0 48px rgba(0, 0, 0, 0.16);
+}
+
+[data-theme="dark"] .sidebar-toggle,
+[data-theme="dark"] .new-team,
+[data-theme="dark"] .account-button,
+[data-theme="dark"] .top-account-button {
+  border-color: rgba(132, 179, 237, 0.16);
+  background: rgba(15, 31, 54, 0.84);
+  color: #c8d7e9;
+}
+
+[data-theme="dark"] .sidebar-toggle:hover,
+[data-theme="dark"] .new-team:hover,
+[data-theme="dark"] .account-button:hover {
+  border-color: rgba(61, 200, 255, 0.32);
+  background: rgba(20, 42, 71, 0.9);
+  color: #f4f9ff;
+}
+
+[data-theme="dark"] .dash-brand,
+[data-theme="dark"] .view-head h1,
+[data-theme="dark"] .settings-page-head h1,
+[data-theme="dark"] .settings-block h2,
+[data-theme="dark"] .shared-panel strong,
+[data-theme="dark"] .task-row strong,
+[data-theme="dark"] .activity-card strong,
+[data-theme="dark"] .team-card h2,
+[data-theme="dark"] .market-card h2,
+[data-theme="dark"] .office-empty-panel strong {
+  color: #f3f8ff;
+}
+
+[data-theme="dark"] .side-link {
+  color: #778aa5;
+}
+
+[data-theme="dark"] .side-link:hover {
+  background: rgba(21, 45, 75, 0.58);
+  color: #d8e7f8;
+}
+
+[data-theme="dark"] .side-link.active {
+  background: linear-gradient(110deg, rgba(25, 178, 224, 0.15), rgba(59, 74, 229, 0.24));
+  color: #7be4ff;
+  box-shadow: inset 0 0 0 1px rgba(85, 207, 255, 0.11);
+}
+
+[data-theme="dark"] .office-team-strip {
+  border-color: rgba(132, 179, 237, 0.12);
+}
+
+[data-theme="dark"] .office-team-head,
+[data-theme="dark"] .office-agent-chip small,
+[data-theme="dark"] .account-button small,
+[data-theme="dark"] .view-head p,
+[data-theme="dark"] .settings-page-head p,
+[data-theme="dark"] .settings-block > p,
+[data-theme="dark"] .shared-panel p,
+[data-theme="dark"] .team-card p,
+[data-theme="dark"] .market-card p {
+  color: #8fa2bb;
+}
+
+[data-theme="dark"] .office-team-head strong,
+[data-theme="dark"] .office-agent-chip strong {
+  color: #dbe8f7;
+}
+
+[data-theme="dark"] .office-agent-chip:hover,
+[data-theme="dark"] .office-agent-chip.active {
+  border-color: rgba(69, 196, 255, 0.28);
+  background: linear-gradient(110deg, rgba(19, 116, 180, 0.16), rgba(56, 67, 184, 0.2));
+}
+
+[data-theme="dark"] .office-agent-token {
+  background: color-mix(in srgb, var(--agent-color, #4f5bd5) 16%, #09172a);
+}
+
+[data-theme="dark"] .dashboard-view,
+[data-theme="dark"] .settings-view,
+[data-theme="dark"] .dash-main {
+  background: transparent;
+}
+
+[data-theme="dark"] .team-tabs,
+[data-theme="dark"] .market-tabs,
+[data-theme="dark"] .settings-divider,
+[data-theme="dark"] .settings-line {
+  border-color: rgba(132, 179, 237, 0.14);
+}
+
+[data-theme="dark"] .team-tabs button.active,
+[data-theme="dark"] .market-tabs button.active,
+[data-theme="dark"] .settings-tabs button.active,
+[data-theme="dark"] .theme-segment button.active {
+  border-color: #24cfe7;
+  background: linear-gradient(112deg, rgba(18, 207, 231, 0.2), rgba(64, 81, 242, 0.3));
+  color: #a8efff;
+}
+
+[data-theme="dark"] .team-card,
+[data-theme="dark"] .market-card,
+[data-theme="dark"] .shared-panel,
+[data-theme="dark"] .task-row,
+[data-theme="dark"] .activity-card,
+[data-theme="dark"] .support-form,
+[data-theme="dark"] .support-contact,
+[data-theme="dark"] .settings-hero-card,
+[data-theme="dark"] .settings-block,
+[data-theme="dark"] .writing-card,
+[data-theme="dark"] .premium-team-card,
+[data-theme="dark"] .history-card,
+[data-theme="dark"] .team-launch-card,
+[data-theme="dark"] .start-chat-card {
+  border-color: rgba(132, 179, 237, 0.15);
+  background:
+    linear-gradient(145deg, rgba(12, 27, 48, 0.94), rgba(8, 20, 38, 0.92)),
+    #0b192d;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="dark"] .searchbox,
+[data-theme="dark"] .team-category,
+[data-theme="dark"] .settings-field input,
+[data-theme="dark"] .settings-field select,
+[data-theme="dark"] .support-form input,
+[data-theme="dark"] .support-form textarea,
+[data-theme="dark"] .support-form select,
+[data-theme="dark"] .theme-segment {
+  border-color: rgba(132, 179, 237, 0.17);
+  background: rgba(7, 19, 37, 0.74);
+  color: #e5effa;
+}
+
+[data-theme="dark"] .button.solid,
+[data-theme="dark"] .connected-actions .button.solid {
+  border-color: rgba(102, 228, 255, 0.24);
+  background: linear-gradient(112deg, #12cfe7 0%, #168fe9 48%, #3d64f2 100%);
+  box-shadow: 0 13px 28px rgba(9, 111, 221, 0.24);
+  color: #ffffff;
+}
+
+[data-theme="dark"] .connected-apps-page {
+  background:
+    radial-gradient(circle at 90% 0%, rgba(33, 119, 246, 0.14), transparent 31%),
+    #061126;
+}
+
+[data-theme="dark"] .connected-card,
+[data-theme="dark"] .connected-summary-card,
+[data-theme="dark"] .connected-search,
+[data-theme="dark"] .connected-filter,
+[data-theme="dark"] .connected-view-toggle button,
+[data-theme="dark"] .connected-refresh-button,
+[data-theme="dark"] .connected-security {
+  border-color: rgba(132, 179, 237, 0.15);
+  background: rgba(11, 25, 45, 0.92);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="dark"] .connected-filter button.active,
+[data-theme="dark"] .connected-view-toggle button.active,
+[data-theme="dark"] .connected-summary-icon,
+[data-theme="dark"] .connected-security-icon,
+[data-theme="dark"] .connected-account::before {
+  background: linear-gradient(140deg, rgba(23, 202, 230, 0.2), rgba(74, 73, 233, 0.28));
+  color: #8eeaff;
+}
+
+[data-theme="dark"] .connected-card:hover {
+  border-color: rgba(72, 199, 255, 0.3);
+  box-shadow: 0 24px 54px rgba(0, 0, 0, 0.22);
+}
+
+[data-theme="dark"] .youtube-growth-view {
+  min-height: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-cosmos::before,
+  .auth-stars {
+    animation: none !important;
+  }
+}
+
 .brand-logo-mark {
   display: block;
   width: 42px;
@@ -904,6 +1109,153 @@ a {
   min-height: 100vh;
   place-items: center;
   padding: 40px 18px;
+}
+
+.auth-cosmic-page {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: #020817;
+  color: #f7fbff;
+}
+
+.auth-cosmos {
+  position: absolute;
+  z-index: -2;
+  inset: 0;
+  overflow: hidden;
+  background: #020817;
+}
+
+.auth-cosmos::before {
+  position: absolute;
+  inset: -4%;
+  background: url("/images/teamora-cosmic-hero.webp") center / cover no-repeat;
+  content: "";
+  filter: saturate(1.08) contrast(1.04);
+  transform: scale(1.045);
+  animation: auth-cosmic-pan 24s ease-in-out infinite alternate;
+}
+
+.auth-cosmos::after {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 42% 42% at 50% 48%, rgba(0, 15, 35, 0.08), rgba(0, 7, 20, 0.52) 76%),
+    linear-gradient(180deg, rgba(0, 4, 14, 0.2), rgba(0, 5, 17, 0.46));
+  content: "";
+}
+
+.auth-stars,
+.auth-aurora {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+}
+
+.auth-stars {
+  inset: -12%;
+  background-repeat: repeat;
+}
+
+.auth-stars-far {
+  background-image:
+    radial-gradient(circle at 17px 21px, rgba(255, 255, 255, 0.72) 0 0.7px, transparent 1.2px),
+    radial-gradient(circle at 71px 83px, rgba(72, 192, 255, 0.62) 0 0.8px, transparent 1.3px);
+  background-size: 157px 139px, 229px 201px;
+  opacity: 0.34;
+  animation: auth-stars-drift 58s linear infinite;
+}
+
+.auth-stars-near {
+  background-image:
+    radial-gradient(circle at 31px 21px, rgba(255, 255, 255, 0.92) 0 1px, transparent 1.7px),
+    radial-gradient(circle at 108px 83px, rgba(64, 205, 255, 0.82) 0 1.1px, transparent 2px);
+  background-size: 337px 293px, 421px 367px;
+  opacity: 0.4;
+  animation: auth-stars-drift 82s linear infinite reverse;
+}
+
+.auth-aurora {
+  width: 54vw;
+  height: 92vh;
+  border-radius: 50%;
+  filter: blur(42px) saturate(145%);
+  opacity: 0.26;
+}
+
+.auth-aurora-left {
+  bottom: -54%;
+  left: -25%;
+  border-right: 110px solid rgba(20, 211, 241, 0.38);
+  box-shadow: 90px 0 120px rgba(0, 111, 238, 0.26);
+  transform: rotate(-18deg);
+}
+
+.auth-aurora-right {
+  top: -52%;
+  right: -22%;
+  border-left: 120px solid rgba(11, 188, 244, 0.34);
+  box-shadow: -90px 70px 125px rgba(62, 55, 255, 0.3);
+  transform: rotate(-11deg);
+}
+
+.auth-cosmic-page .auth-card {
+  position: relative;
+  border-color: rgba(150, 202, 255, 0.19);
+  background:
+    linear-gradient(145deg, rgba(9, 22, 42, 0.9), rgba(5, 15, 31, 0.84)),
+    rgba(4, 14, 29, 0.82);
+  box-shadow:
+    0 32px 90px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(24px) saturate(125%);
+}
+
+.auth-cosmic-page .auth-top h1 {
+  color: #f8fbff;
+}
+
+.auth-cosmic-page .auth-top p,
+.auth-cosmic-page .auth-foot,
+.auth-cosmic-page .auth-status {
+  color: #9caec5;
+}
+
+.auth-cosmic-page .brand {
+  color: #eefaff;
+  text-shadow: 0 0 20px rgba(40, 198, 255, 0.18);
+}
+
+.auth-cosmic-page .brand-logo-mark {
+  filter: drop-shadow(0 0 12px rgba(18, 211, 238, 0.36));
+}
+
+.auth-cosmic-page .google-button {
+  border-color: rgba(142, 190, 247, 0.2);
+  background: rgba(14, 31, 54, 0.76);
+  color: #f4f8ff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.auth-cosmic-page .google-button:hover:not(:disabled) {
+  border-color: rgba(72, 209, 255, 0.48);
+  background: rgba(18, 43, 74, 0.82);
+  box-shadow: 0 12px 30px rgba(6, 112, 216, 0.16);
+}
+
+.auth-cosmic-page .auth-foot {
+  border-color: rgba(142, 190, 247, 0.14);
+  background: rgba(2, 10, 23, 0.26);
+}
+
+@keyframes auth-cosmic-pan {
+  from { transform: scale(1.045) translate3d(-0.4%, -0.2%, 0); }
+  to { transform: scale(1.08) translate3d(0.8%, 0.5%, 0); }
+}
+
+@keyframes auth-stars-drift {
+  to { transform: translate3d(5%, 3%, 0); }
 }
 
 .auth-card {
@@ -6308,4 +6660,99 @@ a {
   .connection-fields {
     grid-template-columns: 1fr;
   }
+}
+
+/* Final color layer: keep this after responsive rules so dark mode uses the
+   same cosmic cyan/blue palette as the landing page at every viewport. */
+[data-theme="dark"] .dashboard {
+  background:
+    radial-gradient(circle at 92% -12%, rgba(22, 131, 242, 0.17), transparent 34%),
+    radial-gradient(circle at -12% 78%, rgba(23, 212, 231, 0.08), transparent 31%),
+    #020817;
+  color: #f3f8ff;
+}
+
+[data-theme="dark"] .sidebar {
+  border-color: rgba(139, 185, 242, 0.14);
+  background: linear-gradient(180deg, rgba(8, 20, 39, 0.97), rgba(4, 13, 28, 0.96));
+  box-shadow: 18px 0 48px rgba(0, 0, 0, 0.16);
+}
+
+[data-theme="dark"] .sidebar-toggle,
+[data-theme="dark"] .new-team,
+[data-theme="dark"] .account-button,
+[data-theme="dark"] .top-account-button {
+  border-color: rgba(132, 179, 237, 0.16);
+  background: rgba(15, 31, 54, 0.84);
+  color: #c8d7e9;
+}
+
+[data-theme="dark"] .side-link {
+  color: #778aa5;
+}
+
+[data-theme="dark"] .side-link:hover {
+  background: rgba(21, 45, 75, 0.58);
+  color: #d8e7f8;
+}
+
+[data-theme="dark"] .side-link.active {
+  background: linear-gradient(110deg, rgba(25, 178, 224, 0.15), rgba(59, 74, 229, 0.24));
+  color: #7be4ff;
+  box-shadow: inset 0 0 0 1px rgba(85, 207, 255, 0.11);
+}
+
+[data-theme="dark"] .office-agent-chip:hover,
+[data-theme="dark"] .office-agent-chip.active {
+  border-color: rgba(69, 196, 255, 0.28);
+  background: linear-gradient(110deg, rgba(19, 116, 180, 0.16), rgba(56, 67, 184, 0.2));
+}
+
+[data-theme="dark"] .team-card,
+[data-theme="dark"] .market-card,
+[data-theme="dark"] .shared-panel,
+[data-theme="dark"] .task-row,
+[data-theme="dark"] .activity-card,
+[data-theme="dark"] .support-form,
+[data-theme="dark"] .support-contact,
+[data-theme="dark"] .settings-hero-card,
+[data-theme="dark"] .settings-block,
+[data-theme="dark"] .writing-card,
+[data-theme="dark"] .premium-team-card,
+[data-theme="dark"] .history-card,
+[data-theme="dark"] .team-launch-card,
+[data-theme="dark"] .start-chat-card {
+  border-color: rgba(132, 179, 237, 0.15);
+  background: linear-gradient(145deg, rgba(12, 27, 48, 0.94), rgba(8, 20, 38, 0.92));
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="dark"] .connected-apps-page {
+  background:
+    radial-gradient(circle at 90% 0%, rgba(33, 119, 246, 0.14), transparent 31%),
+    #061126;
+}
+
+[data-theme="dark"] .connected-card,
+[data-theme="dark"] .connected-summary-card,
+[data-theme="dark"] .connected-search,
+[data-theme="dark"] .connected-filter,
+[data-theme="dark"] .connected-view-toggle button,
+[data-theme="dark"] .connected-refresh-button,
+[data-theme="dark"] .connected-security {
+  border-color: rgba(132, 179, 237, 0.15);
+  background: rgba(11, 25, 45, 0.92);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="dark"] .button.solid,
+[data-theme="dark"] .connected-actions .button.solid {
+  border-color: rgba(102, 228, 255, 0.24);
+  background: linear-gradient(112deg, #12cfe7 0%, #168fe9 48%, #3d64f2 100%);
+  box-shadow: 0 13px 28px rgba(9, 111, 221, 0.24);
+  color: #ffffff;
+}
+
+[data-theme="dark"] .office-full-frame {
+  background: #020817;
 }

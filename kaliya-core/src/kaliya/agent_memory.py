@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,6 +15,20 @@ from kaliya.text_safety import contains_secret_like_text, redact_sensitive_text
 
 AGENT_IDS = {"coordinator", "mika", "scout", "dev", "nova"}
 DEFAULT_ACCOUNT_ID = "local"
+
+
+def bounded_env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+MEMORY_MAX_MESSAGES = bounded_env_int("AGENT_MEMORY_MAX_MESSAGES", 1000, minimum=100, maximum=10000)
+MEMORY_MAX_ITEMS = bounded_env_int("AGENT_MEMORY_MAX_ITEMS", 500, minimum=50, maximum=5000)
+_SCHEMA_INITIALIZATION_LOCK = threading.Lock()
+_INITIALIZED_DATABASES: set[Path] = set()
 
 
 @dataclass(frozen=True)
@@ -27,15 +43,18 @@ class AgentMemoryStore:
     def __init__(self, root: Path, *, account_id: str, agent_id: str) -> None:
         if agent_id not in AGENT_IDS:
             raise ValueError(f"Unknown agent id: {agent_id}")
-        self.root = root.resolve()
+        self.root = canonical_path(root)
         self.account_id = safe_path_part(account_id)
         self.agent_id = agent_id
-        self.database_path = (
+        self.database_path = canonical_path(
             self.root / self.account_id / self.agent_id / "memory.sqlite3"
-        ).resolve()
+        )
         ensure_inside(self.root, self.database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_schema()
+        with _SCHEMA_INITIALIZATION_LOCK:
+            if self.database_path not in _INITIALIZED_DATABASES:
+                self._init_schema()
+                _INITIALIZED_DATABASES.add(self.database_path)
 
     def add_message(
         self,
@@ -69,7 +88,9 @@ class AgentMemoryStore:
                     json_dumps(metadata or {}),
                 ),
             )
-            return int(cursor.lastrowid)
+            message_id = int(cursor.lastrowid)
+            self._prune(db)
+            return message_id
 
     def remember(
         self,
@@ -147,7 +168,48 @@ class AgentMemoryStore:
                 """,
                 (chunk_id, clean_title, chunk_text, kind[:40]),
             )
+            self._prune(db)
             return memory_id
+
+    def _prune(self, db: sqlite3.Connection) -> None:
+        """Bound per-user disk growth while retaining the newest useful state."""
+        db.execute(
+            """
+            delete from messages
+            where id < coalesce(
+                (select id from messages order by id desc limit 1 offset ?),
+                0
+            )
+            """,
+            (MEMORY_MAX_MESSAGES - 1,),
+        )
+
+        delete_rows = db.execute(
+            """
+            select id from memories
+            where id not in (
+                select id from memories
+                order by case when kind = 'explicit' then 1 else 0 end desc,
+                         importance desc,
+                         id desc
+                limit ?
+            )
+            """,
+            (MEMORY_MAX_ITEMS,),
+        ).fetchall()
+        delete_ids = [int(row[0]) for row in delete_rows]
+        if not delete_ids:
+            return
+        for memory_id in delete_ids:
+            chunk_rows = db.execute(
+                "select id from memory_chunks where memory_id = ?",
+                (memory_id,),
+            ).fetchall()
+            db.executemany(
+                "delete from memory_chunks_fts where rowid = ?",
+                [(int(row[0]),) for row in chunk_rows],
+            )
+            db.execute("delete from memories where id = ?", (memory_id,))
 
     def retrieve(self, query: str, *, limit: int = 5, max_chars: int = 3000) -> list[RetrievedMemory]:
         clean_query = fts_query(query)
@@ -210,7 +272,7 @@ class AgentMemoryStore:
         return "\n".join(lines)
 
     def _init_schema(self) -> None:
-        with self._connect() as db:
+        with self._connect(configure_wal=True) as db:
             db.executescript(
                 """
                 create table if not exists messages (
@@ -275,20 +337,24 @@ class AgentMemoryStore:
             )
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.database_path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("pragma foreign_keys = on")
-        connection.execute("pragma journal_mode = wal")
-        connection.execute("pragma busy_timeout = 5000")
+    def _connect(self, *, configure_wal: bool = False) -> Iterator[sqlite3.Connection]:
+        connection: sqlite3.Connection | None = None
         try:
+            connection = sqlite3.connect(self.database_path, timeout=10)
+            connection.row_factory = sqlite3.Row
+            connection.execute("pragma busy_timeout = 5000")
+            connection.execute("pragma foreign_keys = on")
+            if configure_wal:
+                connection.execute("pragma journal_mode = wal")
             yield connection
             connection.commit()
         except Exception:
-            connection.rollback()
+            if connection is not None:
+                connection.rollback()
             raise
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
 
 
 def auto_remember_if_useful(
@@ -339,9 +405,27 @@ def safe_path_part(value: str) -> str:
     return clean or DEFAULT_ACCOUNT_ID
 
 
+def canonical_path(path: Path) -> Path:
+    """Resolve a path while normalizing Windows extended-path spelling.
+
+    During concurrent directory creation Windows may return the same path once
+    as ``C:\\...`` and once as ``\\\\?\\C:\\...``.  Keeping one spelling is
+    important both for containment checks and for the schema-init cache.
+    """
+
+    value = str(path.resolve(strict=False))
+    if os.name == "nt":
+        if value.startswith("\\\\?\\UNC\\"):
+            value = "\\\\" + value[8:]
+        elif value.startswith("\\\\?\\"):
+            value = value[4:]
+        value = os.path.normcase(value)
+    return Path(value)
+
+
 def ensure_inside(root: Path, path: Path) -> None:
     try:
-        path.resolve().relative_to(root.resolve())
+        canonical_path(path).relative_to(canonical_path(root))
     except ValueError as exc:
         raise ValueError(f"Path must stay inside {root}") from exc
 
