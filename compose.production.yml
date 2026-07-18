@@ -283,6 +283,7 @@ services:
       args:
         BACKEND_INTERNAL_URL: http://backend:8000
         AGENT_INTERNAL_URL: http://agent:4173
+        NEXT_PUBLIC_SUPPORT_TELEGRAM_URL: ${NEXT_PUBLIC_SUPPORT_TELEGRAM_URL:-}
     restart: unless-stopped
     init: true
     stop_grace_period: 30s

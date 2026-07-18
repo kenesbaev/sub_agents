@@ -544,6 +544,154 @@
   white-space: nowrap;
 }
 
+/* Light mode keeps the cosmic composition, but moves it onto a bright sky. */
+:global([data-theme="light"]) .landing {
+  background: #f8fbff;
+  color: #111827;
+}
+
+:global([data-theme="light"]) .hero {
+  background: #f8fbff;
+  color: #111827;
+}
+
+:global([data-theme="light"]) .hero::after {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16), transparent 28%, transparent 72%, rgba(235, 242, 255, 0.42)),
+    radial-gradient(ellipse at center, transparent 34%, rgba(224, 234, 255, 0.18) 74%, rgba(244, 248, 255, 0.72) 100%);
+}
+
+:global([data-theme="light"]) .cosmos {
+  background: #fbfdff;
+}
+
+:global([data-theme="light"]) .cosmos::before {
+  inset: -8%;
+  background:
+    radial-gradient(circle at 50% 43%, rgba(255, 255, 255, 0.96) 0 15%, transparent 46%),
+    radial-gradient(ellipse at 16% 84%, rgba(81, 217, 244, 0.24), transparent 40%),
+    radial-gradient(ellipse at 83% 16%, rgba(91, 99, 255, 0.2), transparent 42%),
+    radial-gradient(ellipse at 76% 80%, rgba(124, 58, 237, 0.13), transparent 36%),
+    linear-gradient(145deg, #ffffff 0%, #f2f8ff 52%, #faf7ff 100%);
+  filter: none;
+  opacity: 1;
+}
+
+:global([data-theme="light"]) .cosmos::after {
+  background:
+    radial-gradient(ellipse 62% 52% at 50% 50%, rgba(255, 255, 255, 0.12), rgba(222, 235, 255, 0.1) 72%, rgba(246, 249, 255, 0.5) 100%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 34%, rgba(231, 240, 255, 0.16));
+}
+
+:global([data-theme="light"]) .starsFar {
+  background-image:
+    radial-gradient(circle at 13px 17px, rgba(80, 103, 172, 0.42) 0 0.8px, transparent 1.3px),
+    radial-gradient(circle at 47px 61px, rgba(23, 143, 219, 0.4) 0 0.9px, transparent 1.4px),
+    radial-gradient(circle at 91px 34px, rgba(114, 88, 220, 0.34) 0 0.7px, transparent 1.2px),
+    radial-gradient(circle at 29px 102px, rgba(40, 86, 177, 0.3) 0 0.8px, transparent 1.3px);
+  opacity: 0.52;
+}
+
+:global([data-theme="light"]) .starsNear {
+  background-image:
+    radial-gradient(circle at 31px 21px, rgba(60, 94, 182, 0.56) 0 1px, transparent 1.8px),
+    radial-gradient(circle at 108px 83px, rgba(19, 169, 212, 0.54) 0 1.1px, transparent 2px),
+    radial-gradient(circle at 71px 143px, rgba(111, 84, 229, 0.47) 0 0.9px, transparent 1.8px);
+  opacity: 0.58;
+}
+
+:global([data-theme="light"]) .auroraLeft,
+:global([data-theme="light"]) .auroraRight {
+  filter: blur(31px) saturate(125%);
+  mix-blend-mode: multiply;
+  opacity: 0.22;
+}
+
+:global([data-theme="light"]) .auroraTop {
+  background: radial-gradient(circle, rgba(89, 116, 255, 0.18), rgba(53, 180, 240, 0.09) 42%, transparent 70%);
+  opacity: 0.3;
+}
+
+:global([data-theme="light"]) .shootingStar {
+  background: linear-gradient(90deg, transparent, rgba(56, 111, 222, 0.66), transparent);
+  box-shadow: 0 0 8px rgba(46, 139, 223, 0.36);
+}
+
+:global([data-theme="light"]) .header {
+  border-color: rgba(137, 159, 197, 0.23);
+  background:
+    linear-gradient(105deg, rgba(255, 255, 255, 0.9), rgba(246, 249, 255, 0.78)),
+    rgba(255, 255, 255, 0.74);
+  box-shadow: 0 18px 50px rgba(65, 83, 120, 0.12), inset 0 1px 0 #ffffff;
+}
+
+:global([data-theme="light"]) .header::before {
+  background: linear-gradient(110deg, rgba(255, 255, 255, 0.66), transparent 36%, rgba(79, 70, 229, 0.04));
+}
+
+:global([data-theme="light"]) .brand {
+  color: #111827;
+}
+
+:global([data-theme="light"]) .brand img {
+  filter: drop-shadow(0 8px 14px rgba(79, 70, 229, 0.16));
+}
+
+:global([data-theme="light"]) .loginLink,
+:global([data-theme="light"]) .mobileNav > a {
+  color: #475467;
+}
+
+:global([data-theme="light"]) .loginLink:hover,
+:global([data-theme="light"]) .mobileNav > a:hover {
+  color: #111827;
+  text-shadow: none;
+}
+
+:global([data-theme="light"]) .menuButton {
+  border-color: rgba(116, 133, 168, 0.2);
+  background: rgba(255, 255, 255, 0.84);
+  color: #344054;
+}
+
+:global([data-theme="light"]) .mobileNav {
+  border-color: rgba(126, 145, 182, 0.22);
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 22px 50px rgba(57, 73, 108, 0.16);
+}
+
+:global([data-theme="light"]) .heroTitle {
+  color: #111827;
+  text-shadow: 0 10px 38px rgba(75, 91, 125, 0.12);
+}
+
+:global([data-theme="light"]) .heroDescription {
+  color: #56637a;
+  text-shadow: none;
+}
+
+:global([data-theme="light"]) .brandShowcase {
+  border-color: rgba(121, 145, 188, 0.13);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.76), rgba(247, 250, 255, 0.54) 48%, rgba(247, 246, 255, 0.62)),
+    rgba(255, 255, 255, 0.54);
+  box-shadow: 0 22px 70px rgba(69, 86, 122, 0.09);
+}
+
+:global([data-theme="light"]) .brandShowcase::before {
+  background: radial-gradient(ellipse, rgba(178, 87, 255, 0.1), rgba(45, 141, 255, 0.08) 48%, transparent 75%);
+}
+
+:global([data-theme="light"]) .brandIntro {
+  color: #738097;
+}
+
+:global([data-theme="light"]) .brandItem,
+:global([data-theme="light"]) .brandMark {
+  color: #536179;
+  text-shadow: none;
+}
+
 @keyframes header-enter {
   from { opacity: 0; transform: translate(-50%, -18px); }
   to { opacity: 1; transform: translate(-50%, 0); }
@@ -655,7 +803,7 @@
   }
 
   .headerActions {
-    gap: 0;
+    gap: 8px;
   }
 
   .menuButton {

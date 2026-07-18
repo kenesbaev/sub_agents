@@ -1,0 +1,369 @@
+@media (max-width: 1180px) {
+  .integration-grid,
+  .market-grid,
+  .teams-grid,
+  .team-launch-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .billing-plans-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .dash-main {
+    padding: 26px 24px 40px;
+  }
+
+  .usage-grid,
+  .profile-details {
+    grid-template-columns: 1fr;
+  }
+
+  .team-directory-toolbar {
+    grid-template-columns: minmax(0, 1fr) 170px auto;
+  }
+
+  .billing-plan-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .billing-manage-button {
+    align-self: flex-start;
+    margin-top: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .dashboard,
+  .dashboard.sidebar-collapsed {
+    display: block;
+    width: 100%;
+    max-width: 100vw;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  .sidebar,
+  .sidebar.collapsed {
+    position: fixed;
+    z-index: 90;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(84vw, 280px);
+    height: 100dvh;
+    padding: 16px 14px;
+    box-shadow: 18px 0 50px rgba(15, 23, 42, 0.18);
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateX(-105%);
+    transition: transform 180ms ease, visibility 0s linear 180ms;
+  }
+
+  .mobile-sidebar-open .sidebar,
+  .mobile-sidebar-open .sidebar.collapsed {
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateX(0);
+    transition-delay: 0s;
+  }
+
+  .sidebar .dash-brand span,
+  .sidebar.collapsed .dash-brand span,
+  .sidebar .new-team-button span,
+  .sidebar.collapsed .new-team-button span,
+  .sidebar .new-team-button svg:last-child,
+  .sidebar.collapsed .new-team-button svg:last-child,
+  .sidebar .side-link-label,
+  .sidebar.collapsed .side-link-label,
+  .sidebar .settings-chevron,
+  .sidebar.collapsed .settings-chevron,
+  .sidebar .account-copy,
+  .sidebar.collapsed .account-copy,
+  .sidebar .account-chevron,
+  .sidebar.collapsed .account-chevron {
+    display: initial;
+  }
+
+  .sidebar .settings-dropdown-menu,
+  .sidebar.collapsed .settings-dropdown-menu {
+    display: grid;
+  }
+
+  .sidebar .sidebar-top,
+  .sidebar.collapsed .sidebar-top {
+    min-height: 42px;
+    flex-direction: row;
+  }
+
+  .sidebar .new-team-button,
+  .sidebar.collapsed .new-team-button {
+    display: grid;
+    width: 100%;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    place-items: initial;
+    align-items: center;
+    padding: 0 13px;
+  }
+
+  .sidebar .side-link,
+  .sidebar.collapsed .side-link,
+  .sidebar .account-button,
+  .sidebar.collapsed .account-button {
+    display: flex;
+    width: 100%;
+    padding: 0 11px;
+  }
+
+  .sidebar .account-button,
+  .sidebar.collapsed .account-button {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .sidebar.collapsed .account-popover {
+    right: 0;
+    bottom: calc(100% + 8px);
+    left: 0;
+    width: auto;
+  }
+
+  .mobile-menu-button {
+    position: fixed;
+    z-index: 82;
+    top: 14px;
+    left: 14px;
+    display: grid;
+    width: 42px;
+    height: 42px;
+    place-items: center;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    box-shadow: var(--shadow-sm);
+    color: var(--text);
+  }
+
+  .mobile-sidebar-open .mobile-menu-button {
+    z-index: 95;
+    left: min(calc(84vw - 56px), 224px);
+  }
+
+  .mobile-sidebar-backdrop {
+    position: fixed;
+    z-index: 85;
+    inset: 0;
+    display: none;
+    border: 0;
+    background: rgba(15, 23, 42, 0.34);
+    backdrop-filter: blur(2px);
+  }
+
+  .mobile-sidebar-open .mobile-sidebar-backdrop {
+    display: block;
+  }
+
+  .dash-main,
+  .dash-main-office {
+    width: 100%;
+    max-width: 100%;
+    min-height: 100vh;
+    max-height: none;
+    padding: 76px 18px 36px;
+    overflow-x: clip;
+    overflow-y: visible;
+  }
+
+  .dash-main-office {
+    height: 100dvh;
+    padding: 0;
+  }
+
+  .office-exit-bar {
+    top: 14px;
+    right: 14px;
+  }
+
+  .view-head,
+  .support-top,
+  .connected-apps-head,
+  .billing-plans-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .billing-plans-page,
+  .billing-plans-grid,
+  .billing-plans-head {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .billing-cycle-control {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    margin-left: 0;
+    overflow: hidden;
+  }
+
+  .billing-cycle-control button {
+    min-width: 0;
+    flex: 1 1 0;
+    padding-inline: 6px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .billing-plans-head > .secondary-button {
+    width: 100%;
+  }
+
+  .connected-head-actions,
+  .connected-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .connected-summary-card,
+  .connected-search {
+    width: 100%;
+  }
+
+  .connected-filter {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .connected-filter button {
+    flex: 1 0 auto;
+  }
+
+  .integration-grid,
+  .market-grid,
+  .teams-grid,
+  .team-launch-grid,
+  .billing-plans-grid,
+  .support-contact-grid,
+  .support-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .team-directory-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .teams-view-toggle {
+    width: max-content;
+  }
+
+  .billing-summary-card,
+  .support-form-card,
+  .profile-card,
+  .profile-appearance-card {
+    padding: 20px;
+  }
+
+  .profile-appearance-copy {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .billing-plan-name {
+    align-items: flex-start;
+  }
+
+  .billing-plan-name h2 {
+    font-size: 24px;
+  }
+
+  .support-submit-row,
+  .payment-status-card {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .payment-status-icon {
+    display: none;
+  }
+
+  .plan-card {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    padding: 20px;
+  }
+
+  .plan-stats {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .plan-stats span {
+    min-width: 0;
+    padding-inline: 3px;
+    overflow-wrap: anywhere;
+    font-size: 10px;
+  }
+}
+
+@media (max-width: 520px) {
+  .page-heading h1,
+  .view-head h1,
+  .settings-page-head h1,
+  .connected-apps-head h1 {
+    font-size: 29px;
+  }
+
+  .integration-card-body,
+  .integration-card-actions {
+    margin-left: 0;
+  }
+
+  .integration-card-actions {
+    flex-wrap: wrap;
+  }
+
+  .history-card,
+  .task-row,
+  .activity-card {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .history-card > :last-child,
+  .task-row > :last-child,
+  .activity-card > :last-child {
+    grid-column: 2;
+  }
+
+  .team-detail-overlay,
+  .api-key-overlay,
+  .delete-chat-overlay {
+    padding: 10px;
+  }
+
+  .team-detail-modal,
+  .api-key-modal,
+  .delete-chat-modal {
+    border-radius: 16px;
+    padding: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard *,
+  .dashboard *::before,
+  .dashboard *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

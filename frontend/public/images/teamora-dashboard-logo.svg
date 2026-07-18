@@ -1,0 +1,24 @@
+<svg width="96" height="96" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="petalA" x1="14" y1="10" x2="67" y2="66" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7C83FF"/>
+      <stop offset="0.55" stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#3730A3"/>
+    </linearGradient>
+    <linearGradient id="petalB" x1="82" y1="8" x2="31" y2="79" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A79CFF"/>
+      <stop offset="0.5" stop-color="#6860F4"/>
+      <stop offset="1" stop-color="#4338CA"/>
+    </linearGradient>
+    <filter id="soft" x="3" y="3" width="90" height="90" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#4338CA" flood-opacity="0.2"/>
+    </filter>
+  </defs>
+  <g filter="url(#soft)">
+    <path d="M14 18C14 10.268 20.268 4 28 4H31.5C36.54 4 41.36 6.03 44.88 9.66L57 22.16L43.15 48L18.06 34.55C15.56 33.21 14 30.6 14 27.76V18Z" fill="url(#petalA)"/>
+    <path d="M82 18C82 10.268 75.732 4 68 4H64.5C59.46 4 54.64 6.03 51.12 9.66L39 22.16L52.85 48L77.94 34.55C80.44 33.21 82 30.6 82 27.76V18Z" fill="url(#petalB)"/>
+    <path d="M14 78C14 85.732 20.268 92 28 92H31.5C36.54 92 41.36 89.97 44.88 86.34L57 73.84L43.15 48L18.06 61.45C15.56 62.79 14 65.4 14 68.24V78Z" fill="url(#petalB)"/>
+    <path d="M82 78C82 85.732 75.732 92 68 92H64.5C59.46 92 54.64 89.97 51.12 86.34L39 73.84L52.85 48L77.94 61.45C80.44 62.79 82 65.4 82 68.24V78Z" fill="url(#petalA)"/>
+    <path d="M32.7 32.7C36.8 35.3 41.94 36.6 48 36.6C54.06 36.6 59.2 35.3 63.3 32.7C64.97 31.64 67.05 33.03 66.48 34.92C64.86 40.32 64.05 44.68 64.05 48C64.05 51.32 64.86 55.68 66.48 61.08C67.05 62.97 64.97 64.36 63.3 63.3C59.2 60.7 54.06 59.4 48 59.4C41.94 59.4 36.8 60.7 32.7 63.3C31.03 64.36 28.95 62.97 29.52 61.08C31.14 55.68 31.95 51.32 31.95 48C31.95 44.68 31.14 40.32 29.52 34.92C28.95 33.03 31.03 31.64 32.7 32.7Z" fill="white"/>
+  </g>
+</svg>
