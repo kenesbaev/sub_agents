@@ -9,7 +9,6 @@ import {
   Check,
   ChevronDown,
   Clock,
-  CreditCard,
   Eye,
   LifeBuoy,
   ListTodo,
@@ -18,35 +17,42 @@ import {
   Mail,
   Grid3X3,
   List,
-  PanelLeftClose,
-  PanelLeftOpen,
   Pencil,
   Plug,
   Plus,
   Rocket,
   Search,
-  Settings,
+  Send,
   Share2,
   Trash2,
-  Video,
   X,
   UsersRound
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { type CSSProperties, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
+import { BillingSummary } from "@/components/billing/BillingSummary";
+import { DashboardLayout } from "@/components/dashboard/DashboardLayout";
+import { Sidebar, type DashboardNavView } from "@/components/dashboard/Sidebar";
+import type { DashboardSettingsTab } from "@/components/dashboard/SettingsDropdown";
+import { IntegrationCard, type IntegrationCardData } from "@/components/integrations/IntegrationCard";
+import { IntegrationSection } from "@/components/integrations/IntegrationSection";
+import { SupportContactCard } from "@/components/support/SupportContactCard";
+import { SupportForm } from "@/components/support/SupportForm";
+import { ThemeToggle, useTeamoraTheme, type TeamoraTheme } from "@/components/theme/ThemeToggle";
+
 import { YouTubeGrowthPanel } from "./youtube-growth-panel";
 
 // Browser requests stay on the frontend origin. Next.js proxies /api server-side.
 const API_URL = "";
+const SUPPORT_TELEGRAM_URL = process.env.NEXT_PUBLIC_SUPPORT_TELEGRAM_URL?.trim() || "";
 
 type View = "office" | "youtube-growth" | "tasks" | "activity" | "my-teams" | "settings" | "support";
 type TaskStatus = "Queued" | "Working" | "Done";
-type SettingsTab = "connected" | "billing";
+type SettingsTab = DashboardSettingsTab;
 type TeamTab = "history" | "ready" | "mine";
 type TeamViewMode = "grid" | "list";
-type ThemeMode = "light" | "dark" | "auto";
-type ResolvedTheme = "light" | "dark";
+type ResolvedTheme = TeamoraTheme;
 type ConnectedAppsFilter = "all" | "connected" | "not_connected";
 
 interface UserData {
@@ -123,28 +129,7 @@ interface BillingStatus {
   canUpgrade: boolean;
 }
 
-interface ConnectedAppCardData {
-  key: string;
-  providerKey: string;
-  title: string;
-  description: string;
-  capabilities: string[];
-  requirements?: string[];
-  logo: string;
-  logoUrl: string;
-  logoTone: string;
-  connected: boolean;
-  connectedAt: string | null;
-  connectedLabel?: string;
-  connectedValue?: string;
-  connectedDetails?: Array<{ label: string; value: string }>;
-  connectionState?: "not_connected" | "connecting" | "connected" | "expired" | "reconnect_required" | "error" | "unavailable" | string;
-  errorMessage?: string;
-  statusDetail?: string;
-  runtimeState?: "available" | "connection_only" | string;
-  connectLabel: string;
-  action: "oauth" | "manual" | "secret" | "disabled";
-}
+type ConnectedAppCardData = IntegrationCardData;
 
 interface TaskItem {
   id: number;
@@ -272,8 +257,8 @@ const DASHBOARD_VIEW_STORAGE_KEY = "rebly-dashboard-active-view";
 const DASHBOARD_TEAM_TAB_STORAGE_KEY = "rebly-dashboard-team-tab";
 const DASHBOARD_OFFICE_STORAGE_KEY = "rebly-dashboard-active-office";
 
-const dashboardViews: View[] = ["office", "youtube-growth", "tasks", "activity", "my-teams", "settings", "support"];
-const settingsTabs: SettingsTab[] = ["connected", "billing"];
+const dashboardViews: View[] = ["office", "youtube-growth", "my-teams", "settings", "support"];
+const settingsTabs: SettingsTab[] = ["profile", "billing", "connected"];
 const teamTabs: TeamTab[] = ["history", "ready", "mine"];
 
 function isDashboardView(value: string | null): value is View {
@@ -836,26 +821,12 @@ const agentToolRoles = [
   }
 ];
 
-function resolveThemeMode(mode: ThemeMode): ResolvedTheme {
-  const dark = mode === "dark" || (mode === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-  return dark ? "dark" : "light";
-}
-
-function applyThemeMode(mode: ThemeMode): ResolvedTheme {
-  const resolved = resolveThemeMode(mode);
-  document.documentElement.dataset.theme = resolved;
-  document.documentElement.style.colorScheme = resolved;
-  localStorage.setItem("rebly-theme", mode);
-  return resolved;
-}
-
 export default function DashboardPage() {
   const [user, setUser] = useState<UserData | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeView, setActiveView] = useState<View>("office");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("connected");
-  const [themeMode, setThemeMode] = useState<ThemeMode>("dark");
-  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
+  const { theme: resolvedTheme } = useTeamoraTheme();
   const [teamTab, setTeamTab] = useState<TeamTab>("ready");
   const [teamViewMode, setTeamViewMode] = useState<TeamViewMode>("grid");
   const [teamSearch, setTeamSearch] = useState("");
@@ -883,6 +854,8 @@ export default function DashboardPage() {
   const [instagramConnected, setInstagramConnected] = useState(false);
   const [instagramStatus, setInstagramStatus] = useState("");
   const [connectedApps, setConnectedApps] = useState<ConnectedAppsData | null>(null);
+  const [connectedAppsLoading, setConnectedAppsLoading] = useState(true);
+  const [connectedAppsError, setConnectedAppsError] = useState("");
   const [connectedAppsSearch, setConnectedAppsSearch] = useState("");
   const [connectedAppsFilter, setConnectedAppsFilter] = useState<ConnectedAppsFilter>("all");
   const [configuringConnectedApp, setConfiguringConnectedApp] = useState("");
@@ -894,6 +867,7 @@ export default function DashboardPage() {
   const [shopifyShopDomain, setShopifyShopDomain] = useState("");
   const [selectedOfficeAgent, setSelectedOfficeAgent] = useState("all");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [selectedOfficeTeam, setSelectedOfficeTeam] = useState<TeamCardData | null>(null);
   const [dashboardRestored, setDashboardRestored] = useState(false);
   const officeFrameRef = useRef<HTMLIFrameElement | null>(null);
@@ -932,13 +906,14 @@ export default function DashboardPage() {
     const storedTeamTab = localStorage.getItem(DASHBOARD_TEAM_TAB_STORAGE_KEY);
     const storedOffice = localStorage.getItem(DASHBOARD_OFFICE_STORAGE_KEY);
     const query = new URLSearchParams(window.location.search);
-    const requestedSettingsTab = query.get("view") === "settings" && isSettingsTab(query.get("tab"))
+    const requestedView = query.get("view");
+    const requestedSettingsTab = requestedView === "settings" && isSettingsTab(query.get("tab"))
       ? query.get("tab") as SettingsTab
       : null;
 
-    if (requestedSettingsTab) {
-      setActiveView("settings");
-      setSettingsTab(requestedSettingsTab);
+    if (isDashboardView(requestedView)) {
+      setActiveView(requestedView);
+      if (requestedSettingsTab) setSettingsTab(requestedSettingsTab);
     } else if (isDashboardView(storedView)) {
       setActiveView(storedView);
     }
@@ -981,6 +956,15 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!dashboardRestored) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", activeView);
+    if (activeView === "settings") url.searchParams.set("tab", settingsTab);
+    else url.searchParams.delete("tab");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [activeView, dashboardRestored, settingsTab]);
+
+  useEffect(() => {
+    if (!dashboardRestored) return;
     if (selectedOfficeTeam && activeConversation) {
       localStorage.setItem(DASHBOARD_OFFICE_STORAGE_KEY, JSON.stringify(activeConversation));
       return;
@@ -989,11 +973,6 @@ export default function DashboardPage() {
   }, [activeConversation, dashboardRestored, selectedOfficeTeam]);
 
   useEffect(() => {
-    const storedTheme = localStorage.getItem("rebly-theme");
-    const nextTheme: ThemeMode = storedTheme === "light" || storedTheme === "auto" ? storedTheme : "dark";
-    setThemeMode(nextTheme);
-    setResolvedTheme(applyThemeMode(nextTheme));
-
     fetch(`${API_URL}/api/auth/me`, { credentials: "include" })
       .then(async (response) => {
         if (!response.ok) {
@@ -1013,14 +992,6 @@ export default function DashboardPage() {
       })
       .finally(() => setLoading(false));
   }, []);
-
-  useEffect(() => {
-    if (themeMode !== "auto") return;
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const update = () => setResolvedTheme(applyThemeMode("auto"));
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, [themeMode]);
 
   useEffect(() => {
     if (loading) return;
@@ -1177,16 +1148,23 @@ export default function DashboardPage() {
   }
 
   async function logout() {
-    await fetch(`${API_URL}/api/auth/logout`, { method: "POST", credentials: "include" });
-    for (const storage of [window.sessionStorage, window.localStorage]) {
-      for (let index = storage.length - 1; index >= 0; index -= 1) {
-        const key = storage.key(index);
-        if (key?.startsWith("rebly-office-") || key?.startsWith("rebly-team-conversations-")) {
-          storage.removeItem(key);
+    try {
+      await fetch(`${API_URL}/api/auth/logout`, { method: "POST", credentials: "include" });
+    } finally {
+      for (const storage of [window.sessionStorage, window.localStorage]) {
+        for (let index = storage.length - 1; index >= 0; index -= 1) {
+          const key = storage.key(index);
+          if (
+            key?.startsWith("rebly-dashboard-")
+            || key?.startsWith("rebly-office-")
+            || key?.startsWith("rebly-team-conversations-")
+          ) {
+            storage.removeItem(key);
+          }
         }
       }
+      window.location.href = "/";
     }
-    window.location.href = "/";
   }
 
   async function loadTeams() {
@@ -1357,13 +1335,16 @@ export default function DashboardPage() {
   }
 
   async function loadIntegrations() {
+    setConnectedAppsLoading(true);
+    setConnectedAppsError("");
+    const [legacyResult, connectedResult] = await Promise.allSettled([
+      fetch(`${API_URL}/api/integrations`, { credentials: "include" }),
+      fetch(`${API_URL}/api/connected-apps`, { credentials: "include" })
+    ]);
+
     try {
-      const [legacyResponse, connectedResponse] = await Promise.all([
-        fetch(`${API_URL}/api/integrations`, { credentials: "include" }),
-        fetch(`${API_URL}/api/connected-apps`, { credentials: "include" })
-      ]);
-      if (legacyResponse.ok) {
-        const payload: IntegrationsData = await legacyResponse.json();
+      if (legacyResult.status === "fulfilled" && legacyResult.value.ok) {
+        const payload: IntegrationsData = await legacyResult.value.json();
         setTelegramBotConnected(Boolean(payload.telegram_bot.connected));
         setTelegramBotTarget(payload.telegram_bot.target_chat_id || "");
         setTelegramBotStatus(
@@ -1377,14 +1358,25 @@ export default function DashboardPage() {
             ? `Connected${payload.instagram.username ? ` as @${payload.instagram.username}` : ""}`
             : ""
         );
-      }
-      if (connectedResponse.ok) {
-        const appsPayload: ConnectedAppsData = await connectedResponse.json();
-        setConnectedApps(appsPayload);
+      } else {
+        setTelegramBotStatus("Telegram status is temporarily unavailable");
+        setInstagramStatus("Instagram status is temporarily unavailable");
       }
     } catch {
-      setTelegramBotStatus("Could not load Telegram status");
-      setInstagramStatus("Could not load Instagram status");
+      setTelegramBotStatus("Telegram status is temporarily unavailable");
+      setInstagramStatus("Instagram status is temporarily unavailable");
+    }
+
+    try {
+      if (connectedResult.status !== "fulfilled" || !connectedResult.value.ok) {
+        throw new Error("Connected Apps status request failed");
+      }
+      const appsPayload: ConnectedAppsData = await connectedResult.value.json();
+      setConnectedApps(appsPayload);
+    } catch {
+      setConnectedAppsError("Connection status could not be refreshed. Existing status may be out of date.");
+    } finally {
+      setConnectedAppsLoading(false);
     }
   }
 
@@ -1512,12 +1504,6 @@ export default function DashboardPage() {
     );
   }
 
-  const navItems = [
-    { id: "office" as View, label: "Office", icon: BriefcaseBusiness },
-    { id: "youtube-growth" as View, label: "YouTube Growth", icon: Video },
-    { id: "my-teams" as View, label: "Your teams", icon: UsersRound }
-  ];
-
   const displayName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || user?.email || "Teamora user";
   const billingLoaded = !billingLoading && !billingError && billingStatus !== null;
   const billingPlanLabel = billingLoading
@@ -1525,11 +1511,6 @@ export default function DashboardPage() {
     : billingLoaded
       ? billingStatus?.plan?.name || "No plan"
       : "Plan unavailable";
-  const accountRoleLabel = billingLoading
-    ? "Loading role..."
-    : billingLoaded
-      ? billingRoleLabel(billingStatus?.role)
-      : "Role unavailable";
   const youtubeProvider = connectedApps?.providers.find((provider) => provider.key === "youtube");
   const youtubeAccount = youtubeProvider?.accounts?.find((account) => account.isDefault) || youtubeProvider?.accounts?.[0];
   const youtubeChannelLabel = youtubeAccount?.label || youtubeAccount?.identifier || "";
@@ -1537,131 +1518,40 @@ export default function DashboardPage() {
     youtubeProvider?.capabilities.some((capability) => capability.key === "youtube.upload" && capability.granted)
       || youtubeAccount?.grantedCapabilities?.includes("youtube.upload")
   );
+  const sidebarView: DashboardNavView | null = ["office", "youtube-growth", "my-teams", "settings", "support"].includes(activeView)
+    ? activeView as DashboardNavView
+    : null;
 
   return (
-    <main className={`dashboard ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-      <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`} aria-label="Workspace sidebar">
-        <div className="sidebar-top">
-          <Link className="dash-brand" href="/" aria-label="Teamora AI home">
-            <img className="dash-logo brand-logo-mark" src="/images/teamora-ai-logo-mark.svg" alt="" />
-            <span>Teamora AI</span>
-          </Link>
-          <button
-            className="sidebar-toggle"
-            type="button"
-            aria-label={sidebarCollapsed ? "Открыть боковую панель" : "Закрыть боковую панель"}
-            aria-expanded={!sidebarCollapsed}
-            data-tooltip={sidebarCollapsed ? "Открыть боковую панель" : "Закрыть боковую панель"}
-            onClick={() => setSidebarCollapsed((current) => !current)}
-          >
-            {sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}
-          </button>
-        </div>
-
-        <nav className="side-nav" aria-label="Workspace">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                className={`side-link ${
-                  (item.id === "my-teams" && activeView === "my-teams") ||
-                  (activeView === item.id && item.id !== "my-teams")
-                    ? "active"
-                    : ""
-                }`}
-                key={item.id}
-                type="button"
-                title={item.label}
-                onClick={() => {
-                  if (item.id === "my-teams") {
-                    openTeams("ready");
-                    return;
-                  }
-                  setActiveView(item.id);
-                }}
-              >
-                <Icon size={19} />
-                {item.label}
-              </button>
-            );
-          })}
-        </nav>
-
-        {activeView === "office" && selectedOfficeTeamPayload && (
-          <div className="office-team-strip" aria-label="Teamora AI Office team">
-            <div className="office-team-head">
-              <strong>Team</strong>
-              <span>{Math.max(visibleOfficeAgents.length - 1, 0)} / {Math.max(visibleOfficeAgents.length - 1, 0)}</span>
-            </div>
-            <div className="office-team-list">
-              {visibleOfficeAgents.map((agent) => (
-                <button
-                  className={`office-agent-chip ${selectedOfficeAgent === agent.id ? "active" : ""}`}
-                  key={agent.id}
-                  type="button"
-                  aria-pressed={selectedOfficeAgent === agent.id}
-                  onClick={() => selectOfficeAgent(agent.id)}
-                >
-                  <span
-                    className={`office-agent-token ${agent.id === "all" ? "initial" : ""}`}
-                    style={{ "--agent-color": agent.color } as CSSProperties}
-                  >
-                    {agent.id === "all" ? <span aria-hidden="true">T</span> : <Image src={agent.image} width={256} height={256} alt="" />}
-                  </span>
-                  <span>
-                    <strong>{agent.name}</strong>
-                    <small>{agent.role}</small>
-                  </span>
-                  <i className={agent.state === "online" ? "online" : ""} aria-hidden="true" />
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="sidebar-bottom">
-          <button
-            className={`side-link ${activeView === "settings" ? "active" : ""}`}
-            type="button"
-            title="Settings"
-            onClick={() => {
-              setSettingsTab("connected");
-              setActiveView("settings");
-            }}
-          >
-            <Settings size={19} />
-            Settings
-          </button>
-          {billingLoaded && billingStatus?.canUpgrade && (
-            <Link className="side-link sidebar-upgrade-link" href="/pricing" title="Upgrade">
-              <CreditCard size={19} />
-              Upgrade
-            </Link>
-          )}
-          <button
-            className={`side-link ${activeView === "support" ? "active" : ""}`}
-            type="button"
-            title="Support"
-            onClick={() => setActiveView("support")}
-          >
-            <LifeBuoy size={19} />
-            Support
-          </button>
-          <button className="side-link sidebar-logout" type="button" title="Log out" onClick={() => void logout()}>
-            <LogOut size={19} />
-            Log out
-          </button>
-          <div className="account-button sidebar-account-card" aria-label={`${displayName}, ${accountRoleLabel}, ${billingPlanLabel}`}>
-            <span className="brand-mark">{displayName.slice(0, 1).toUpperCase()}</span>
-            <span>
-              <strong>{displayName}</strong>
-              <small>{accountRoleLabel} · {billingPlanLabel}</small>
-            </span>
-          </div>
-        </div>
-      </aside>
-
-      <section className={`dash-main ${activeView === "office" ? "dash-main-office" : ""}`}>
+    <DashboardLayout
+      collapsed={sidebarCollapsed}
+      mobileOpen={mobileSidebarOpen}
+      officeMode={activeView === "office"}
+      onMobileToggle={() => setMobileSidebarOpen((current) => !current)}
+      sidebar={(
+        <Sidebar
+          activeView={sidebarView}
+          settingsTab={settingsTab}
+          collapsed={sidebarCollapsed}
+          canUpgrade={billingStatus?.canUpgrade ?? !billingStatus?.plan}
+          displayName={displayName}
+          planLabel={billingPlanLabel}
+          avatarUrl={user?.avatar_url}
+          onCollapse={() => setSidebarCollapsed((current) => !current)}
+          onNavigate={(view) => {
+            setMobileSidebarOpen(false);
+            if (view === "my-teams") openTeams("ready");
+            else setActiveView(view);
+          }}
+          onSelectSettings={(tab) => {
+            setSettingsTab(tab);
+            setActiveView("settings");
+            setMobileSidebarOpen(false);
+          }}
+          onSignOut={logout}
+        />
+      )}
+    >
         {activeView === "office" && (
           <section className="office-view" aria-label="Teamora AI Office">
             {selectedOfficeTeamPayload ? (
@@ -1674,7 +1564,7 @@ export default function DashboardPage() {
                 <iframe
                   ref={officeFrameRef}
                   className="office-full-frame"
-                  src="/office/index.html?embed=dashboard&theme=dark"
+                  src="/office/index.html?embed=dashboard"
                   title="Business AI office"
                   onLoad={() => {
                     sendOfficeTeam(selectedOfficeTeamPayload, activeConversation);
@@ -1950,86 +1840,57 @@ export default function DashboardPage() {
 
         {activeView === "settings" && (
           <section className="dashboard-view settings-view">
-            <div className="view-head">
-              <div>
-                <p className="eyebrow">Account</p>
-                <h1>Settings</h1>
-              </div>
-            </div>
-            <div className="settings-layout">
-              <nav className="settings-tabs" aria-label="Settings sections">
-                {[
-                  { id: "connected" as SettingsTab, label: "Connected Apps", icon: Plug },
-                  { id: "billing" as SettingsTab, label: "Billing", icon: CreditCard }
-                ].map((tab) => {
-                  const Icon = tab.icon;
-                  return (
-                    <button
-                      className={settingsTab === tab.id ? "active" : ""}
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setSettingsTab(tab.id)}
-                    >
-                      <Icon size={17} />
-                      {tab.label}
-                    </button>
-                    );
-                  })}
-              </nav>
-              <div className="settings-panel">
-                {renderSettingsPanel({
-                  tab: settingsTab,
-                  billingStatus,
-                  billingLoading,
-                  billingError,
-                  telegramBotToken,
-                  setTelegramBotToken,
-                  telegramBotTarget,
-                  setTelegramBotTarget,
-                  telegramBotConnected,
-                  telegramBotStatus,
-                  instagramConnected,
-                  instagramStatus,
-                  connectedApps,
-                  connectedAppsSearch,
-                  setConnectedAppsSearch,
-                  connectedAppsFilter,
-                  setConnectedAppsFilter,
-                  configuringConnectedApp,
-                  setConfiguringConnectedApp,
-                  manualSecretValues,
-                  manualSecretStatus,
-                  oauthConnectingApps,
-                  connectedAppErrors,
-                  shopifyConnectOpen,
-                  setShopifyConnectOpen,
-                  shopifyShopDomain,
-                  setShopifyShopDomain,
-                  setManualSecret,
-                  connectTelegram,
-                  connectOAuthProvider,
-                  connectManualSecretProvider,
-                  disconnectConnectedApp,
-                  loadIntegrations
-                })}
-              </div>
-            </div>
+            {renderSettingsPanel({
+              tab: settingsTab,
+              user,
+              teamsCount: teamsLoaded ? apiTeams.length : null,
+              agentsCount: teamsLoaded ? apiTeams.reduce((total, team) => total + team.agentsCount, 0) : null,
+              billingStatus,
+              billingLoading,
+              billingError,
+              telegramBotToken,
+              setTelegramBotToken,
+              telegramBotTarget,
+              setTelegramBotTarget,
+              telegramBotConnected,
+              telegramBotStatus,
+              instagramConnected,
+              instagramStatus,
+              connectedApps,
+              connectedAppsLoading,
+              connectedAppsError,
+              connectedAppsSearch,
+              setConnectedAppsSearch,
+              connectedAppsFilter,
+              setConnectedAppsFilter,
+              configuringConnectedApp,
+              setConfiguringConnectedApp,
+              manualSecretValues,
+              manualSecretStatus,
+              oauthConnectingApps,
+              connectedAppErrors,
+              shopifyConnectOpen,
+              setShopifyConnectOpen,
+              shopifyShopDomain,
+              setShopifyShopDomain,
+              setManualSecret,
+              connectTelegram,
+              connectOAuthProvider,
+              connectManualSecretProvider,
+              disconnectConnectedApp,
+              loadIntegrations
+            })}
           </section>
         )}
 
         {activeView === "support" && (
           <section className="dashboard-view support-view">
             <div className="support-top">
-              <div className="support-title">
-                <span className="support-icon">
-                  <LifeBuoy size={24} />
-                </span>
-                <div>
-                  <h1>Support</h1>
-                  <p>Describe your issue - we read every one.</p>
-                </div>
+              <div className="page-heading">
+                <h1>Support</h1>
+                <p>Describe your issue — we read every one.</p>
               </div>
-              <button className="button" type="button" onClick={() => setActiveView("my-teams")}>
+              <button className="secondary-button" type="button" onClick={() => setActiveView("my-teams")}>
                 <ArrowLeft size={15} /> Back to list
               </button>
             </div>
@@ -2038,23 +1899,29 @@ export default function DashboardPage() {
               <ArrowLeft size={15} /> Back to team setup
             </button>
 
-            <div className="support-contact-row">
-              <a className="support-contact" href="mailto:support@teamorai.uz">
-                <Mail size={20} />
-                <span>
-                  <small>Email</small>
-                  support@teamorai.uz
-                </span>
-              </a>
+            <p className="section-label">Contact us</p>
+            <div className="support-contact-grid">
+              <SupportContactCard
+                icon={Mail}
+                title="Email"
+                description="Send us an email and we'll get back to you as soon as possible."
+                action="support@teamorai.uz"
+                href="mailto:support@teamorai.uz"
+              />
+              <SupportContactCard
+                icon={Send}
+                title="Telegram Group"
+                description={SUPPORT_TELEGRAM_URL ? "Join our Telegram group for updates and community support." : "The public Telegram support link has not been configured yet."}
+                action={SUPPORT_TELEGRAM_URL ? "Join Telegram Group" : "Telegram unavailable"}
+                href={SUPPORT_TELEGRAM_URL || undefined}
+                external={Boolean(SUPPORT_TELEGRAM_URL)}
+              />
             </div>
-
-            <p className="support-note">
-              Send the issue, affected workspace and reproduction steps by email. The support team will reply to you there.
-            </p>
+            <p className="section-label">Send us a message</p>
+            <SupportForm userEmail={user?.email || ""} />
           </section>
         )}
-      </section>
-    </main>
+    </DashboardLayout>
   );
 }
 
@@ -2317,6 +2184,9 @@ function TeamDetailsModal({ team, onClose, onHire }: { team: TeamCardData; onClo
 
 function renderSettingsPanel({
   tab,
+  user,
+  teamsCount,
+  agentsCount,
   billingStatus,
   billingLoading,
   billingError,
@@ -2329,6 +2199,8 @@ function renderSettingsPanel({
   instagramConnected,
   instagramStatus,
   connectedApps,
+  connectedAppsLoading,
+  connectedAppsError,
   connectedAppsSearch,
   setConnectedAppsSearch,
   connectedAppsFilter,
@@ -2351,6 +2223,9 @@ function renderSettingsPanel({
   loadIntegrations
 }: {
   tab: SettingsTab;
+  user: UserData | null;
+  teamsCount: number | null;
+  agentsCount: number | null;
   billingStatus: BillingStatus | null;
   billingLoading: boolean;
   billingError: string;
@@ -2363,6 +2238,8 @@ function renderSettingsPanel({
   instagramConnected: boolean;
   instagramStatus: string;
   connectedApps: ConnectedAppsData | null;
+  connectedAppsLoading: boolean;
+  connectedAppsError: string;
   connectedAppsSearch: string;
   setConnectedAppsSearch: (value: string) => void;
   connectedAppsFilter: ConnectedAppsFilter;
@@ -2384,6 +2261,46 @@ function renderSettingsPanel({
   disconnectConnectedApp: (providerKey: string) => void | Promise<void>;
   loadIntegrations: () => void | Promise<void>;
 }) {
+  if (tab === "profile") {
+    const displayName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || "Teamora user";
+    return (
+      <section className="profile-page" aria-labelledby="profile-title">
+        <header className="page-heading">
+          <h1 id="profile-title">Profile</h1>
+          <p>Your Teamora account details.</p>
+        </header>
+        <div className="profile-stack">
+          <article className="profile-card">
+            <span className="profile-avatar">
+              {user?.avatar_url ? <img src={user.avatar_url} alt="" /> : displayName.slice(0, 1).toUpperCase()}
+            </span>
+            <div className="profile-copy">
+              <h2>{displayName}</h2>
+              <p>{user?.email || "No email available"}</p>
+            </div>
+            <dl className="profile-details">
+              <div><dt>First name</dt><dd>{user?.first_name || "—"}</dd></div>
+              <div><dt>Last name</dt><dd>{user?.last_name || "—"}</dd></div>
+              <div><dt>Account ID</dt><dd>{user?.id || "—"}</dd></div>
+            </dl>
+            <p className="profile-note">Profile editing is not exposed by the current account API. Your authentication data remains unchanged.</p>
+          </article>
+
+          <article className="profile-appearance-card" aria-labelledby="appearance-title">
+            <div className="profile-appearance-copy">
+              <div>
+                <span className="profile-card-kicker">Appearance</span>
+                <h2 id="appearance-title">Choose your workspace theme</h2>
+              </div>
+              <p>The selected theme is saved on this device and used across Teamora AI.</p>
+            </div>
+            <ThemeToggle labelled />
+          </article>
+        </div>
+      </section>
+    );
+  }
+
   if (tab === "billing") {
     const planLabel = billingLoading
       ? "Loading plan..."
@@ -2391,43 +2308,21 @@ function renderSettingsPanel({
         ? "Plan unavailable"
         : billingStatus?.plan?.name || "No plan";
     const roleLabel = billingLoading || billingError ? "Unavailable" : billingRoleLabel(billingStatus?.role);
-    const billingActionLabel = billingStatus?.plan ? "View plans" : "Explore plans";
     return (
-      <div className="settings-page">
-        <div className="settings-page-head">
-          <h1>Billing</h1>
-          <p>Workspace plan and account access</p>
-        </div>
-        <section className="settings-block">
-          <h2>Current plan</h2>
-          <div className="settings-line">
-            <span>Plan</span>
-            <strong>{planLabel}</strong>
-          </div>
-          <div className="settings-line">
-            <span>Workspace role</span>
-            <strong>{roleLabel}</strong>
-          </div>
-          {billingError && <p role="alert">{billingError}. You can still review the available plans.</p>}
-          <Link className="button solid" href="/pricing">
-            {billingActionLabel}
-          </Link>
-        </section>
-      </div>
+      <BillingSummary
+        planName={planLabel}
+        planCode={billingStatus?.plan?.code}
+        roleLabel={roleLabel}
+        loading={billingLoading}
+        error={billingError}
+        teams={teamsCount}
+        agents={agentsCount}
+      />
     );
   }
 
   if (tab === "connected") {
-    const providerCards: ConnectedProvider[] =
-      connectedApps?.providers ?? [
-        { key: "google", name: "Google", authType: "oauth2", status: "Not Connected", connected: false, connectedAt: null, accounts: [], capabilities: [] },
-        { key: "telegram", name: "Telegram", authType: "bot_token", status: telegramBotConnected ? "Connected" : "Not Connected", connected: telegramBotConnected, connectedAt: null, accounts: [], capabilities: [] },
-        { key: "instagram", name: "Instagram", authType: "meta_oauth2", status: instagramConnected ? "Connected" : "Not Connected", connected: instagramConnected, connectedAt: null, accounts: [], capabilities: [] },
-        { key: "facebook", name: "Facebook", authType: "meta_oauth2", status: "Not Connected", connected: false, connectedAt: null, accounts: [], capabilities: [] },
-        { key: "linkedin", name: "LinkedIn", authType: "oauth2", status: "Not Connected", connected: false, connectedAt: null, accounts: [], capabilities: [] },
-        { key: "youtube", name: "YouTube", authType: "oauth2", status: "Not Connected", connected: false, connectedAt: null, accounts: [], capabilities: [] },
-        { key: "shopify", name: "Shopify", authType: "oauth2", status: "Not Connected", connected: false, connectedAt: null, accounts: [], capabilities: [] }
-      ];
+    const providerCards: ConnectedProvider[] = connectedApps?.providers ?? [];
     const providersByKey = new Map(providerCards.map((provider) => [provider.key, provider]));
     const appCards = buildConnectedAppCards(providersByKey, {
       telegram: Boolean(telegramBotConnected || providersByKey.get("telegram")?.connected),
@@ -2437,7 +2332,7 @@ function renderSettingsPanel({
       instagramStatus,
       connecting: oauthConnectingApps,
       errors: connectedAppErrors
-    });
+    }, connectedApps !== null);
     const connectedCount = appCards.filter((card) => card.connected).length;
     const filteredCards = appCards.filter((card) => {
       const matchesSearch = `${card.title} ${card.description} ${card.capabilities.join(" ")} ${(card.requirements || []).join(" ")}`
@@ -2459,28 +2354,79 @@ function renderSettingsPanel({
       setShopifyConnectOpen(false);
       setShopifyShopDomain("");
     };
+    const integrationGroups = [
+      { title: "Communication", keys: ["gmail", "slack", "telegram", "discord", "instagram", "facebook", "linkedin", "youtube", "tiktok", "x"] },
+      { title: "Productivity", keys: ["airtable", "google-docs", "google-sheets", "linear", "notion", "confluence", "shopify", "dropbox", "onedrive", "zapier"] },
+      { title: "Developer", keys: ["github", "gitlab", "stripe", "openai", "claude"] },
+    ];
+    const renderIntegrationCard = (card: ConnectedAppCardData) => {
+      const isTelegram = card.providerKey === "telegram";
+      const isManual = card.action === "manual";
+      const isSecret = card.action === "secret";
+      const isShopify = card.providerKey === "shopify";
+      const isConfiguring = configuringConnectedApp === card.providerKey;
+      return (
+        <IntegrationCard
+          key={card.key}
+          card={card}
+          token={isTelegram ? telegramBotToken : undefined}
+          onTokenChange={isTelegram ? setTelegramBotToken : undefined}
+          target={isTelegram ? telegramBotTarget : undefined}
+          onTargetChange={isTelegram ? setTelegramBotTarget : undefined}
+          tokenLabel="Bot Token"
+          tokenPlaceholder="Bot Token"
+          targetPlaceholder="Channel / Group Username or ID"
+          configuring={isManual && isConfiguring}
+          onConnect={() => {
+            if (card.action === "disabled") return;
+            setConnectedAppsSearch("");
+            setConnectedAppsFilter("all");
+            if ((isManual || isSecret) && !isConfiguring) {
+              setConfiguringConnectedApp(card.providerKey);
+              return;
+            }
+            if (isTelegram) connectTelegram("bot");
+            else if (isShopify) openShopifyConnect();
+            else connectOAuthProvider(card.providerKey);
+          }}
+          onReconnect={() => {
+            setConnectedAppsSearch("");
+            setConnectedAppsFilter("all");
+            if (isManual || isSecret) {
+              setConfiguringConnectedApp(card.providerKey);
+              return;
+            }
+            if (isShopify) openShopifyConnect();
+            else connectOAuthProvider(card.providerKey);
+          }}
+          onDisconnect={() => {
+            setConfiguringConnectedApp("");
+            disconnectConnectedApp(card.providerKey);
+          }}
+          onCancelConfigure={() => setConfiguringConnectedApp("")}
+        />
+      );
+    };
     return (
       <div className="settings-page connected-apps-page">
         <div className="connected-apps-head">
           <div>
             <h1>Connected Apps</h1>
-            <p>Connect your favorite apps and unlock powerful automation with your AI agents.</p>
-          </div>
-          <div className="connected-head-actions">
-            <section className="connected-summary-card">
-              <span className="connected-summary-icon">
-                <Plug size={18} />
-              </span>
-              <div>
-                <strong>{connectedCount} of {appCards.length} connected</strong>
-                <p>Workspace integrations</p>
-              </div>
-            </section>
-            <button className="connected-refresh-button" type="button" onClick={loadIntegrations}>
-              <Clock size={15} /> Refresh
-            </button>
+            <p>Connect Gmail, Slack, and other tools your agents can use.</p>
           </div>
         </div>
+        <section className="connected-summary-card">
+          <span className="connected-summary-icon">
+            <Plug size={18} />
+          </span>
+          <div className="connected-summary-copy">
+            <strong>{connectedAppsLoading && !connectedApps ? "Checking connection status..." : `${connectedCount} of ${appCards.length} connected`}</strong>
+            <p>{connectedAppsError || (connectedCount === appCards.length ? "All your apps are up to date." : "Workspace integrations")}</p>
+          </div>
+          <button className="connected-refresh-button" type="button" disabled={connectedAppsLoading} onClick={loadIntegrations}>
+            {connectedAppsLoading ? <Loader2 className="spin" size={15} /> : <Clock size={15} />} {connectedAppsLoading ? "Refreshing..." : "Refresh"}
+          </button>
+        </section>
         <div className="connected-toolbar">
           <label className="connected-search">
             <Search size={16} />
@@ -2514,54 +2460,15 @@ function renderSettingsPanel({
           </div>
         </div>
         <div className="connected-app-list">
-          {filteredCards.map((card) => {
-            const isTelegram = card.providerKey === "telegram";
-            const isManual = card.action === "manual";
-            const isSecret = card.action === "secret";
-            const isShopify = card.providerKey === "shopify";
-            const isConfiguring = configuringConnectedApp === card.providerKey;
-            return (
-              <ConnectionCard
-                key={card.key}
-                card={card}
-                token={isTelegram ? telegramBotToken : undefined}
-                setToken={isTelegram ? setTelegramBotToken : undefined}
-                target={isTelegram ? telegramBotTarget : undefined}
-                setTarget={isTelegram ? setTelegramBotTarget : undefined}
-                tokenLabel="Bot Token"
-                tokenPlaceholder="Bot Token"
-                targetPlaceholder="Channel / Group Username or ID"
-                configuring={isManual && isConfiguring}
-                onConnect={() => {
-                  if (card.action === "disabled") return;
-                  setConnectedAppsSearch("");
-                  setConnectedAppsFilter("all");
-                  if ((isManual || isSecret) && !isConfiguring) {
-                    setConfiguringConnectedApp(card.providerKey);
-                    return;
-                  }
-                  if (isTelegram) connectTelegram("bot");
-                  else if (isShopify) openShopifyConnect();
-                  else connectOAuthProvider(card.providerKey);
-                }}
-                onReconnect={() => {
-                  setConnectedAppsSearch("");
-                  setConnectedAppsFilter("all");
-                  if (isManual || isSecret) {
-                    setConfiguringConnectedApp(card.providerKey);
-                    return;
-                  }
-                  if (isShopify) openShopifyConnect();
-                  else connectOAuthProvider(card.providerKey);
-                }}
-                onDisconnect={() => {
-                  setConfiguringConnectedApp("");
-                  disconnectConnectedApp(card.providerKey);
-                }}
-                onCancelConfigure={() => setConfiguringConnectedApp("")}
-              />
-            );
+          {integrationGroups.map((group) => {
+            const cards = filteredCards.filter((card) => group.keys.includes(card.key));
+            return cards.length ? (
+              <IntegrationSection title={group.title} key={group.title}>
+                {cards.map(renderIntegrationCard)}
+              </IntegrationSection>
+            ) : null;
           })}
+          {!filteredCards.length ? <p className="integration-empty">No apps match your search and filter.</p> : null}
         </div>
         <section className="connected-security">
           <span className="connected-security-icon">
@@ -2664,7 +2571,8 @@ function buildConnectedAppCards(
     instagramStatus: string;
     connecting: Record<string, boolean>;
     errors: Record<string, string>;
-  }
+  },
+  statusAvailable: boolean,
 ): ConnectedAppCardData[] {
   const providerConnected = (key: string) => {
     if (key === "telegram") return overrides.telegram;
@@ -2673,11 +2581,23 @@ function buildConnectedAppCards(
   };
   const connectedAt = (key: string) => providers.get(key)?.connectedAt || null;
   const connectionState = (key: string) => {
+    if (!statusAvailable || !providers.has(key)) return "unavailable";
     if (overrides.connecting[key]) return "connecting";
     if (overrides.errors[key]) return "error";
     return providers.get(key)?.connectionState || (providerConnected(key) ? "connected" : "not_connected");
   };
   const connectionError = (key: string) => overrides.errors[key] || providers.get(key)?.lastError || undefined;
+  const capabilityConnected = (providerKey: string, prefixes: string[]) => {
+    const provider = providers.get(providerKey);
+    if (!provider?.connected) return false;
+    const providerGrant = provider.capabilities.some((capability) =>
+      capability.granted && prefixes.some((prefix) => capability.key.startsWith(prefix))
+    );
+    const accountGrant = provider.accounts.some((account) =>
+      account.grantedCapabilities?.some((capability) => prefixes.some((prefix) => capability.startsWith(prefix)))
+    );
+    return providerGrant || accountGrant;
+  };
   const googleAccount = firstConnectedAccount(providers, "google");
   const telegramAccount = firstConnectedAccount(providers, "telegram");
   const instagramAccount = firstConnectedAccount(providers, "instagram");
@@ -2693,17 +2613,49 @@ function buildConnectedAppCards(
   const youtubeChannel = accountValue(youtubeAccount);
   const catalogCards: ConnectedAppCardData[] = [
     {
-      key: "google",
+      key: "gmail",
       providerKey: "google",
-      title: "Google Workspace",
-      description: "Connect Google Workspace so agents can work with email, calendar, files, docs, and spreadsheets.",
-      capabilities: ["Gmail", "Drive", "Docs", "Sheets", "Calendar", "Gmail Send", "CRM"],
+      title: "Gmail",
+      description: "Read, search, draft, and send approved Gmail messages through your Google Workspace connection.",
+      capabilities: ["Read", "Search", "Draft", "Approved send"],
       logo: "G",
-      logoUrl: "https://cdn.simpleicons.org/google",
+      logoUrl: "/images/providers/gmail.svg",
       logoTone: "google",
-      connected: providerConnected("google"),
+      connected: capabilityConnected("google", ["gmail."]),
       connectedAt: connectedAt("google"),
-      connectedLabel: "Connected as",
+      connectedLabel: "Google account",
+      connectedValue: accountValue(googleAccount),
+      connectLabel: "Connect with Google",
+      action: "oauth"
+    },
+    {
+      key: "google-docs",
+      providerKey: "google",
+      title: "Google Docs",
+      description: "Create, read, and edit documents using the existing Google Workspace authorization.",
+      capabilities: ["Create", "Read", "Edit"],
+      logo: "D",
+      logoUrl: "/images/providers/google-docs.svg",
+      logoTone: "google",
+      connected: capabilityConnected("google", ["docs."]),
+      connectedAt: connectedAt("google"),
+      connectedLabel: "Google account",
+      connectedValue: accountValue(googleAccount),
+      connectLabel: "Connect with Google",
+      action: "oauth"
+    },
+    {
+      key: "google-sheets",
+      providerKey: "google",
+      title: "Google Sheets",
+      description: "Create and update spreadsheets and CRM data with the same Google connection.",
+      capabilities: ["Create", "Read", "Update"],
+      logo: "S",
+      logoUrl: "/images/providers/google-sheets.svg",
+      logoTone: "google",
+      connected: capabilityConnected("google", ["sheets."]),
+      connectedAt: connectedAt("google"),
+      connectedLabel: "Google account",
       connectedValue: accountValue(googleAccount),
       connectLabel: "Connect with Google",
       action: "oauth"
@@ -2715,7 +2667,7 @@ function buildConnectedAppCards(
       description: "Connect a Telegram bot to publish approved messages to your channel or group.",
       capabilities: ["Messages", "Photos", "Videos", "Schedule", "Groups"],
       logo: "T",
-      logoUrl: "https://cdn.simpleicons.org/telegram",
+      logoUrl: "/images/providers/telegram.svg",
       logoTone: "telegram",
       connected: providerConnected("telegram"),
       connectedAt: connectedAt("telegram"),
@@ -2733,7 +2685,7 @@ function buildConnectedAppCards(
       description: "Connect Instagram so agents can prepare posts, comments, stories, reels, and campaign follow-up.",
       capabilities: ["Images", "Reels", "Stories", "Carousels", "Comments", "Insights"],
       logo: "I",
-      logoUrl: "https://cdn.simpleicons.org/instagram",
+      logoUrl: "/images/providers/instagram.svg",
       logoTone: "instagram",
       connected: providerConnected("instagram"),
       connectedAt: connectedAt("instagram"),
@@ -2751,7 +2703,7 @@ function buildConnectedAppCards(
       description: "Connect a Facebook Page for publishing, comments, videos, and Messenger workflows.",
       capabilities: ["Posts", "Photos", "Videos", "Comments"],
       logo: "f",
-      logoUrl: "https://cdn.simpleicons.org/facebook",
+      logoUrl: "/images/providers/facebook.svg",
       logoTone: "facebook",
       connected: providerConnected("facebook"),
       connectedAt: connectedAt("facebook"),
@@ -2767,7 +2719,7 @@ function buildConnectedAppCards(
       description: "Connect LinkedIn to publish company or member updates and review performance signals.",
       capabilities: ["Posts", "Images", "Analytics", "Company"],
       logo: "in",
-      logoUrl: "https://cdn.jsdelivr.net/npm/simple-icons@v13/icons/linkedin.svg",
+      logoUrl: "/images/providers/linkedin.svg",
       logoTone: "linkedin",
       connected: providerConnected("linkedin"),
       connectedAt: connectedAt("linkedin"),
@@ -2784,7 +2736,7 @@ function buildConnectedAppCards(
       description: "Connect a YouTube channel for source-backed research and owned-channel analytics. Publishing is an explicit permission upgrade.",
       capabilities: ["Research", "Channel analytics", "Approved upload"],
       logo: "YT",
-      logoUrl: "https://cdn.simpleicons.org/youtube",
+      logoUrl: "/images/providers/youtube.svg",
       logoTone: "youtube",
       connected: providerConnected("youtube"),
       connectedAt: connectedAt("youtube"),
@@ -2800,7 +2752,7 @@ function buildConnectedAppCards(
       description: "Connect Shopify to sync products, orders, customers, inventory, and storefront workflows.",
       capabilities: ["Products", "Orders", "Customers", "Inventory", "Discounts", "Analytics"],
       logo: "S",
-      logoUrl: "https://cdn.simpleicons.org/shopify",
+      logoUrl: "/images/providers/shopify.svg",
       logoTone: "shopify",
       connected: providerConnected("shopify"),
       connectedAt: connectedAt("shopify"),
@@ -2812,13 +2764,69 @@ function buildConnectedAppCards(
   ];
   const extraCatalogCards: ConnectedAppCardData[] = [
     {
+      key: "airtable",
+      providerKey: "airtable",
+      title: "Airtable",
+      description: "Create, list, update, and delete Airtable records when backend support becomes available.",
+      capabilities: ["Records", "Tables", "Views"],
+      logo: "A",
+      logoUrl: "/images/providers/airtable.svg",
+      logoTone: "airtable",
+      connected: false,
+      connectedAt: null,
+      connectLabel: "Unavailable",
+      action: "disabled"
+    },
+    {
+      key: "linear",
+      providerKey: "linear",
+      title: "Linear",
+      description: "Coordinate issues, teams, and projects when the Linear connector is enabled.",
+      capabilities: ["Issues", "Teams", "Projects"],
+      logo: "L",
+      logoUrl: "/images/providers/linear.svg",
+      logoTone: "linear",
+      connected: false,
+      connectedAt: null,
+      connectLabel: "Unavailable",
+      action: "disabled"
+    },
+    {
+      key: "confluence",
+      providerKey: "confluence",
+      title: "Confluence",
+      description: "Search and update team knowledge after a Confluence backend connector is configured.",
+      capabilities: ["Spaces", "Pages", "Knowledge"],
+      logo: "C",
+      logoUrl: "/images/providers/confluence.svg",
+      logoTone: "confluence",
+      connected: false,
+      connectedAt: null,
+      connectLabel: "Unavailable",
+      action: "disabled"
+    },
+    {
+      key: "gitlab",
+      providerKey: "gitlab",
+      title: "GitLab",
+      description: "Manage projects, issues, and merge requests after GitLab support is enabled.",
+      capabilities: ["Projects", "Issues", "Merge requests"],
+      logo: "GL",
+      logoUrl: "/images/providers/gitlab.svg",
+      logoTone: "gitlab",
+      connected: false,
+      connectedAt: null,
+      connectLabel: "Unavailable",
+      action: "disabled"
+    },
+    {
       key: "tiktok",
       providerKey: "tiktok",
       title: "TikTok",
       description: "Connect TikTok to plan short-form video publishing, comments, trends, and campaign analytics.",
       capabilities: ["Videos", "Comments", "Trends", "Analytics", "Scheduling"],
       logo: "T",
-      logoUrl: "https://cdn.simpleicons.org/tiktok",
+      logoUrl: "/images/providers/tiktok.svg",
       logoTone: "tiktok",
       connected: providerConnected("tiktok"),
       connectedAt: connectedAt("tiktok"),
@@ -2834,7 +2842,7 @@ function buildConnectedAppCards(
       description: "Connect X to draft posts, monitor replies, track mentions, and coordinate brand activity.",
       capabilities: ["Posts", "Replies", "Mentions", "Analytics"],
       logo: "X",
-      logoUrl: "https://cdn.simpleicons.org/x",
+      logoUrl: "/images/providers/x.svg",
       logoTone: "x",
       connected: providerConnected("x"),
       connectedAt: connectedAt("x"),
@@ -2850,7 +2858,7 @@ function buildConnectedAppCards(
       description: "Connect a Discord account to identify the user and view servers they can access. Channel posting needs a separate bot or webhook installation.",
       capabilities: ["Profile", "Email", "Servers"],
       logo: "D",
-      logoUrl: "https://cdn.simpleicons.org/discord",
+      logoUrl: "/images/providers/discord.svg",
       logoTone: "discord",
       connected: providerConnected("discord"),
       connectedAt: connectedAt("discord"),
@@ -2866,7 +2874,7 @@ function buildConnectedAppCards(
       description: "Connect Slack to route internal updates, approvals, alerts, and agent handoffs.",
       capabilities: ["Channels", "Alerts", "Approvals", "Threads"],
       logo: "S",
-      logoUrl: "https://cdn.simpleicons.org/slack",
+      logoUrl: "/images/providers/slack.svg",
       logoTone: "slack",
       connected: providerConnected("slack"),
       connectedAt: connectedAt("slack"),
@@ -2882,7 +2890,7 @@ function buildConnectedAppCards(
       description: "Connect Notion to sync docs, tasks, CRM databases, briefs, and team knowledge.",
       capabilities: ["Docs", "Databases", "Tasks", "Knowledge"],
       logo: "N",
-      logoUrl: "https://cdn.simpleicons.org/notion",
+      logoUrl: "/images/providers/notion.svg",
       logoTone: "notion",
       connected: providerConnected("notion"),
       connectedAt: connectedAt("notion"),
@@ -2898,7 +2906,7 @@ function buildConnectedAppCards(
       description: "Connect GitHub to inspect repos, issues, pull requests, releases, and engineering activity.",
       capabilities: ["Repos", "Issues", "Pull Requests", "Releases"],
       logo: "GH",
-      logoUrl: "https://cdn.simpleicons.org/github",
+      logoUrl: "/images/providers/github.svg",
       logoTone: "github",
       connected: providerConnected("github"),
       connectedAt: connectedAt("github"),
@@ -2914,7 +2922,7 @@ function buildConnectedAppCards(
       description: "Connect Dropbox to search files, organize folders, share assets, and build knowledge bases.",
       capabilities: ["Files", "Folders", "Sharing", "Search"],
       logo: "D",
-      logoUrl: "https://cdn.simpleicons.org/dropbox",
+      logoUrl: "/images/providers/dropbox.svg",
       logoTone: "dropbox",
       connected: providerConnected("dropbox"),
       connectedAt: connectedAt("dropbox"),
@@ -2930,7 +2938,7 @@ function buildConnectedAppCards(
       description: "Connect OneDrive to sync Microsoft files, folders, documents, and team resources.",
       capabilities: ["Files", "Folders", "Docs", "Sharing"],
       logo: "OD",
-      logoUrl: "https://cdn.simpleicons.org/microsoftonedrive",
+      logoUrl: "/images/providers/microsoftonedrive.svg",
       logoTone: "onedrive",
       connected: providerConnected("onedrive"),
       connectedAt: connectedAt("onedrive"),
@@ -2946,7 +2954,7 @@ function buildConnectedAppCards(
       description: "Connect Stripe to review payments, subscriptions, customers, invoices, and revenue signals.",
       capabilities: ["Payments", "Customers", "Invoices", "Revenue"],
       logo: "S",
-      logoUrl: "https://cdn.simpleicons.org/stripe",
+      logoUrl: "/images/providers/stripe.svg",
       logoTone: "stripe",
       connected: providerConnected("stripe"),
       connectedAt: connectedAt("stripe"),
@@ -2962,7 +2970,7 @@ function buildConnectedAppCards(
       description: "Connect OpenAI to manage AI workflows, prompts, automation outputs, and model-powered tools.",
       capabilities: ["Models", "Prompts", "Tools", "Automation"],
       logo: "AI",
-      logoUrl: "https://cdn.simpleicons.org/openai",
+      logoUrl: "/images/providers/openai.svg",
       logoTone: "openai",
       connected: providerConnected("openai"),
       connectedAt: connectedAt("openai"),
@@ -2978,7 +2986,7 @@ function buildConnectedAppCards(
       description: "Connect Claude to coordinate AI writing, research, reasoning, and team assistant workflows.",
       capabilities: ["Models", "Writing", "Research", "Reasoning"],
       logo: "C",
-      logoUrl: "https://cdn.simpleicons.org/claude",
+      logoUrl: "/images/providers/claude.svg",
       logoTone: "claude",
       connected: providerConnected("claude"),
       connectedAt: connectedAt("claude"),
@@ -2994,7 +3002,7 @@ function buildConnectedAppCards(
       description: "Connect Zapier to trigger cross-app automations, webhooks, tasks, and operational workflows.",
       capabilities: ["Zaps", "Webhooks", "Tasks", "Automation"],
       logo: "Z",
-      logoUrl: "https://cdn.simpleicons.org/zapier",
+      logoUrl: "/images/providers/zapier.svg",
       logoTone: "zapier",
       connected: providerConnected("zapier"),
       connectedAt: connectedAt("zapier"),
@@ -3004,12 +3012,18 @@ function buildConnectedAppCards(
       action: "secret"
     },
   ];
-  return [...catalogCards, ...extraCatalogCards].map((card) => ({
-    ...card,
-    connectionState: connectionState(card.providerKey),
-    errorMessage: connectionError(card.providerKey),
-    runtimeState: providers.get(card.providerKey)?.runtimeState,
-  }));
+  return [...catalogCards, ...extraCatalogCards].map((card) => {
+    const providerExists = providers.has(card.providerKey);
+    const state = connectionState(card.providerKey);
+    const scopedGoogleCard = ["gmail", "google-docs", "google-sheets"].includes(card.key);
+    return {
+      ...card,
+      action: providerExists ? card.action : "disabled",
+      connectionState: scopedGoogleCard && state === "connected" && !card.connected ? "reconnect_required" : state,
+      errorMessage: providerExists ? connectionError(card.providerKey) : undefined,
+      runtimeState: providers.get(card.providerKey)?.runtimeState,
+    };
+  });
 }
 
 function ApiKeyConnectModal({
@@ -3161,212 +3175,5 @@ function ShopifyConnectModal({
         </form>
       </section>
     </div>
-  );
-}
-
-function ConnectionCard({
-  card,
-  token,
-  setToken,
-  target,
-  setTarget,
-  tokenLabel,
-  tokenPlaceholder,
-  targetPlaceholder,
-  statusText,
-  configuring,
-  onConnect,
-  onReconnect,
-  onDisconnect,
-  onCancelConfigure
-}: {
-  card: ConnectedAppCardData;
-  token?: string;
-  setToken?: (value: string) => void;
-  target?: string;
-  setTarget?: (value: string) => void;
-  tokenLabel?: string;
-  tokenPlaceholder?: string;
-  targetPlaceholder?: string;
-  statusText?: string;
-  configuring?: boolean;
-  onConnect?: () => void;
-  onReconnect?: () => void;
-  onDisconnect?: () => void;
-  onCancelConfigure?: () => void;
-}) {
-  const isTokenCard = Boolean(setToken && onConnect);
-  const canSubmitToken = !isTokenCard || Boolean(token && token.trim().length >= (setTarget ? 9 : 6) && (!setTarget || target));
-  const normalizedState = card.connectionState || (card.connected ? "connected" : "not_connected");
-  const statusLabel =
-    normalizedState === "connecting"
-      ? "Connecting"
-      : normalizedState === "connected"
-        ? "Connected"
-        : normalizedState === "expired"
-          ? "Expired"
-          : normalizedState === "reconnect_required"
-            ? "Reconnect Required"
-            : normalizedState === "error"
-              ? "Error"
-              : normalizedState === "unavailable"
-                ? "Unavailable"
-                : "Not connected";
-  const statusTone =
-    normalizedState === "connected"
-      ? "connected"
-      : normalizedState === "connecting"
-        ? "connecting"
-        : normalizedState === "expired" || normalizedState === "reconnect_required" || normalizedState === "unavailable"
-          ? "warning"
-          : normalizedState === "error"
-            ? "error"
-            : "";
-  const isConnecting = normalizedState === "connecting";
-  const isUnavailable = normalizedState === "unavailable";
-  const needsReconnect = normalizedState === "expired" || normalizedState === "reconnect_required" || normalizedState === "error";
-  const primaryConnectLabel = isUnavailable
-    ? "Unavailable"
-    : isConnecting
-      ? "Connecting..."
-      : needsReconnect && card.action === "oauth" ? "Reconnect" : card.connectLabel;
-  const shouldShowAccount = Boolean(card.connectedValue && (card.connected || needsReconnect));
-  const visibleCapabilities = card.capabilities.slice(0, 4);
-  const extraCapabilities = Math.max(card.capabilities.length - visibleCapabilities.length, 0);
-  return (
-    <article className="connected-card">
-      <div className="connected-card-top">
-        <span className={`app-logo app-logo-${card.logoTone}`}>
-          <img
-            src={card.logoUrl}
-            alt=""
-            onError={(event) => {
-              event.currentTarget.style.display = "none";
-              const fallback = event.currentTarget.nextElementSibling as HTMLElement | null;
-              if (fallback) fallback.style.display = "inline";
-            }}
-          />
-          <span>{card.logo}</span>
-        </span>
-        <div className="connected-card-title">
-          <h2>{card.title}</h2>
-          <span className={`connected-status-pill ${statusTone}`}>
-            {statusLabel}
-          </span>
-        </div>
-      </div>
-      <div className="connected-card-main">
-        <p>{card.description}</p>
-        {card.runtimeState === "connection_only" && (
-          <small className="connected-runtime-note">
-            {card.connected
-              ? "Connected for account access; agent actions are not available yet."
-              : "Account connection is available; agent actions are not available yet."}
-          </small>
-        )}
-        {card.requirements && card.requirements.length > 0 && !card.connected && (
-          <div className="requirement-list" aria-label={`${card.title} requirements`}>
-            <strong>Requirements</strong>
-            <div>
-              {card.requirements.map((requirement) => (
-                <span key={requirement}>{requirement}</span>
-              ))}
-            </div>
-          </div>
-        )}
-        <div className="capability-list">
-          {visibleCapabilities.map((tag) => (
-            <span key={tag}>{tag}</span>
-          ))}
-          {extraCapabilities > 0 && <span>+{extraCapabilities}</span>}
-        </div>
-        {card.errorMessage && !configuring && <small className="connected-card-error">{card.errorMessage}</small>}
-        {configuring && isTokenCard && (
-          <div className="connection-fields">
-            <label>
-              <span>{tokenLabel || "Token"}</span>
-              <input
-                type="password"
-                name={`rebly-${card.providerKey}-token`}
-                value={token}
-                onChange={(event) => setToken?.(event.target.value)}
-                placeholder={tokenPlaceholder || "Bot Token"}
-                autoComplete="new-password"
-                autoCorrect="off"
-                spellCheck={false}
-              />
-            </label>
-            {setTarget && (
-              <label>
-                <span>Channel / Group Username or ID</span>
-                <input
-                  type="text"
-                  name={`rebly-${card.providerKey}-target`}
-                  value={target}
-                  onChange={(event) => setTarget(event.target.value)}
-                  placeholder={targetPlaceholder || "@channel or chat id"}
-                  disabled={false}
-                  autoComplete="off"
-                  autoCorrect="off"
-                  spellCheck={false}
-                />
-              </label>
-            )}
-            {(statusText || card.statusDetail) && <small>{statusText || card.statusDetail}</small>}
-          </div>
-        )}
-      </div>
-      {shouldShowAccount && (
-        <div className="connected-account-cell">
-          <div className="connected-account" data-initial={(card.connectedValue || card.title).slice(0, 1).toUpperCase()}>
-            <strong>{card.connectedLabel}</strong>
-            <span>{card.connectedValue}</span>
-            {card.connectedAt && <small>{formatConnectedDate(card.connectedAt)}</small>}
-            {card.connectedDetails?.map((detail) => (
-              <div className="connected-account-detail" key={`${detail.label}-${detail.value}`}>
-                <strong>{detail.label}</strong>
-                <span>{detail.value}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      <div className="connected-actions">
-        {configuring && isTokenCard ? (
-          <>
-            <button
-              className="button solid connect-button"
-              type="button"
-              onClick={onConnect}
-              disabled={!canSubmitToken || isConnecting}
-            >
-              {card.connectLabel}
-            </button>
-            <button className="button connect-button" type="button" onClick={onCancelConfigure}>
-              Cancel
-            </button>
-          </>
-        ) : card.connected ? (
-          <>
-            <button className="button connect-button" type="button" onClick={onReconnect}>
-              {card.action === "oauth" ? "Reconnect" : "Manage"}
-            </button>
-            <button className="button danger-button connect-button" type="button" onClick={onDisconnect}>
-              Disconnect
-            </button>
-          </>
-        ) : (
-            <button
-            className="button solid connect-button"
-            type="button"
-            onClick={onConnect}
-            aria-disabled={card.action === "disabled"}
-            disabled={isConnecting || isUnavailable}
-          >
-            {primaryConnectLabel}
-          </button>
-        )}
-      </div>
-    </article>
   );
 }

@@ -4,6 +4,8 @@ import Link from "next/link";
 import { ArrowRight, Menu, X } from "lucide-react";
 import { useState } from "react";
 
+import { ThemeToggle } from "@/components/theme/ThemeToggle";
+
 import styles from "./page.module.css";
 
 const brandColumns = [
@@ -54,6 +56,7 @@ function Header() {
       </Link>
 
       <div className={styles.headerActions}>
+        <ThemeToggle />
         <Link className={styles.loginLink} href="/auth?mode=login">
           Log in
         </Link>

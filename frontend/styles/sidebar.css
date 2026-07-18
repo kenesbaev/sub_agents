@@ -1,0 +1,431 @@
+.sidebar {
+  position: sticky;
+  z-index: 50;
+  top: 0;
+  display: flex;
+  width: var(--sidebar-width);
+  height: 100vh;
+  min-height: 0;
+  flex-direction: column;
+  padding: 16px 14px;
+  overflow: visible;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  transition: width 180ms ease, transform 180ms ease;
+}
+
+.sidebar.collapsed {
+  width: var(--sidebar-collapsed);
+  padding-inline: 8px;
+}
+
+.sidebar-top {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.dash-brand {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.dash-brand b {
+  color: var(--primary);
+  font-weight: inherit;
+}
+
+.dash-logo {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
+.sidebar-toggle {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.sidebar-toggle:hover {
+  border-color: var(--border);
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.new-team-button {
+  display: grid;
+  width: 100%;
+  min-height: 42px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: 12px;
+  padding: 0 13px;
+  background: linear-gradient(135deg, #3b82f6, #6d3df2);
+  box-shadow: 0 8px 18px rgba(79, 70, 229, 0.2);
+  color: #fff;
+  font: inherit;
+  font-weight: 750;
+  text-align: left;
+  cursor: pointer;
+}
+
+.new-team-button:hover {
+  box-shadow: 0 10px 22px rgba(79, 70, 229, 0.26);
+  transform: translateY(-1px);
+}
+
+.side-nav {
+  display: grid;
+  gap: 4px;
+  margin-top: 18px;
+}
+
+.side-link {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 10px;
+  padding: 0 11px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.side-link::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--primary);
+  content: "";
+  opacity: 0;
+}
+
+.side-link:hover {
+  background: color-mix(in srgb, var(--primary) 6%, var(--surface));
+  color: var(--primary);
+}
+
+.side-link.active {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.side-link.active::before {
+  opacity: 1;
+}
+
+.side-link svg,
+.side-link-label {
+  flex: 0 0 auto;
+}
+
+.side-link-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-link-badge {
+  margin-left: auto;
+}
+
+.sidebar-settings {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-dropdown {
+  width: 100%;
+}
+
+.settings-dropdown-trigger .settings-chevron {
+  margin-left: auto;
+  transition: transform 170ms ease;
+}
+
+.settings-dropdown.open .settings-chevron {
+  transform: rotate(180deg);
+}
+
+.settings-dropdown-menu {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 180ms ease, opacity 150ms ease;
+}
+
+.settings-dropdown.open .settings-dropdown-menu {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.settings-dropdown-inner {
+  display: grid;
+  min-height: 0;
+  gap: 3px;
+  overflow: hidden;
+  padding: 0 0 0 12px;
+}
+
+.settings-dropdown.open .settings-dropdown-inner {
+  padding-top: 5px;
+}
+
+.settings-nested-link {
+  position: relative;
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: 9px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-nested-link:hover,
+.settings-nested-link.active {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.settings-nested-link i {
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+.sidebar-bottom {
+  display: grid;
+  gap: 4px;
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-upgrade-link {
+  color: var(--primary-2);
+}
+
+.account-menu {
+  position: relative;
+  margin-top: 8px;
+}
+
+.account-button {
+  display: grid;
+  width: 100%;
+  min-height: 62px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  padding: 8px 9px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.account-button:hover {
+  border-color: color-mix(in srgb, var(--primary) 22%, var(--border));
+  background: var(--surface-soft);
+}
+
+.account-avatar {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #dbeafe, #ede9fe);
+  color: var(--primary);
+  font-weight: 800;
+}
+
+.account-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.account-copy {
+  min-width: 0;
+}
+
+.account-copy strong,
+.account-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-copy strong {
+  font-size: 12.5px;
+}
+
+.account-copy small {
+  margin-top: 1px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.account-chevron {
+  color: var(--text-muted);
+  transition: transform 160ms ease;
+}
+
+.account-menu.open .account-chevron {
+  transform: rotate(180deg);
+}
+
+.account-popover {
+  position: absolute;
+  z-index: 80;
+  right: 0;
+  bottom: calc(100% + 8px);
+  left: 0;
+  display: grid;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.account-menu.open .account-popover {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.account-popover button {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 9px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.account-popover button:hover {
+  background: var(--surface-soft);
+}
+
+.account-popover .account-signout {
+  color: var(--danger);
+}
+
+.sidebar.collapsed .dash-brand span,
+.sidebar.collapsed .new-team-button span,
+.sidebar.collapsed .new-team-button svg:last-child,
+.sidebar.collapsed .side-link-label,
+.sidebar.collapsed .settings-chevron,
+.sidebar.collapsed .settings-dropdown-menu,
+.sidebar.collapsed .account-copy,
+.sidebar.collapsed .account-chevron {
+  display: none;
+}
+
+.sidebar.collapsed .sidebar-top {
+  flex-direction: column;
+  min-height: 76px;
+}
+
+.sidebar.collapsed .dash-logo {
+  width: 34px;
+  height: 34px;
+}
+
+.sidebar.collapsed .new-team-button,
+.sidebar.collapsed .side-link,
+.sidebar.collapsed .account-button {
+  display: grid;
+  width: 46px;
+  grid-template-columns: 1fr;
+  place-items: center;
+  padding: 0;
+}
+
+.sidebar.collapsed .new-team-button {
+  margin-inline: auto;
+}
+
+.sidebar.collapsed .account-button {
+  min-height: 48px;
+}
+
+.sidebar.collapsed .account-popover {
+  right: auto;
+  bottom: 0;
+  left: calc(100% + 8px);
+  width: 196px;
+}
+
+.sidebar-signin-link {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+}
+
+.mobile-menu-button,
+.mobile-sidebar-backdrop {
+  display: none;
+}

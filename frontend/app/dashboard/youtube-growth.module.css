@@ -1,14 +1,14 @@
 .panel {
-  --yt-panel: rgba(10, 19, 36, 0.9);
-  --yt-panel-strong: rgba(8, 16, 31, 0.96);
-  --yt-soft: rgba(17, 34, 59, 0.72);
-  --yt-line: rgba(132, 188, 255, 0.16);
-  --yt-line-strong: rgba(69, 203, 255, 0.34);
-  --yt-ink: #f4f8ff;
-  --yt-muted: #9aabc2;
-  --yt-cyan: #24dce9;
-  --yt-blue: #2c83f7;
-  --yt-violet: #6657ff;
+  --yt-panel: #ffffff;
+  --yt-panel-strong: #ffffff;
+  --yt-soft: #f7f8fc;
+  --yt-line: #e5e7ef;
+  --yt-line-strong: #c7d2fe;
+  --yt-ink: #111827;
+  --yt-muted: #667085;
+  --yt-cyan: #4f46e5;
+  --yt-blue: #3b82f6;
+  --yt-violet: #7c3aed;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   width: 100%;
@@ -17,11 +17,78 @@
   overflow: hidden;
   border: 1px solid var(--yt-line);
   border-radius: 22px;
-  background:
-    radial-gradient(circle at 88% -10%, rgba(37, 122, 255, 0.2), transparent 32%),
-    radial-gradient(circle at -8% 45%, rgba(20, 215, 235, 0.08), transparent 29%),
-    linear-gradient(145deg, rgba(4, 13, 29, 0.98), rgba(6, 15, 31, 0.96));
-  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.28);
+  background: #f7f8fc;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
+  color: var(--yt-ink);
+}
+
+:global([data-theme="dark"]) .panel {
+  --yt-panel: #111827;
+  --yt-panel-strong: #151e2d;
+  --yt-soft: #0b1320;
+  --yt-line: #253044;
+  --yt-line-strong: #4e5487;
+  --yt-ink: #f4f6fb;
+  --yt-muted: #9aa6ba;
+  --yt-cyan: #9188ff;
+  --yt-blue: #60a5fa;
+  --yt-violet: #b197fc;
+  background: var(--yt-soft);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.26);
+}
+
+:global([data-theme="dark"]) .header,
+:global([data-theme="dark"]) .tabs {
+  background: color-mix(in srgb, var(--yt-panel) 94%, transparent);
+}
+
+:global([data-theme="dark"]) .youtubeMark,
+:global([data-theme="dark"]) .connectionEmpty > span,
+:global([data-theme="dark"]) .emptyState > span,
+:global([data-theme="dark"]) .resultHero > span,
+:global([data-theme="dark"]) .recommendationIntro > div,
+:global([data-theme="dark"]) .channelCard > span {
+  border-color: var(--yt-line-strong);
+  background: color-mix(in srgb, var(--yt-cyan) 14%, var(--yt-panel));
+  color: var(--yt-cyan);
+}
+
+:global([data-theme="dark"]) .controlCard select,
+:global([data-theme="dark"]) .controlCard input,
+:global([data-theme="dark"]) .secondaryButton,
+:global([data-theme="dark"]) .feedback button,
+:global([data-theme="dark"]) .breakoutList a,
+:global([data-theme="dark"]) .planItem,
+:global([data-theme="dark"]) .copyBlock {
+  border-color: var(--yt-line);
+  background: var(--yt-panel);
+  color: var(--yt-ink);
+}
+
+:global([data-theme="dark"]) .emptyState,
+:global([data-theme="dark"]) .connectionEmpty,
+:global([data-theme="dark"]) .metricsGrid article,
+:global([data-theme="dark"]) .scoreComponents > div,
+:global([data-theme="dark"]) .snapshotCard,
+:global([data-theme="dark"]) .recommendationList > article {
+  border-color: var(--yt-line);
+  background: var(--yt-soft);
+}
+
+:global([data-theme="dark"]) .heading h1,
+:global([data-theme="dark"]) .sectionTitle,
+:global([data-theme="dark"]) .connectionEmpty h2,
+:global([data-theme="dark"]) .resultHero h2,
+:global([data-theme="dark"]) .recommendationIntro h2,
+:global([data-theme="dark"]) .recommendationList h2,
+:global([data-theme="dark"]) .feedback strong,
+:global([data-theme="dark"]) .metricsGrid strong,
+:global([data-theme="dark"]) .compactResult strong,
+:global([data-theme="dark"]) .channelCard strong,
+:global([data-theme="dark"]) .scoreHead strong,
+:global([data-theme="dark"]) .scoreComponents strong,
+:global([data-theme="dark"]) .planItem summary strong,
+:global([data-theme="dark"]) .copyBlock strong {
   color: var(--yt-ink);
 }
 
@@ -33,7 +100,7 @@
   gap: 20px;
   border-bottom: 1px solid var(--yt-line);
   padding: 17px 22px;
-  background: linear-gradient(90deg, rgba(7, 18, 37, 0.9), rgba(8, 23, 47, 0.62));
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .heading {
@@ -49,10 +116,10 @@
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  border: 1px solid rgba(65, 220, 255, 0.24);
-  background: linear-gradient(145deg, rgba(20, 210, 234, 0.16), rgba(61, 99, 255, 0.2));
-  color: #dffbff;
-  box-shadow: 0 12px 30px rgba(9, 116, 221, 0.18);
+  border: 1px solid #d9ddea;
+  background: #f0efff;
+  color: #4f46e5;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
 }
 
 .youtubeMark {
@@ -125,9 +192,9 @@
 .connectionButton {
   min-height: 42px;
   max-width: 280px;
-  border: 1px solid rgba(255, 100, 111, 0.34);
-  background: rgba(90, 25, 39, 0.36);
-  color: #ffc1c8;
+  border: 1px solid #fecaca;
+  background: #fff0f0;
+  color: #dc2626;
   padding: 0 14px;
 }
 
@@ -144,10 +211,10 @@
   align-items: center;
   justify-content: center;
   gap: 7px;
-  border: 1px solid rgba(92, 206, 255, 0.22);
+  border: 1px solid var(--yt-line);
   border-radius: 10px;
-  background: rgba(15, 52, 84, 0.6);
-  color: #9fe8ff;
+  background: #ffffff;
+  color: #4f46e5;
   padding: 0 12px;
   cursor: pointer;
   font-size: 11px;
@@ -155,8 +222,8 @@
 }
 
 .publisherButton:hover {
-  border-color: rgba(92, 206, 255, 0.4);
-  background: rgba(20, 67, 106, 0.72);
+  border-color: #c7d2fe;
+  background: #f8f7ff;
   transform: translateY(-1px);
 }
 
@@ -167,9 +234,9 @@
 }
 
 .connectionButton.connected {
-  border-color: rgba(49, 220, 164, 0.28);
-  background: rgba(12, 93, 72, 0.28);
-  color: #8af1c8;
+  border-color: #a7f3d0;
+  background: #eafaf2;
+  color: #07834f;
 }
 
 .connectionButton:hover,
@@ -187,7 +254,7 @@
   overflow-x: auto;
   border-bottom: 1px solid var(--yt-line);
   padding: 0 16px;
-  background: rgba(4, 13, 28, 0.58);
+  background: rgba(255, 255, 255, 0.94);
   scrollbar-width: none;
 }
 
@@ -203,7 +270,7 @@
   gap: 7px;
   border: 0;
   background: transparent;
-  color: #8496b0;
+  color: #667085;
   padding: 0 14px;
   cursor: pointer;
   font-size: 12px;
@@ -226,7 +293,7 @@
 
 .tabs button:hover,
 .tabs button.active {
-  color: #edf6ff;
+  color: #111827;
 }
 
 .tabs button.active::after {
@@ -238,7 +305,7 @@
   min-height: 0;
   overflow-y: auto;
   padding: 20px;
-  scrollbar-color: rgba(91, 125, 170, 0.55) transparent;
+  scrollbar-color: #c7d2fe transparent;
 }
 
 .workspaceGrid {
@@ -259,7 +326,7 @@
 .recommendationList > article {
   border: 1px solid var(--yt-line);
   background: var(--yt-panel);
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.13);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
 }
 
 .controlCard {
@@ -280,7 +347,7 @@
 .controlCard label {
   display: grid;
   gap: 7px;
-  color: #b8c7da;
+  color: #344054;
   font-size: 11px;
   font-weight: 800;
 }
@@ -289,23 +356,23 @@
 .controlCard select {
   width: 100%;
   min-height: 42px;
-  border: 1px solid rgba(128, 170, 226, 0.22);
+  border: 1px solid #d9ddea;
   border-radius: 10px;
   outline: 0;
-  background: rgba(3, 12, 25, 0.7);
-  color: #f1f7ff;
+  background: #ffffff;
+  color: #111827;
   padding: 0 11px;
   font-size: 13px;
 }
 
 .controlCard input::placeholder {
-  color: #62738c;
+  color: #98a2b3;
 }
 
 .controlCard input:focus,
 .controlCard select:focus {
-  border-color: rgba(48, 197, 255, 0.7);
-  box-shadow: 0 0 0 3px rgba(33, 149, 255, 0.11);
+  border-color: #818cf8;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
 }
 
 .inlineFields {
@@ -323,17 +390,17 @@
 }
 
 .primaryButton {
-  border-color: rgba(100, 229, 255, 0.2);
-  background: linear-gradient(112deg, #12cfe7, #168fe9 48%, #3c65f4);
-  box-shadow: 0 12px 26px rgba(10, 113, 225, 0.23);
+  border-color: transparent;
+  background: linear-gradient(135deg, #3b82f6, #7c3aed);
+  box-shadow: 0 8px 20px rgba(79, 70, 229, 0.2);
   color: white;
 }
 
 .secondaryButton,
 .feedback button {
   border-color: var(--yt-line);
-  background: rgba(15, 30, 52, 0.8);
-  color: #c8d8eb;
+  background: #ffffff;
+  color: #344054;
 }
 
 .primaryButton:disabled,
@@ -345,14 +412,14 @@
 
 .formDisclaimer,
 .disclaimer {
-  color: #8da0bb;
+  color: #667085;
   font-size: 10px;
   line-height: 1.5;
 }
 
 .sourceContext {
   margin: -5px 0 0;
-  color: #73b8d9 !important;
+  color: #4f46e5 !important;
   font-size: 10px !important;
   line-height: 1.5 !important;
 }
@@ -371,7 +438,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #e8f2ff;
+  color: #111827;
   font-size: 12px;
 }
 
@@ -385,10 +452,10 @@
   align-items: start;
   gap: 11px;
   margin-bottom: 14px;
-  border: 1px solid rgba(240, 172, 74, 0.24);
+  border: 1px solid #fde68a;
   border-radius: 13px;
-  background: rgba(91, 58, 13, 0.22);
-  color: #f7c875;
+  background: #fff6df;
+  color: #b45309;
   padding: 12px 14px;
 }
 
@@ -398,12 +465,12 @@
 }
 
 .feedback strong {
-  color: #f7fbff;
+  color: #111827;
   font-size: 12px;
 }
 
 .feedback span {
-  color: #b8c7da;
+  color: #667085;
   font-size: 11px;
   line-height: 1.45;
 }
@@ -414,9 +481,9 @@
 }
 
 .loadingFeedback {
-  border-color: rgba(55, 184, 255, 0.25);
-  background: rgba(12, 63, 105, 0.24);
-  color: #61d9ff;
+  border-color: #c7d2fe;
+  background: #f0efff;
+  color: #4f46e5;
 }
 
 .loadingFeedback i {
@@ -425,7 +492,7 @@
   height: 3px;
   margin-top: 6px;
   border-radius: 99px;
-  background: rgba(91, 136, 191, 0.2);
+  background: #e5e7ef;
 }
 
 .loadingFeedback i span {
@@ -438,17 +505,17 @@
 }
 
 .feedback_success {
-  border-color: rgba(49, 220, 164, 0.25);
-  background: rgba(12, 93, 72, 0.24);
-  color: #7ce8bd;
+  border-color: #a7f3d0;
+  background: #eafaf2;
+  color: #07834f;
 }
 
 .feedback_not_connected,
 .feedback_insufficient_permissions,
 .feedback_retry {
-  border-color: rgba(255, 95, 111, 0.25);
-  background: rgba(96, 27, 42, 0.25);
-  color: #ff9baa;
+  border-color: #fecaca;
+  background: #fff0f0;
+  color: #dc2626;
 }
 
 .spin {
@@ -461,9 +528,9 @@
   place-items: center;
   align-content: center;
   min-height: 330px;
-  border: 1px dashed rgba(113, 161, 220, 0.23);
+  border: 1px dashed #d9ddea;
   border-radius: 17px;
-  background: rgba(8, 20, 39, 0.48);
+  background: #fafbff;
   padding: 34px;
   text-align: center;
 }
@@ -478,7 +545,7 @@
 
 .emptyState > strong,
 .connectionEmpty h2 {
-  color: #eef6ff;
+  color: #111827;
   font-size: 17px;
 }
 
@@ -518,7 +585,7 @@
 
 .snapshotCard > p,
 .snapshotCard summary {
-  color: #a9b9ce;
+  color: #667085;
   font-size: 11px;
   line-height: 1.5;
 }
@@ -536,7 +603,7 @@
   flex: 0 0 auto;
   place-items: center;
   border-radius: 12px;
-  background: rgba(30, 184, 224, 0.12);
+  background: #f0efff;
   color: var(--yt-cyan);
 }
 
@@ -560,7 +627,7 @@
 .recommendationIntro h2,
 .recommendationList h2 {
   margin: 3px 0 5px;
-  color: #f2f7ff;
+  color: #111827;
   font-size: 17px;
   letter-spacing: -0.02em;
 }
@@ -568,7 +635,7 @@
 .resultHero p,
 .recommendationIntro span,
 .recommendationList p {
-  color: #a9b9ce;
+  color: #596b83;
   font-size: 12px;
   line-height: 1.55;
 }
@@ -586,23 +653,23 @@
   align-content: center;
   border: 1px solid var(--yt-line);
   border-radius: 14px;
-  background: rgba(12, 27, 48, 0.72);
+  background: #fafbff;
   padding: 12px;
 }
 
 .metricsGrid small,
 .planMeta small {
-  color: #8294ad;
+  color: #667085;
   font-size: 10px;
 }
 
 .metricsGrid strong {
-  color: #f2f8ff;
+  color: #111827;
   font-size: 18px;
 }
 
 .metricsGrid span {
-  color: #75dfbd;
+  color: #12a66a;
   font-size: 10px;
 }
 
@@ -624,24 +691,24 @@
   display: grid;
   gap: 3px;
   margin-top: 11px;
-  border-top: 1px solid rgba(125, 167, 218, 0.12);
+  border-top: 1px solid var(--yt-line);
   padding-top: 10px;
 }
 
 .compactResult strong {
-  color: #e9f2fd;
+  color: #111827;
   font-size: 12px;
 }
 
 .compactResult p,
 .mutedCopy {
-  color: #91a2b9;
+  color: #596b83;
   font-size: 11px;
   line-height: 1.45;
 }
 
 .compactResult small {
-  color: #62758f;
+  color: #98a2b3;
   font-size: 9px;
 }
 
@@ -661,7 +728,7 @@
   flex: 0 0 auto;
   place-items: center;
   border-radius: 50%;
-  background: rgba(22, 44, 75, 0.8);
+  background: #f0efff;
   object-fit: cover;
 }
 
@@ -673,12 +740,12 @@
 
 .channelCard small,
 .channelCard time {
-  color: #7e91aa;
+  color: #667085;
   font-size: 10px;
 }
 
 .channelCard strong {
-  color: #f2f7ff;
+  color: #111827;
   font-size: 15px;
 }
 
@@ -687,7 +754,7 @@
   width: max-content;
   align-items: center;
   gap: 4px;
-  color: #61cfff;
+  color: #4f46e5;
   font-size: 10px;
 }
 
@@ -704,18 +771,18 @@
 }
 
 .scoreHead span {
-  color: #a8b8cc;
+  color: #667085;
   font-size: 11px;
   font-weight: 800;
 }
 
 .scoreHead strong {
-  color: #f5f9ff;
+  color: #111827;
   font-size: 30px;
 }
 
 .scoreHead strong small {
-  color: #72859e;
+  color: #98a2b3;
   font-size: 12px;
 }
 
@@ -723,7 +790,7 @@
   width: 48px;
   height: 48px;
   border-radius: 50%;
-  background: conic-gradient(var(--yt-cyan), var(--yt-blue) var(--score), rgba(79, 110, 151, 0.2) 0);
+  background: conic-gradient(var(--yt-cyan), var(--yt-blue) var(--score), #e5e7ef 0);
   mask: radial-gradient(circle, transparent 54%, #000 56%);
 }
 
@@ -738,9 +805,9 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 3px 8px;
-  border: 1px solid rgba(112, 156, 211, 0.12);
+  border: 1px solid var(--yt-line);
   border-radius: 10px;
-  background: rgba(6, 17, 33, 0.52);
+  background: #fafbff;
   padding: 9px;
 }
 
@@ -749,27 +816,27 @@
 }
 
 .scoreComponents strong {
-  color: #dce9f8;
+  color: #344054;
   font-size: 10px;
 }
 
 .scoreComponents small,
 .scoreComponents > div > span:nth-child(2) {
-  color: #7e92ad;
+  color: #667085;
   font-size: 9px;
 }
 
 .scoreComponents p {
   grid-column: 1 / -1;
   margin: 2px 0 0;
-  color: #92a5bd;
+  color: #667085;
   font-size: 9.5px;
   line-height: 1.4;
 }
 
 .scoreCard .disclaimer {
   margin: 12px 0 0;
-  border-top: 1px solid rgba(116, 159, 211, 0.12);
+  border-top: 1px solid var(--yt-line);
   padding-top: 9px;
 }
 
@@ -783,7 +850,7 @@
 
 .bulletList li {
   position: relative;
-  color: #a9b9cd;
+  color: #596b83;
   padding-left: 13px;
   font-size: 11px;
   line-height: 1.5;
@@ -804,15 +871,15 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  border: 1px solid rgba(238, 173, 77, 0.22);
+  border: 1px solid #fde68a;
   border-radius: 13px;
-  background: rgba(85, 54, 12, 0.2);
-  color: #efbd67;
+  background: #fff6df;
+  color: #b45309;
   padding: 12px;
 }
 
 .limitations strong {
-  color: #f4d399;
+  color: #92400e;
   font-size: 11px;
 }
 
@@ -821,7 +888,7 @@
   gap: 4px;
   margin: 5px 0 0;
   padding-left: 17px;
-  color: #c4ad86;
+  color: #92400e;
   font-size: 10px;
   line-height: 1.45;
 }
@@ -844,16 +911,16 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border: 1px solid rgba(108, 153, 210, 0.13);
+  border: 1px solid var(--yt-line);
   border-radius: 10px;
-  background: rgba(8, 21, 40, 0.58);
-  color: #cfe2f7;
+  background: #fafbff;
+  color: #344054;
   padding: 9px 11px;
 }
 
 .sourceList a:hover,
 .breakoutList a:hover {
-  border-color: rgba(53, 200, 255, 0.35);
+  border-color: #a5b4fc;
 }
 
 .sourceList a > span,
@@ -874,7 +941,7 @@
 .sourceList small,
 .breakoutList small {
   overflow: hidden;
-  color: #7488a2;
+  color: #667085;
   font-size: 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -922,23 +989,23 @@
 
 .planItem summary strong {
   overflow: hidden;
-  color: #eef6ff;
+  color: #111827;
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .planItem summary small {
-  color: #7e91aa;
+  color: #667085;
   font-size: 9.5px;
   text-transform: capitalize;
 }
 
 .planItem summary b {
-  border: 1px solid rgba(52, 211, 255, 0.2);
+  border: 1px solid #c7d2fe;
   border-radius: 8px;
-  background: rgba(22, 112, 176, 0.16);
-  color: #8ee9ff;
+  background: #f0efff;
+  color: #4f46e5;
   padding: 5px 7px;
   font-size: 10px;
 }
@@ -952,7 +1019,7 @@
 
 .planBody > p,
 .scoreExplanation {
-  color: #9fb0c6;
+  color: #596b83;
   font-size: 11px;
   line-height: 1.55;
 }
@@ -966,15 +1033,15 @@
 .planMeta > span {
   display: grid;
   gap: 3px;
-  border: 1px solid rgba(110, 151, 202, 0.12);
+  border: 1px solid var(--yt-line);
   border-radius: 9px;
-  background: rgba(7, 19, 36, 0.5);
+  background: #fafbff;
   padding: 9px;
 }
 
 .planMeta strong {
   overflow: hidden;
-  color: #dbe8f8;
+  color: #344054;
   font-size: 10px;
   text-overflow: ellipsis;
   text-transform: capitalize;
@@ -982,19 +1049,19 @@
 }
 
 .copyBlock {
-  border-left: 2px solid rgba(36, 220, 233, 0.48);
-  background: rgba(6, 20, 38, 0.5);
+  border-left: 2px solid #818cf8;
+  background: #fafbff;
   padding: 10px 12px;
 }
 
 .copyBlock strong {
-  color: #dbe9f8;
+  color: #344054;
   font-size: 10px;
 }
 
 .copyBlock p {
   margin-top: 4px;
-  color: #9eb0c7;
+  color: #596b83;
   font-size: 10.5px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -1023,14 +1090,14 @@
   height: 38px;
   place-items: center;
   border-radius: 12px;
-  background: rgba(19, 182, 218, 0.12);
+  background: #f0efff;
   color: var(--yt-cyan);
 }
 
 .recommendationList em {
   display: block;
   margin-top: 7px;
-  color: #758aa6;
+  color: #667085;
   font-size: 10px;
   font-style: normal;
   line-height: 1.5;
@@ -1110,67 +1177,4 @@
   .recommendationIntro {
     flex-wrap: wrap;
   }
-}
-
-:global([data-theme="light"]) .panel {
-  --yt-panel: rgba(255, 255, 255, 0.94);
-  --yt-panel-strong: #ffffff;
-  --yt-soft: #f3f7fd;
-  --yt-line: rgba(52, 92, 145, 0.15);
-  --yt-line-strong: rgba(20, 136, 226, 0.32);
-  --yt-ink: #101828;
-  --yt-muted: #68758a;
-  background:
-    radial-gradient(circle at 88% -10%, rgba(37, 122, 255, 0.11), transparent 32%),
-    linear-gradient(145deg, #f7faff, #f1f6fd);
-  color: var(--yt-ink);
-  box-shadow: 0 24px 70px rgba(29, 43, 64, 0.1);
-}
-
-:global([data-theme="light"]) .header,
-:global([data-theme="light"]) .tabs {
-  background: rgba(255, 255, 255, 0.76);
-}
-
-:global([data-theme="light"]) .heading h1,
-:global([data-theme="light"]) .tabs button.active,
-:global([data-theme="light"]) .sectionTitle,
-:global([data-theme="light"]) .resultHero h2,
-:global([data-theme="light"]) .recommendationIntro h2,
-:global([data-theme="light"]) .recommendationList h2,
-:global([data-theme="light"]) .emptyState > strong,
-:global([data-theme="light"]) .connectionEmpty h2,
-:global([data-theme="light"]) .channelCard strong,
-:global([data-theme="light"]) .scoreHead strong,
-:global([data-theme="light"]) .planItem summary strong,
-:global([data-theme="light"]) .controlCard label {
-  color: #142033;
-}
-
-:global([data-theme="light"]) .controlCard input,
-:global([data-theme="light"]) .controlCard select,
-:global([data-theme="light"]) .emptyState,
-:global([data-theme="light"]) .connectionEmpty,
-:global([data-theme="light"]) .metricsGrid article,
-:global([data-theme="light"]) .sourceList a,
-:global([data-theme="light"]) .breakoutList a,
-:global([data-theme="light"]) .scoreComponents > div,
-:global([data-theme="light"]) .planMeta > span,
-:global([data-theme="light"]) .copyBlock {
-  background: rgba(255, 255, 255, 0.78);
-  color: #1f2937;
-}
-
-:global([data-theme="light"]) .resultHero p,
-:global([data-theme="light"]) .recommendationIntro span,
-:global([data-theme="light"]) .recommendationList p,
-:global([data-theme="light"]) .snapshotCard > p,
-:global([data-theme="light"]) .snapshotCard summary,
-:global([data-theme="light"]) .compactResult p,
-:global([data-theme="light"]) .mutedCopy,
-:global([data-theme="light"]) .bulletList li,
-:global([data-theme="light"]) .planBody > p,
-:global([data-theme="light"]) .scoreExplanation,
-:global([data-theme="light"]) .copyBlock p {
-  color: #596b83;
 }

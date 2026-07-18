@@ -15,10 +15,9 @@ const themeBootstrap = `
   (() => {
     try {
       const stored = localStorage.getItem("rebly-theme");
-      const mode = stored === "light" || stored === "auto" ? stored : "dark";
-      const dark = mode === "dark" || (mode === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
-      document.documentElement.dataset.theme = dark ? "dark" : "light";
-      document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      const mode = stored === "light" ? "light" : "dark";
+      document.documentElement.dataset.theme = mode;
+      document.documentElement.style.colorScheme = mode;
     } catch {
       document.documentElement.dataset.theme = "dark";
       document.documentElement.style.colorScheme = "dark";
